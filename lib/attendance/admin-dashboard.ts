@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { PrismaClient, Role } from "@prisma/client";
+import type { Prisma, PrismaClient, Role } from "@prisma/client";
 import { fromZonedTime } from "date-fns-tz";
 import { hasPermission } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
@@ -10,11 +10,16 @@ import { formatWorkedDuration, groupSessionsByEmployeeLocalDay } from "@/lib/att
 import { getEmployeeLocalDayWindow } from "@/lib/attendance/timezone";
 import { resolveAttendanceEmployees } from "@/lib/attendance/employee-link";
 
-type AdminActor = { role: Role } | null;
+type AdminActor = { id?: string; role: Role } | null;
 type SummaryDatabase = Pick<PrismaClient, "user" | "employee" | "workSession">;
 
-function assertAdmin(admin: AdminActor): asserts admin is { role: Role } {
-  if (!admin || (admin.role !== "ADMIN" && !hasPermission(admin.role, "attendance:manage"))) {
+function assertAdmin(admin: AdminActor): asserts admin is Exclude<AdminActor, null> {
+  if (!admin || (
+    admin.role !== "ADMIN"
+    && !hasPermission(admin.role, "attendance:manage")
+    && !hasPermission(admin.role, "attendance:department:read")
+    && !(hasPermission(admin.role, "attendance:assigned:read") && hasPermission(admin.role, "attendance:monitor"))
+  )) {
     throw new AdminAttendanceAuthorizationError();
   }
 }
@@ -34,8 +39,25 @@ export async function getAdminAttendanceSummary(
   const mode = input.mode ?? "ALL";
   if (!date) throw new Error("Select a report date.");
 
+  let scope: Prisma.UserWhereInput = {};
+  if (admin.role === "DEPARTMENT_MANAGER") {
+    const manager = await database.employee.findUnique({
+      where: { userId: admin.id ?? "" },
+      select: { departmentId: true },
+    });
+    scope = manager?.departmentId
+      ? { employee: { is: { departmentId: manager.departmentId } } }
+      : { id: { in: [] } };
+  } else if (admin.role === "SUPERVISOR") {
+    scope = {
+      employee: {
+        is: { supervisor: { userId: admin.id ?? "", user: { role: "SUPERVISOR", isActive: true } } },
+      },
+    };
+  }
+
   const employees = await database.user.findMany({
-    where: { role: "EMPLOYEE", isActive: true, ...(employeeId ? { id: employeeId } : {}) },
+    where: { role: "EMPLOYEE", isActive: true, ...scope, ...(employeeId ? { id: employeeId } : {}) },
     select: adminEmployeeSelect,
     orderBy: { name: "asc" },
   });

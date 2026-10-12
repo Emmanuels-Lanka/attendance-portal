@@ -1,7 +1,7 @@
 import { formatInTimeZone } from "date-fns-tz";
 import { redirect } from "next/navigation";
 import { LeaveReviewForm } from "@/components/leave-review-form";
-import { listSupervisorLeaveRequests } from "@/lib/leave/approval-service";
+import { listManagerLeaveRequests, listSupervisorLeaveRequests } from "@/lib/leave/approval-service";
 import { requirePageUser } from "@/lib/auth/session";
 import { hasPermission } from "@/lib/auth/permissions";
 
@@ -11,17 +11,23 @@ function dateLabel(value: Date) {
 
 export default async function SupervisorLeaveApprovalsPage() {
   const actor = await requirePageUser();
-  if (actor.role !== "SUPERVISOR" || !hasPermission(actor.role, "leave:approve")) {
+  if (
+    (actor.role !== "SUPERVISOR" && actor.role !== "DEPARTMENT_MANAGER")
+    || !hasPermission(actor.role, "leave:approve")
+  ) {
     redirect("/dashboard");
   }
 
-  const requests = await listSupervisorLeaveRequests(actor);
+  const requests = actor.role === "SUPERVISOR"
+    ? await listSupervisorLeaveRequests(actor)
+    : await listManagerLeaveRequests(actor);
+  const reviewerLabel = actor.role === "SUPERVISOR" ? "Supervisor" : "Manager";
   return (
     <div className="space-y-6">
       <header>
         <p className="text-sm font-medium text-[var(--blue)]">Approvals</p>
         <h1 className="mt-1 text-2xl font-semibold sm:text-[28px]">Leave approvals</h1>
-        <p className="mt-2 text-sm text-[var(--muted)]">Pending requests from employees assigned to you.</p>
+        <p className="mt-2 text-sm text-[var(--muted)]">Pending requests assigned to you for {reviewerLabel.toLowerCase()} review.</p>
       </header>
       {requests.length === 0 ? (
         <p role="status" className="rounded-lg border border-[var(--line)] bg-white px-4 py-8 text-sm text-[var(--muted)]">

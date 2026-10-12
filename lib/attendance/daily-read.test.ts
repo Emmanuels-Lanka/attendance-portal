@@ -27,7 +27,7 @@ const persistedRecord = {
 };
 
 function makeDatabase(total = 1, records = [persistedRecord]) {
-  const calls: { count?: unknown; findMany?: unknown; employees?: unknown } = {};
+  const calls: { count?: unknown; findMany?: unknown; employees?: unknown; departments?: unknown } = {};
   const database = {
     attendanceDaily: {
       count: async (args: unknown) => {
@@ -40,13 +40,17 @@ function makeDatabase(total = 1, records = [persistedRecord]) {
       },
     },
     employee: {
+      findUnique: async () => ({ departmentId: "department-1" }),
       findMany: async (args: unknown) => {
         calls.employees = args;
         return [{ id: "employee-1", name: "Alex Employee", employeeId: "E-1" }];
       },
     },
     department: {
-      findMany: async () => [{ id: "department-1", name: "Operations" }],
+      findMany: async (args: unknown) => {
+        calls.departments = args;
+        return [{ id: "department-1", name: "Operations" }];
+      },
     },
   } as never;
   return { database, calls };
@@ -83,7 +87,7 @@ describe("calculated daily attendance read service", () => {
     const expectedWhere = {
       date: new Date("2026-10-05T00:00:00.000Z"),
       employeeId: "employee-1",
-      employee: { departmentId: "department-1" },
+      employee: { AND: [{ departmentId: "department-1" }] },
       status: "LATE",
     };
     assert.deepEqual(stub.calls.count, { where: expectedWhere });
@@ -108,8 +112,63 @@ describe("calculated daily attendance read service", () => {
       where: {
         date: new Date("2026-10-05T00:00:00.000Z"),
         employeeId: "privileged-employee-record",
-        employee: { ...employeeScope, departmentId: "department-1" },
+        employee: { AND: [employeeScope, { departmentId: "department-1" }] },
       },
+    });
+  });
+
+  it("limits Department Managers to their assigned department even when another department is submitted", async () => {
+    const stub = makeDatabase();
+    await listCalculatedDailyAttendance({ id: "manager-1", role: Role.DEPARTMENT_MANAGER }, {
+      date: "2026-10-05",
+      departmentId: "department-2",
+    }, stub.database);
+
+    assert.deepEqual(stub.calls.count, {
+      where: {
+        date: new Date("2026-10-05T00:00:00.000Z"),
+        employee: {
+          AND: [
+            { departmentId: "department-1", user: { is: { role: "EMPLOYEE" } } },
+            { departmentId: "department-2" },
+          ],
+        },
+      },
+    });
+    assert.deepEqual(stub.calls.departments, {
+      where: { id: "department-1" },
+      select: { id: true, name: true },
+      orderBy: { name: "asc" },
+    });
+  });
+
+  it("limits Supervisors to assigned employee attendance and department choices", async () => {
+    const stub = makeDatabase();
+    await listCalculatedDailyAttendance({ id: "supervisor-1", role: Role.SUPERVISOR }, {
+      date: "2026-10-05",
+      status: "MISSING_PUNCH",
+    }, stub.database);
+
+    const assignedEmployeeScope = {
+      supervisor: { userId: "supervisor-1", user: { role: "SUPERVISOR", isActive: true } },
+      user: { is: { role: "EMPLOYEE" } },
+    };
+    assert.deepEqual(stub.calls.count, {
+      where: {
+        date: new Date("2026-10-05T00:00:00.000Z"),
+        employee: { AND: [assignedEmployeeScope] },
+        status: "MISSING_PUNCH",
+      },
+    });
+    assert.deepEqual(stub.calls.employees, {
+      where: assignedEmployeeScope,
+      select: { id: true, name: true, employeeId: true },
+      orderBy: { name: "asc" },
+    });
+    assert.deepEqual(stub.calls.departments, {
+      where: { employees: { some: assignedEmployeeScope } },
+      select: { id: true, name: true },
+      orderBy: { name: "asc" },
     });
   });
 
@@ -159,8 +218,6 @@ describe("calculated daily attendance read service", () => {
   it("rejects unauthorized reads before querying any data", async () => {
     const stub = makeDatabase();
     await assert.rejects(listCalculatedDailyAttendance({ role: Role.EMPLOYEE }, {}, stub.database), DailyAttendanceAuthorizationError);
-    await assert.rejects(listCalculatedDailyAttendance({ role: Role.DEPARTMENT_MANAGER }, {}, stub.database), DailyAttendanceAuthorizationError);
-    await assert.rejects(listCalculatedDailyAttendance({ role: Role.SUPERVISOR }, {}, stub.database), DailyAttendanceAuthorizationError);
     await assert.rejects(listCalculatedDailyAttendance(null, {}, stub.database), DailyAttendanceAuthorizationError);
     assert.deepEqual(stub.calls, {});
   });

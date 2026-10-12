@@ -8,7 +8,7 @@ import { leaveRequestInputSchema, leaveRequestListQuerySchema } from "@/lib/leav
 type LeaveRequestActor = { id: string; role: Role };
 type LeaveRequestDatabase = Pick<
   PrismaClient,
-  "employee" | "leaveType" | "employeeDocument" | "leaveRequest" | "attendanceAuditLog" | "$transaction"
+  "employee" | "leaveType" | "employeeDocument" | "leaveRequest" | "attendanceAuditLog" | "notification" | "$transaction"
 >;
 
 export class LeaveRequestAccessError extends Error {
@@ -65,6 +65,12 @@ async function getOwnEmployee(actor: LeaveRequestActor, database: Pick<PrismaCli
       id: true,
       userId: true,
       supervisor: {
+        select: {
+          userId: true,
+          user: { select: { role: true, isActive: true } },
+        },
+      },
+      manager: {
         select: {
           userId: true,
           user: { select: { role: true, isActive: true } },
@@ -157,6 +163,15 @@ export async function submitOwnLeaveRequest(
           attachmentProvided: parsed.attachmentDocumentId !== null,
         },
         reason: "Employee submitted a Leave request; request reason and attachment details are omitted.",
+      },
+      select: { id: true },
+    });
+    await transaction.notification.create({
+      data: {
+        userId: supervisor.userId,
+        title: "Leave request pending",
+        message: `A Leave request for ${parsed.startDate} to ${parsed.endDate} is awaiting your review.`,
+        type: "LEAVE_REQUEST_PENDING",
       },
       select: { id: true },
     });

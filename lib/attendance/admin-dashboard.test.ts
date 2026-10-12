@@ -13,6 +13,8 @@ type Employee = {
   timeZone: string;
   role: Role;
   isActive: boolean;
+  departmentId?: string;
+  supervisorUserId?: string;
 };
 
 type Session = {
@@ -23,8 +25,8 @@ type Session = {
   record: { employee: Employee };
 };
 
-function makeEmployee(id: string, countryCode: string, timeZone: string): Employee {
-  return { id, name: id, email: `${id}@example.invalid`, employeeCode: id.toUpperCase(), countryCode, timeZone, role: Role.EMPLOYEE, isActive: true };
+function makeEmployee(id: string, countryCode: string, timeZone: string, departmentId = "department-a", supervisorUserId = "supervisor-a"): Employee {
+  return { id, name: id, email: `${id}@example.invalid`, employeeCode: id.toUpperCase(), countryCode, timeZone, role: Role.EMPLOYEE, isActive: true, departmentId, supervisorUserId };
 }
 
 function session(id: string, employee: Employee, mode: Session["mode"], start: string, end: string | null): Session {
@@ -41,13 +43,21 @@ function createDatabase(employees: Employee[], daySessions: Session[], openSessi
   const queries: Record<string, unknown>[] = [];
   const database = {
     user: {
-      findMany: async (args: { where: { role: Role; isActive: boolean; id?: string }; select: Record<string, boolean> }) => {
+      findMany: async (args: { where: Record<string, unknown>; select: Record<string, boolean> }) => {
         queries.push(args.where);
         assert.equal("passwordHash" in args.select, false);
-        return employees.filter((employee) => employee.role === args.where.role && employee.isActive === args.where.isActive && (!args.where.id || employee.id === args.where.id));
+        const scopedEmployee = args.where.employee as { is?: { departmentId?: string; supervisor?: { userId?: string } } } | undefined;
+        return employees.filter((employee) => employee.role === args.where.role
+          && employee.isActive === args.where.isActive
+          && (!args.where.id || employee.id === args.where.id)
+          && (!scopedEmployee?.is?.departmentId || employee.departmentId === scopedEmployee.is.departmentId)
+          && (!scopedEmployee?.is?.supervisor?.userId || employee.supervisorUserId === scopedEmployee.is.supervisor.userId));
       },
     },
     employee: {
+      findUnique: async ({ where }: { where: { userId: string } }) => where.userId === "manager-a"
+        ? { departmentId: "department-a" }
+        : null,
       findMany: async ({ where }: { where: { userId: { in: string[] } } }) => where.userId.in.map((userId) => ({
         id: `record-${userId}`,
         name: `HR ${userId}`,
@@ -68,7 +78,7 @@ function createDatabase(employees: Employee[], daySessions: Session[], openSessi
   return { database, queries };
 }
 
-const admin = { role: Role.ADMIN };
+const admin = { id: "admin", role: Role.ADMIN };
 
 describe("admin attendance summary dashboard", () => {
   it("counts selected-date attendance, late/early, completed, active, and no-record employees", async () => {
@@ -135,9 +145,39 @@ describe("admin attendance summary dashboard", () => {
     assert.deepEqual(stub.queries[0], { role: "EMPLOYEE", isActive: true });
   });
 
+  it("limits Department Manager dashboard summaries to the assigned department", async () => {
+    const inDepartment = makeEmployee("employee-a", "LK", "Asia/Colombo", "department-a");
+    const outsideDepartment = makeEmployee("employee-b", "LK", "Asia/Colombo", "department-b");
+    const stub = createDatabase([inDepartment, outsideDepartment], [], []);
+
+    const result = await getAdminAttendanceSummary({ id: "manager-a", role: Role.DEPARTMENT_MANAGER }, { date: "2026-06-15" }, stub.database);
+
+    assert.deepEqual(result.employees.map(({ employee }) => employee.id), ["employee-a"]);
+    assert.deepEqual(stub.queries[0], {
+      role: "EMPLOYEE",
+      isActive: true,
+      employee: { is: { departmentId: "department-a" } },
+    });
+  });
+
+  it("limits Supervisor dashboard summaries to directly assigned employees", async () => {
+    const assigned = makeEmployee("assigned", "LK", "Asia/Colombo", "department-a", "supervisor-a");
+    const unassigned = makeEmployee("unassigned", "LK", "Asia/Colombo", "department-a", "supervisor-b");
+    const stub = createDatabase([assigned, unassigned], [], []);
+
+    const result = await getAdminAttendanceSummary({ id: "supervisor-a", role: Role.SUPERVISOR }, { date: "2026-06-15" }, stub.database);
+
+    assert.deepEqual(result.employees.map(({ employee }) => employee.id), ["assigned"]);
+    assert.deepEqual(stub.queries[0], {
+      role: "EMPLOYEE",
+      isActive: true,
+      employee: { is: { supervisor: { userId: "supervisor-a", user: { role: "SUPERVISOR", isActive: true } } } },
+    });
+  });
+
   it("requires admin authorization and rejects invalid selected dates", async () => {
     const stub = createDatabase([], [], []);
-    await assert.rejects(getAdminAttendanceSummary({ role: Role.EMPLOYEE }, { date: "2026-06-15" }, stub.database), /Administrator access/);
+    await assert.rejects(getAdminAttendanceSummary({ id: "employee", role: Role.EMPLOYEE }, { date: "2026-06-15" }, stub.database), /Administrator access/);
     await assert.rejects(getAdminAttendanceSummary(null, { date: "2026-06-15" }, stub.database), /Administrator access/);
     await assert.rejects(getAdminAttendanceSummary(admin, { date: "not-a-date" }, stub.database));
   });

@@ -46,6 +46,7 @@ export async function decideWorkFromHomeRequestAction(
       reason: formData.get("reason"),
     });
     revalidatePath("/approvals/wfh");
+    revalidatePath("/dashboard");
     revalidatePath("/wfh");
     revalidatePath("/attendance");
     return {

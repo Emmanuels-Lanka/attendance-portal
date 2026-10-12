@@ -1,11 +1,13 @@
 import { formatInTimeZone } from "date-fns-tz";
 import { CalendarDays } from "lucide-react";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import {
   dailyAttendanceFiltersSchema,
   listCalculatedDailyAttendance,
 } from "@/lib/attendance/daily-read";
-import { requirePagePermission } from "@/lib/auth/session";
+import { hasPermission } from "@/lib/auth/permissions";
+import { requirePageUser } from "@/lib/auth/session";
 
 type SearchParams = Record<string, string | string[] | undefined>;
 
@@ -60,8 +62,15 @@ export default async function DailyAttendancePage({
 }: {
   searchParams: Promise<SearchParams>;
 }) {
-  const actor = await requirePagePermission("attendance:manage");
-  const audienceLabel = actor.role === "HR_ADMINISTRATOR" ? "HR attendance" : "Administration";
+  const actor = await requirePageUser();
+  const canReadAttendance = actor.role === "ADMIN"
+    || hasPermission(actor.role, "attendance:manage")
+    || hasPermission(actor.role, "attendance:department:read")
+    || (hasPermission(actor.role, "attendance:assigned:read") && hasPermission(actor.role, "attendance:monitor"));
+  if (!canReadAttendance) redirect("/dashboard");
+  const audienceLabel = actor.role === "HR_ADMINISTRATOR" ? "HR attendance"
+    : actor.role === "DEPARTMENT_MANAGER" ? "Department attendance"
+      : actor.role === "SUPERVISOR" ? "Assigned attendance" : "Administration";
   const params = await searchParams;
   const filterResult = dailyAttendanceFiltersSchema.safeParse({
     date: single(params.date),

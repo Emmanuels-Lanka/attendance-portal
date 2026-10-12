@@ -33,6 +33,7 @@ export async function decideAttendanceCorrectionAction(
       reason: formData.get("reason"),
     });
     revalidatePath("/approvals/attendance-corrections");
+    revalidatePath("/dashboard");
     return {
       success: result.status === "PENDING"
         ? "Correction advanced to HR review."

@@ -5,6 +5,7 @@ import { z } from "zod";
 import { requireUser } from "@/lib/auth/session";
 import { hasPermission } from "@/lib/auth/permissions";
 import {
+  decideManagerLeaveRequest,
   decideSupervisorLeaveRequest,
   LeaveApprovalAccessError,
   LeaveApprovalNotFoundError,
@@ -20,19 +21,30 @@ export async function decideLeaveRequestAction(
   formData: FormData,
 ): Promise<LeaveDecisionState> {
   const actor = await requireUser();
-  if (actor.role !== "SUPERVISOR" || !hasPermission(actor.role, "leave:approve")) {
+  if (
+    (actor.role !== "SUPERVISOR" && actor.role !== "DEPARTMENT_MANAGER")
+    || !hasPermission(actor.role, "leave:approve")
+  ) {
     throw new LeaveApprovalAccessError();
   }
 
   try {
-    const result = await decideSupervisorLeaveRequest(actor, leaveRequestId, {
+    const decisionInput = {
       action: formData.get("action"),
       reason: formData.get("reason"),
-    });
+    };
+    const result = actor.role === "SUPERVISOR"
+      ? await decideSupervisorLeaveRequest(actor, leaveRequestId, decisionInput)
+      : await decideManagerLeaveRequest(actor, leaveRequestId, decisionInput);
     revalidatePath("/approvals/leave");
+    revalidatePath("/dashboard");
     revalidatePath("/leave");
     revalidatePath("/leave/balance");
-    return { success: result.status === "APPROVED" ? "Leave request approved." : "Leave request rejected." };
+    return {
+      success: result.currentApprovalStage === "MANAGER"
+        ? "Leave request forwarded to the assigned Manager."
+        : result.status === "APPROVED" ? "Leave request approved." : "Leave request rejected.",
+    };
   } catch (error) {
     if (error instanceof z.ZodError) return { error: error.issues[0]?.message ?? "Check the decision." };
     if (

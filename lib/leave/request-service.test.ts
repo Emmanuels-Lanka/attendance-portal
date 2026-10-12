@@ -13,10 +13,12 @@ import {
 } from "@/lib/leave/request-service";
 import {
   decideSupervisorLeaveRequest,
+  decideManagerLeaveRequest,
   LeaveApprovalAccessError,
   LeaveApprovalScopeError,
   LeaveApprovalStageError,
   listSupervisorLeaveRequests,
+  listManagerLeaveRequests,
 } from "@/lib/leave/approval-service";
 import { leaveRequestInputSchema } from "@/lib/leave/validation";
 
@@ -31,9 +33,15 @@ const requestInput = {
 
 function createRequestDatabaseStub(options: {
   supervisor?: "assigned" | "missing" | "inactive";
+  manager?: "assigned" | "missing" | "inactive";
   forceDecisionRace?: boolean;
 } = {}) {
   const supervisorStatus = options.supervisor ?? "assigned";
+  const managerStatus = options.manager ?? "missing";
+  const assignedManager = managerStatus === "missing" ? null : {
+    userId: "manager-user-1",
+    user: { role: Role.DEPARTMENT_MANAGER, isActive: managerStatus !== "inactive" },
+  };
   const employees = new Map([
     ["employee-user-1", {
       id: "employee-1",
@@ -44,6 +52,7 @@ function createRequestDatabaseStub(options: {
         userId: "supervisor-user-1",
         user: { role: Role.SUPERVISOR, isActive: supervisorStatus !== "inactive" },
       },
+      manager: assignedManager,
     }],
     ["employee-user-2", {
       id: "employee-2",
@@ -54,6 +63,7 @@ function createRequestDatabaseStub(options: {
         userId: "supervisor-user-2",
         user: { role: Role.SUPERVISOR, isActive: true },
       },
+      manager: null,
     }],
   ]);
   const leaveTypes = new Set(["leave-type-1"]);
@@ -116,6 +126,7 @@ function createRequestDatabaseStub(options: {
           employee: employee ? {
             userId: employee.userId,
             supervisor: employee.supervisor,
+            manager: employee.manager,
           } : null,
           leaveType: { name: "Annual Leave" },
         };
@@ -127,11 +138,13 @@ function createRequestDatabaseStub(options: {
       }) => {
         return requests.filter((request) => {
           const employee = [...employees.values()].find((candidate) => candidate.id === request.employeeId);
-          const scopeMatches = where.currentApproverId === undefined || (
-            employee?.supervisor?.userId === where.currentApproverId
-            && employee.supervisor.user?.role === Role.SUPERVISOR
-            && employee.supervisor.user.isActive
-          );
+          const scopeMatches = where.currentApproverId === undefined || (where.currentApprovalStage === "MANAGER"
+            ? employee?.manager?.userId === where.currentApproverId
+              && employee.manager.user?.role === Role.DEPARTMENT_MANAGER
+              && employee.manager.user.isActive
+            : employee?.supervisor?.userId === where.currentApproverId
+              && employee.supervisor.user?.role === Role.SUPERVISOR
+              && employee.supervisor.user.isActive);
           return scopeMatches
           && (where.employeeId === undefined || request.employeeId === where.employeeId)
           && (where.currentApproverId === undefined || request.currentApproverId === where.currentApproverId)
@@ -149,6 +162,7 @@ function createRequestDatabaseStub(options: {
               employeeId: employee.employeeId,
               userId: employee.userId,
               supervisor: employee.supervisor,
+              manager: employee.manager,
             } : null,
             leaveType: { id: request.leaveTypeId, name: "Annual Leave" },
           };
@@ -173,13 +187,14 @@ function createRequestDatabaseStub(options: {
           && candidate.currentApproverId === where.currentApproverId,
         );
         const employee = request && [...employees.values()].find((candidate) => candidate.id === request.employeeId);
-        if (
-          !request
-          || !employee?.supervisor
-          || employee.supervisor.userId !== where.currentApproverId
-          || employee.supervisor.user?.role !== Role.SUPERVISOR
-          || !employee.supervisor.user.isActive
-        ) return { count: 0 };
+        const reviewerAssigned = employee && (where.currentApprovalStage === "MANAGER"
+          ? employee.manager?.userId === where.currentApproverId
+            && employee.manager.user?.role === Role.DEPARTMENT_MANAGER
+            && employee.manager.user.isActive
+          : employee.supervisor?.userId === where.currentApproverId
+            && employee.supervisor.user?.role === Role.SUPERVISOR
+            && employee.supervisor.user.isActive);
+        if (!request || !employee || !reviewerAssigned) return { count: 0 };
         Object.assign(request, data);
         return { count: 1 };
       },
@@ -234,6 +249,12 @@ describe("Leave request submission and self-service history", () => {
     assert.equal(stub.audits[0]?.actionType, "LEAVE_REQUEST_SUBMITTED");
     assert.equal(JSON.stringify(stub.audits).includes("Personal appointment"), false);
     assert.equal(JSON.stringify(stub.audits).includes("employee-2"), false);
+    assert.deepEqual(stub.notifications[0], {
+      userId: "supervisor-user-1",
+      title: "Leave request pending",
+      message: "A Leave request for 2026-10-12 to 2026-10-13 is awaiting your review.",
+      type: "LEAVE_REQUEST_PENDING",
+    });
   });
 
   it("rejects unauthorized roles and accounts without a linked Employee", async () => {
@@ -369,8 +390,9 @@ describe("Supervisor Leave approval workflow", () => {
       currentApproverId: "supervisor-user-1",
     });
     assert.equal((stub.audits.at(-1)?.newValues as Record<string, unknown>)?.status, "APPROVED");
-    assert.equal(stub.notifications.length, 1);
-    assert.deepEqual(stub.notifications[0], {
+    assert.equal(stub.notifications.length, 2);
+    assert.equal(stub.notifications[0]?.userId, "supervisor-user-1");
+    assert.deepEqual(stub.notifications[1], {
       userId: "employee-user-1",
       title: "Leave request approved",
       message: "Your Annual Leave request for 2026-10-12 to 2026-10-13 was approved.",
@@ -394,14 +416,15 @@ describe("Supervisor Leave approval workflow", () => {
     assert.equal(stub.audits.at(-1)?.reason, "Insufficient supporting details");
     assert.equal((stub.audits.at(-1)?.newValues as Record<string, unknown>)?.status, "REJECTED");
     assert.deepEqual(stub.attendanceAndBalanceWrites, []);
-    assert.equal(stub.notifications.length, 1);
-    assert.deepEqual(stub.notifications[0], {
+    assert.equal(stub.notifications.length, 2);
+    assert.equal(stub.notifications[0]?.userId, "supervisor-user-1");
+    assert.deepEqual(stub.notifications[1], {
       userId: "employee-user-1",
       title: "Leave request rejected",
       message: "Your Annual Leave request for 2026-10-12 to 2026-10-13 was rejected.",
       type: "LEAVE_REQUEST_REJECTED",
     });
-    assert.notEqual(stub.notifications[0]?.userId, "supervisor-user-1");
+    assert.equal(stub.notifications[1]?.userId, "employee-user-1");
   });
 
   it("does not permit a second decision and preserves leave request subject identity", async () => {
@@ -414,7 +437,7 @@ describe("Supervisor Leave approval workflow", () => {
     );
     assert.equal(stub.requests[0]?.employeeId, "employee-1");
     assert.equal(stub.audits.length, 2);
-    assert.equal(stub.notifications.length, 1);
+    assert.equal(stub.notifications.length, 2);
   });
 
   it("does not overwrite a concurrent decision or create a duplicate audit", async () => {
@@ -432,6 +455,59 @@ describe("Supervisor Leave approval workflow", () => {
     assert.equal(stub.requests[0]?.status, LeaveRequestStatus.REJECTED);
     assert.equal(stub.requests[0]?.reviewedById, "other-reviewer");
     assert.equal(stub.audits.length, 1);
-    assert.equal(stub.notifications.length, 0);
+    assert.equal(stub.notifications.length, 1);
+  });
+
+  it("forwards an assigned employee's approved request to their Manager for final review", async () => {
+    const stub = createRequestDatabaseStub({ manager: "assigned" });
+    const request = await submitOwnLeaveRequest(employeeActor, requestInput, stub.database);
+
+    const supervisorResult = await decideSupervisorLeaveRequest(
+      { id: "supervisor-user-1", role: Role.SUPERVISOR },
+      request.id,
+      { action: "APPROVE" },
+      stub.database,
+    );
+
+    assert.equal(supervisorResult.status, LeaveRequestStatus.PENDING);
+    assert.equal(supervisorResult.currentApprovalStage, "MANAGER");
+    assert.equal(stub.requests[0]?.currentApproverId, "manager-user-1");
+    assert.deepEqual((await listManagerLeaveRequests({ id: "manager-user-1", role: Role.DEPARTMENT_MANAGER }, stub.database)).map(({ id }) => id), [request.id]);
+    assert.equal(stub.notifications[1]?.userId, "manager-user-1");
+    assert.equal(stub.audits.at(-1)?.actionType, "LEAVE_REQUEST_SUPERVISOR_APPROVED");
+    await assert.rejects(
+      decideManagerLeaveRequest({ id: "other-manager", role: Role.DEPARTMENT_MANAGER }, request.id, { action: "APPROVE" }, stub.database),
+      LeaveApprovalStageError,
+    );
+
+    const managerResult = await decideManagerLeaveRequest(
+      { id: "manager-user-1", role: Role.DEPARTMENT_MANAGER },
+      request.id,
+      { action: "APPROVE" },
+      stub.database,
+    );
+
+    assert.equal(managerResult.status, LeaveRequestStatus.APPROVED);
+    assert.equal(stub.requests[0]?.currentApprovalStage, null);
+    assert.equal(stub.audits.at(-1)?.actionType, "LEAVE_REQUEST_APPROVED");
+    assert.equal(stub.notifications[2]?.userId, "employee-user-1");
+    assert.deepEqual(stub.attendanceAndBalanceWrites, []);
+    await assert.rejects(
+      decideManagerLeaveRequest({ id: "manager-user-1", role: Role.DEPARTMENT_MANAGER }, request.id, { action: "REJECT" }, stub.database),
+      LeaveApprovalStageError,
+    );
+  });
+
+  it("rejects Manager review unless the request is at that Manager's assigned stage", async () => {
+    const { stub, request } = await submittedRequest();
+    assert.deepEqual(await listManagerLeaveRequests({ id: "manager-user-1", role: Role.DEPARTMENT_MANAGER }, stub.database), []);
+    await assert.rejects(
+      decideManagerLeaveRequest({ id: "manager-user-1", role: Role.DEPARTMENT_MANAGER }, request.id, { action: "APPROVE" }, stub.database),
+      LeaveApprovalStageError,
+    );
+    await assert.rejects(
+      listManagerLeaveRequests({ id: "hr-user", role: Role.HR_ADMINISTRATOR }, stub.database),
+      LeaveApprovalAccessError,
+    );
   });
 });

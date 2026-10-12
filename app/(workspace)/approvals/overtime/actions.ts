@@ -46,6 +46,7 @@ export async function decideOvertimeRequestAction(
       reason: formData.get("reason"),
     });
     revalidatePath("/approvals/overtime");
+    revalidatePath("/dashboard");
     revalidatePath("/overtime");
     return {
       success: result.currentApprovalStage === "MANAGER"

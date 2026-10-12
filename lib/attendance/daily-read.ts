@@ -35,7 +35,7 @@ export const dailyAttendanceFiltersSchema = z.object({
 
 export type DailyAttendanceFilters = z.infer<typeof dailyAttendanceFiltersSchema>;
 
-type DailyAttendanceActor = { role: Role } | null;
+type DailyAttendanceActor = { id?: string; role: Role } | null;
 type DailyAttendanceDatabase = Pick<PrismaClient, "attendanceDaily" | "employee" | "department">;
 const pageSize = 50;
 
@@ -51,17 +51,52 @@ export async function listCalculatedDailyAttendance(
   input: unknown,
   database: DailyAttendanceDatabase = prisma,
 ) {
-  if (!actor || (actor.role !== "ADMIN" && !hasPermission(actor.role, "attendance:manage"))) {
+  if (!actor || (
+    actor.role !== "ADMIN"
+    && !hasPermission(actor.role, "attendance:manage")
+    && !hasPermission(actor.role, "attendance:department:read")
+    && !hasPermission(actor.role, "attendance:assigned:read")
+  )) {
+    throw new DailyAttendanceAuthorizationError();
+  }
+  if (actor.role === "SUPERVISOR" && !hasPermission(actor.role, "attendance:monitor")) {
     throw new DailyAttendanceAuthorizationError();
   }
   const filters = dailyAttendanceFiltersSchema.parse(input);
-  const hrEmployeeScope: Prisma.EmployeeWhereInput = actor.role === "HR_ADMINISTRATOR"
-    ? { user: { is: { role: "EMPLOYEE" } } }
+  if (
+    actor.role === "SUPERVISOR"
+    && filters.status === "MISSING_PUNCH"
+    && !hasPermission(actor.role, "attendance:missing-punch:review")
+  ) throw new DailyAttendanceAuthorizationError();
+  let scopedEmployeeFilter: Prisma.EmployeeWhereInput = {};
+  let scopedDepartmentFilter: Prisma.DepartmentWhereInput = {};
+  if (actor.role === "HR_ADMINISTRATOR") {
+    scopedEmployeeFilter = { user: { is: { role: "EMPLOYEE" } } };
+  } else if (actor.role === "DEPARTMENT_MANAGER") {
+    const manager = await database.employee.findUnique({
+      where: { userId: actor.id ?? "" },
+      select: { departmentId: true },
+    });
+    scopedEmployeeFilter = manager?.departmentId
+      ? { departmentId: manager.departmentId, user: { is: { role: "EMPLOYEE" } } }
+      : { id: { in: [] } };
+    scopedDepartmentFilter = manager?.departmentId ? { id: manager.departmentId } : { id: { in: [] } };
+  } else if (actor.role === "SUPERVISOR") {
+    scopedEmployeeFilter = {
+      supervisor: { userId: actor.id ?? "", user: { role: "SUPERVISOR", isActive: true } },
+      user: { is: { role: "EMPLOYEE" } },
+    };
+    scopedDepartmentFilter = {
+      employees: { some: scopedEmployeeFilter },
+    };
+  }
+  const employeeConstraints = [
+    scopedEmployeeFilter,
+    ...(filters.departmentId ? [{ departmentId: filters.departmentId }] : []),
+  ].filter((constraint) => Object.keys(constraint).length > 0);
+  const employeeFilter: Prisma.EmployeeWhereInput = employeeConstraints.length > 0
+    ? { AND: employeeConstraints }
     : {};
-  const employeeFilter: Prisma.EmployeeWhereInput = {
-    ...hrEmployeeScope,
-    ...(filters.departmentId ? { departmentId: filters.departmentId } : {}),
-  };
 
   const where: Prisma.AttendanceDailyWhereInput = {
     ...(filters.date ? { date: new Date(`${filters.date}T00:00:00.000Z`) } : {}),
@@ -73,11 +108,12 @@ export async function listCalculatedDailyAttendance(
   const [total, employees, departments] = await Promise.all([
     database.attendanceDaily.count({ where }),
     database.employee.findMany({
-      where: hrEmployeeScope,
+      where: scopedEmployeeFilter,
       select: { id: true, name: true, employeeId: true },
       orderBy: { name: "asc" },
     }),
     database.department.findMany({
+      where: scopedDepartmentFilter,
       select: { id: true, name: true },
       orderBy: { name: "asc" },
     }),

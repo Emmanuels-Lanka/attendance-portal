@@ -6,7 +6,7 @@ import { hasPermission } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
 
 type LeaveReviewer = { id: string; role: Role } | null;
-type LeaveApprovalDatabase = Pick<PrismaClient, "$transaction" | "leaveRequest">;
+type LeaveApprovalDatabase = Pick<PrismaClient, "$transaction" | "leaveRequest" | "attendanceAuditLog" | "notification">;
 
 export const leaveDecisionSchema = z.object({
   action: z.enum(["APPROVE", "REJECT"]),
@@ -18,7 +18,7 @@ export const leaveDecisionSchema = z.object({
 
 export class LeaveApprovalAccessError extends Error {
   constructor() {
-    super("Only an authorized Supervisor can review Leave requests in this workflow.");
+    super("Only an assigned Supervisor or Department Manager can review Leave requests in this workflow.");
     this.name = "LeaveApprovalAccessError";
   }
 }
@@ -75,6 +75,7 @@ const reviewRequestSelect = {
       employeeId: true,
       userId: true,
       supervisor: { select: { userId: true, user: { select: { role: true, isActive: true } } } },
+      manager: { select: { userId: true, user: { select: { role: true, isActive: true } } } },
     },
   },
   leaveType: { select: { id: true, name: true } },
@@ -93,6 +94,29 @@ export async function listSupervisorLeaveRequests(
   };
   return database.leaveRequest.findMany({
     where,
+    select: reviewRequestSelect,
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+  });
+}
+
+function assertManager(actor: LeaveReviewer): asserts actor is Exclude<LeaveReviewer, null> {
+  if (!actor || actor.role !== "DEPARTMENT_MANAGER" || !hasPermission(actor.role, "leave:approve")) {
+    throw new LeaveApprovalAccessError();
+  }
+}
+
+export async function listManagerLeaveRequests(
+  actor: LeaveReviewer,
+  database: Pick<PrismaClient, "leaveRequest"> = prisma,
+) {
+  assertManager(actor);
+  return database.leaveRequest.findMany({
+    where: {
+      status: LeaveRequestStatus.PENDING,
+      currentApprovalStage: "MANAGER",
+      currentApproverId: actor.id,
+      employee: { manager: { userId: actor.id, user: { isActive: true, role: "DEPARTMENT_MANAGER" } } },
+    },
     select: reviewRequestSelect,
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
   });
@@ -123,6 +147,7 @@ export async function decideSupervisorLeaveRequest(
           select: {
             userId: true,
             supervisor: { select: { userId: true, user: { select: { role: true, isActive: true } } } },
+            manager: { select: { userId: true, user: { select: { role: true, isActive: true } } } },
           },
         },
       },
@@ -144,9 +169,16 @@ export async function decideSupervisorLeaveRequest(
       throw new LeaveApprovalScopeError();
     }
 
-    const status = decision.action === "APPROVE"
-      ? LeaveRequestStatus.APPROVED
-      : LeaveRequestStatus.REJECTED;
+    const assignedManager = request.employee.manager;
+    const nextStage = decision.action === "APPROVE"
+      && assignedManager?.userId
+      && assignedManager.user?.role === "DEPARTMENT_MANAGER"
+      && assignedManager.user.isActive
+      ? "MANAGER"
+      : null;
+    const status = decision.action === "REJECT" ? LeaveRequestStatus.REJECTED
+      : nextStage ? LeaveRequestStatus.PENDING : LeaveRequestStatus.APPROVED;
+    const currentApproverId = nextStage ? assignedManager!.userId : null;
     const reviewedAt = new Date();
     const updated = await transaction.leaveRequest.updateMany({
       where: {
@@ -154,12 +186,124 @@ export async function decideSupervisorLeaveRequest(
         status: LeaveRequestStatus.PENDING,
         currentApprovalStage: "SUPERVISOR",
         currentApproverId: actor.id,
+        employee: { supervisor: { userId: actor.id, user: { isActive: true, role: "SUPERVISOR" } } },
+      },
+      data: {
+        status,
+        currentApprovalStage: nextStage,
+        currentApproverId,
+        reviewedById: actor.id,
+        reviewedAt,
+        decisionReason: decision.reason ?? null,
+      },
+    });
+    if (updated.count !== 1) throw new LeaveApprovalStageError();
+
+    const actionType = decision.action === "REJECT"
+      ? "LEAVE_REQUEST_REJECTED"
+      : nextStage ? "LEAVE_REQUEST_SUPERVISOR_APPROVED" : "LEAVE_REQUEST_APPROVED";
+    await transaction.attendanceAuditLog.create({
+      data: {
+        employeeId: request.employee.userId,
+        actorId: actor.id,
+        actionType,
+        previousValues: {
+          leaveRequestId: request.id,
+          status: request.status,
+          currentApprovalStage: request.currentApprovalStage,
+          currentApproverId: request.currentApproverId,
+        },
+        newValues: {
+          leaveRequestId: request.id,
+          status,
+          currentApprovalStage: nextStage,
+          currentApproverId,
+          reviewedById: actor.id,
+          reviewedAt: reviewedAt.toISOString(),
+        },
+        reason: decision.reason ?? null,
+      },
+      select: { id: true },
+    });
+
+    if (nextStage && currentApproverId) {
+      await transaction.notification.create({
+        data: {
+          userId: currentApproverId,
+          title: "Leave request pending",
+          message: `A Leave request for ${request.startDate.toISOString().slice(0, 10)} to ${request.endDate.toISOString().slice(0, 10)} is awaiting your review.`,
+          type: "LEAVE_REQUEST_PENDING",
+        },
+        select: { id: true },
+      });
+    } else {
+      const outcome = status === LeaveRequestStatus.APPROVED ? "approved" : "rejected";
+      await transaction.notification.create({
+        data: {
+          userId: request.employee.userId,
+          title: `Leave request ${outcome}`,
+          message: `Your ${request.leaveType.name} request for ${request.startDate.toISOString().slice(0, 10)} to ${request.endDate.toISOString().slice(0, 10)} was ${outcome}.`,
+          type: status === LeaveRequestStatus.APPROVED ? "LEAVE_REQUEST_APPROVED" : "LEAVE_REQUEST_REJECTED",
+        },
+        select: { id: true },
+      });
+    }
+
+    return { id: request.id, status, currentApprovalStage: nextStage, reviewedById: actor.id, reviewedAt };
+  });
+}
+
+export async function decideManagerLeaveRequest(
+  actor: LeaveReviewer,
+  leaveRequestId: string,
+  input: unknown,
+  database: LeaveApprovalDatabase = prisma,
+) {
+  assertManager(actor);
+  const decision = leaveDecisionSchema.parse(input);
+
+  return database.$transaction(async (transaction) => {
+    const request = await transaction.leaveRequest.findUnique({
+      where: { id: leaveRequestId },
+      select: {
+        id: true,
+        employeeId: true,
+        startDate: true,
+        endDate: true,
+        status: true,
+        currentApprovalStage: true,
+        currentApproverId: true,
+        leaveType: { select: { name: true } },
         employee: {
-          supervisor: {
-            userId: actor.id,
-            user: { isActive: true, role: "SUPERVISOR" },
+          select: {
+            userId: true,
+            manager: { select: { userId: true, user: { select: { role: true, isActive: true } } } },
           },
         },
+      },
+    });
+    if (!request) throw new LeaveApprovalNotFoundError();
+    if (
+      request.status !== LeaveRequestStatus.PENDING
+      || request.currentApprovalStage !== "MANAGER"
+      || request.currentApproverId !== actor.id
+    ) throw new LeaveApprovalStageError();
+    if (
+      !request.employee.userId
+      || request.employee.manager?.userId !== actor.id
+      || request.employee.manager.user?.role !== "DEPARTMENT_MANAGER"
+      || !request.employee.manager.user.isActive
+    ) throw new LeaveApprovalScopeError();
+
+    const status = decision.action === "APPROVE" ? LeaveRequestStatus.APPROVED : LeaveRequestStatus.REJECTED;
+    const reviewedAt = new Date();
+    const updated = await transaction.leaveRequest.updateMany({
+      where: {
+        id: request.id,
+        status: LeaveRequestStatus.PENDING,
+        currentApprovalStage: "MANAGER",
+        currentApproverId: actor.id,
+        employee: { manager: { userId: actor.id, user: { role: "DEPARTMENT_MANAGER", isActive: true } } },
       },
       data: {
         status,
@@ -172,6 +316,7 @@ export async function decideSupervisorLeaveRequest(
     });
     if (updated.count !== 1) throw new LeaveApprovalStageError();
 
+    const outcome = decision.action === "APPROVE" ? "approved" : "rejected";
     await transaction.attendanceAuditLog.create({
       data: {
         employeeId: request.employee.userId,
@@ -195,8 +340,6 @@ export async function decideSupervisorLeaveRequest(
       },
       select: { id: true },
     });
-
-    const outcome = decision.action === "APPROVE" ? "approved" : "rejected";
     await transaction.notification.create({
       data: {
         userId: request.employee.userId,
@@ -206,7 +349,6 @@ export async function decideSupervisorLeaveRequest(
       },
       select: { id: true },
     });
-
-    return { id: request.id, status, reviewedById: actor.id, reviewedAt };
+    return { id: request.id, status, currentApprovalStage: null, reviewedById: actor.id, reviewedAt };
   });
 }
