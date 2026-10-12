@@ -1,4 +1,5 @@
 import { formatInTimeZone } from "date-fns-tz";
+import Link from "next/link";
 import { formatWorkedDuration } from "@/lib/attendance/history";
 import { getMonthlyAttendanceSummaryReport } from "@/lib/attendance/reports";
 import { hasPermission } from "@/lib/auth/permissions";
@@ -24,6 +25,7 @@ export default async function MonthlyAttendanceSummaryPage({ searchParams }: { s
   const month = validMonth ? requestedMonth : currentMonth;
   const selectedEmployeeId = single(params.employeeId).trim();
   const result = await getMonthlyAttendanceSummaryReport(user, month, selectedEmployeeId);
+  const exportParams = new URLSearchParams({ month, ...(selectedEmployeeId ? { employeeId: selectedEmployeeId } : {}) }).toString();
   const overtimeByDepartment = new Map<string, {
     departmentId: string | null;
     departmentName: string;
@@ -115,6 +117,11 @@ export default async function MonthlyAttendanceSummaryPage({ searchParams }: { s
           </label>
           <button type="submit" className="h-10 rounded-md bg-[var(--action)] px-4 text-sm font-semibold text-white hover:bg-[var(--action-hover)]">Apply</button>
         </form>
+        <div className="flex flex-wrap gap-2">
+          <Link href={`/reports/monthly/export?${exportParams}&format=pdf`} className="inline-flex h-10 items-center rounded-md border border-[var(--line)] bg-white px-3 text-sm font-medium hover:bg-zinc-50">PDF</Link>
+          <Link href={`/reports/monthly/export?${exportParams}&format=xlsx`} className="inline-flex h-10 items-center rounded-md border border-[var(--line)] bg-white px-3 text-sm font-medium hover:bg-zinc-50">Excel</Link>
+          <Link href={`/reports/monthly/export?${exportParams}&format=csv`} className="inline-flex h-10 items-center rounded-md border border-[var(--line)] bg-white px-3 text-sm font-medium hover:bg-zinc-50">CSV</Link>
+        </div>
       </div>
 
       {requestedMonth && !validMonth && <p role="alert" className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">Invalid month. Showing the current month instead.</p>}

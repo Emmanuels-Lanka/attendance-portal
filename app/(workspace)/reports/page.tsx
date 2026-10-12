@@ -47,7 +47,11 @@ export default async function ReportsPage({
             <input id="personal-report-month" type="month" name="month" defaultValue={month} className="min-w-0 flex-1 rounded-md border border-[var(--line)] px-3 py-2 text-sm lg:flex-none" />
             <button type="submit" className="rounded-md bg-[var(--action)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--action-hover)]">Apply</button>
           </form>
-          <Link href={`/reports/export?month=${month}`} className="inline-flex justify-center rounded-md border border-[var(--line)] px-3 py-2 text-sm font-medium text-[var(--ink)]">Download PDF</Link>
+          <div className="flex flex-wrap gap-2">
+            <Link href={`/reports/export?month=${month}&format=pdf`} className="inline-flex justify-center rounded-md border border-[var(--line)] px-3 py-2 text-sm font-medium text-[var(--ink)]">Download PDF</Link>
+            <Link href={`/reports/export?month=${month}&format=xlsx`} className="inline-flex justify-center rounded-md border border-[var(--line)] px-3 py-2 text-sm font-medium text-[var(--ink)]">Download Excel</Link>
+            <Link href={`/reports/export?month=${month}&format=csv`} className="inline-flex justify-center rounded-md border border-[var(--line)] px-3 py-2 text-sm font-medium text-[var(--ink)]">Download CSV</Link>
+          </div>
         </div>
       </div>
 

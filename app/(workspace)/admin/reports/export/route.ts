@@ -1,32 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createMonthlyAttendancePdf } from "@/lib/attendance/monthly-pdf";
-import { getAdminMonthlyReport } from "@/lib/attendance/reports";
+import { getMonthlyAttendanceSummaryReport } from "@/lib/attendance/reports";
+import { createMonthlyReportDownloadResponse } from "@/lib/attendance/report-export";
 import { requirePageAdmin } from "@/lib/auth/session";
 
 export async function GET(request: NextRequest) {
-  await requirePageAdmin();
+  const admin = await requirePageAdmin();
   const month = request.nextUrl.searchParams.get("month") ?? new Date().toISOString().slice(0, 7);
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return new NextResponse("Invalid report month.", { status: 400 });
-  const { employees, summary } = await getAdminMonthlyReport(month);
+  const { employees, summary } = await getMonthlyAttendanceSummaryReport(admin, month);
   const pdf = await createMonthlyAttendancePdf({
     month,
     title: "Company attendance",
-    employees: employees.map(({ employee, report }) => ({ ...employee, report })),
-    summary: {
-      ...summary,
-      pendingExpectedHours: summary.pendingExpectedHours,
-      approvedExpectedHours: summary.approvedExpectedHours,
-      rejectedExpectedHours: summary.rejectedExpectedHours,
-      recordedActualHours: summary.recordedActualHours,
-      recordedActualDays: summary.recordedActualDays,
-      conflictingActualDays: summary.conflictingActualDays,
-    },
+    employees: employees.map(({ employee, report }) => ({
+      name: employee.name,
+      employeeCode: employee.employeeCode,
+      departmentName: employee.departmentName,
+      timeZone: employee.timeZone,
+      report,
+    })),
+    summary,
   });
 
-  return new NextResponse(new Uint8Array(pdf), {
-    headers: {
-      "Content-Type": "application/pdf",
-      "Content-Disposition": `attachment; filename="attendance-summary-${month}.pdf"`,
-    },
-  });
+  return createMonthlyReportDownloadResponse(pdf, "pdf", "attendance-summary", month);
 }
