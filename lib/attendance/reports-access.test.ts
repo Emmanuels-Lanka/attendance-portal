@@ -60,6 +60,7 @@ describe("monthly summary report access", () => {
   it("denies employees and managers without a department, and rejects invalid months", async () => {
     const stub = createDatabase(null);
     await assert.rejects(listMonthlySummaryEmployees({ id: "employee-a", role: Role.EMPLOYEE }, "2026-02", "", stub.database), MonthlySummaryAccessError);
+    await assert.rejects(listMonthlySummaryEmployees({ id: "supervisor-a", role: Role.SUPERVISOR }, "2026-02", "", stub.database), MonthlySummaryAccessError);
     assert.deepEqual(await listMonthlySummaryEmployees({ id: "manager", role: Role.DEPARTMENT_MANAGER }, "2026-02", "", stub.database), []);
     await assert.rejects(listMonthlySummaryEmployees({ id: "manager", role: Role.DEPARTMENT_MANAGER }, "2026-13", "", stub.database));
   });

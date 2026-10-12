@@ -48,7 +48,7 @@ type PdfSummary = {
   conflictingActualDays?: number;
 };
 
-function overtimeSummaryText(summary: PdfSummary) {
+export function overtimeSummaryText(summary: PdfSummary) {
   const actual = summary.recordedActualHours === null || summary.recordedActualHours === undefined
     ? "Not recorded"
     : `${summary.recordedActualHours.toFixed(2)} h across ${summary.recordedActualDays ?? 0} employee-days${summary.recordedActualEmployees !== undefined ? ` from ${summary.recordedActualEmployees} employees` : ""}`;

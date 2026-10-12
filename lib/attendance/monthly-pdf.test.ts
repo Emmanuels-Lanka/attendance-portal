@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { attendanceStatusSummaryText, createMonthlyAttendancePdf } from "./monthly-pdf";
+import nextConfig from "../../next.config";
+import { attendanceStatusSummaryText, createMonthlyAttendancePdf, overtimeSummaryText } from "./monthly-pdf";
 
 describe("monthly attendance PDF export", () => {
   it("creates a PDF containing the monthly summary and attendance rows", async () => {
@@ -82,6 +83,7 @@ describe("monthly attendance PDF export", () => {
       },
     });
 
+
     assert.equal(pdf.subarray(0, 5).toString("ascii"), "%PDF-");
     const pdfSource = pdf.toString("latin1");
     assert.ok(pdfSource.includes("/Type /Page"));
@@ -107,5 +109,121 @@ describe("monthly attendance PDF export", () => {
       totalCalculatedDays: 12,
       workFromHomeDays: 1,
     }), "Attendance days: scheduled 20; present 4; late 1; early out 0; approved leave 2; WFH 1; holidays 1; absent Not recorded; missing punch 1; weekend 4; undetermined 0; calculated dates 12");
+  });
+
+  it("formats overtime estimates separately from recorded actual overtime", () => {
+    assert.equal(overtimeSummaryText({
+      totalSessions: 0,
+      totalWorkedMs: 0,
+      pendingExpectedHours: 0.5,
+      pendingRequestCount: 1,
+      approvedExpectedHours: 1.5,
+      approvedRequestCount: 1,
+      rejectedExpectedHours: 0,
+      rejectedRequestCount: 0,
+      recordedActualHours: 3.25,
+      recordedActualEmployees: 1,
+      recordedActualDays: 2,
+      conflictingActualDays: 1,
+    }), "OT request estimates: pending 0.50 h (1 requests); approved 1.50 h (1 requests); rejected 0.00 h (0 requests) | Recorded actual OT: 3.25 h across 2 employee-days from 1 employees; 1 conflicting days excluded");
+  });
+
+  it("generates employee and management PDFs for empty reports and special-character identities", async () => {
+    const report = {
+      monthLabel: "2026-06",
+      empty: true,
+      summary: {
+        totalSessions: 0,
+        completedSessions: 0,
+        activeSessions: 0,
+        totalWorkedMs: 0,
+        absentDays: null,
+        recordedActualOvertimeHours: null,
+      },
+      days: [],
+    };
+    const employee = {
+      name: "Zoë 東京 😀",
+      email: "zoe@example.invalid",
+      employeeCode: "E-002",
+      departmentName: "People & Research",
+      timeZone: "Asia/Colombo",
+      report,
+    };
+    const managementEmployee = {
+      ...employee,
+      report: {
+        ...report,
+        empty: false,
+        days: [{
+          date: "2026-06-15",
+          sessions: [],
+          totalWorkedMs: 0,
+          approvedWorkFromHome: true,
+        }],
+      },
+    };
+
+    const employeePdf = await createMonthlyAttendancePdf({
+      month: "2026-06",
+      title: "Employee attendance",
+      employees: [employee],
+      summary: { totalSessions: 0, totalWorkedMs: 0 },
+    });
+    const managementPdf = await createMonthlyAttendancePdf({
+      month: "2026-06",
+      title: "Organization attendance",
+      employees: [managementEmployee],
+      summary: { employeeCount: 1, totalSessions: 0, totalWorkedMs: 0 },
+    });
+
+    for (const pdf of [employeePdf, managementPdf]) {
+      assert.equal(pdf.subarray(0, 5).toString("ascii"), "%PDF-");
+      assert.ok(pdf.subarray(-20).toString("ascii").includes("%%EOF"));
+      assert.ok(pdf.toString("latin1").includes("/Type /Page"));
+    }
+  });
+
+  it("paginates long attendance tables without failing", async () => {
+    const pdf = await createMonthlyAttendancePdf({
+      month: "2026-06",
+      title: "Employee attendance",
+      employees: [{
+        name: "Jane Employee",
+        timeZone: "Asia/Colombo",
+        report: {
+          monthLabel: "2026-06",
+          empty: false,
+          summary: {
+            totalSessions: 80,
+            completedSessions: 0,
+            activeSessions: 80,
+            totalWorkedMs: 0,
+          },
+          days: [{
+            date: "2026-06-15",
+            totalWorkedMs: 0,
+            sessions: Array.from({ length: 80 }, (_, index) => ({
+              id: `session-${index}`,
+              mode: "OFFICE" as const,
+              startAt: new Date("2026-06-15T03:30:00.000Z"),
+              endAt: null,
+            })),
+          }],
+        },
+      }],
+      summary: { totalSessions: 80, totalWorkedMs: 0 },
+    });
+
+    const pages = pdf.toString("latin1").match(/\/Type \/Page\b/g) ?? [];
+    assert.ok(pages.length > 1);
+    assert.ok(pdf.subarray(-20).toString("ascii").includes("%%EOF"));
+  });
+
+  it("includes PDFKit's dynamically loaded standard-font modules in every route trace", () => {
+    const tracePattern = "./node_modules/pdfkit/js/standard-fonts/**/*.cjs";
+    for (const route of ["/reports/export", "/reports/monthly/export", "/admin/reports/export"]) {
+      assert.ok(nextConfig.outputFileTracingIncludes?.[route]?.includes(tracePattern));
+    }
   });
 });
