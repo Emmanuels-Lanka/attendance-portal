@@ -123,6 +123,18 @@ describe("admin attendance summary dashboard", () => {
     assert.deepEqual(june16.employees.map(({ employee, day }) => [employee.id, day.sessions.length]), [["lk-date", 0], ["bd-date", 1]]);
   });
 
+  it("allows HR dashboard summaries while excluding privileged account attendance", async () => {
+    const employee = makeEmployee("employee", "LK", "Asia/Colombo");
+    const administrator = { ...makeEmployee("admin", "LK", "Asia/Colombo"), role: Role.ADMIN };
+    const stub = createDatabase([employee, administrator], [session("employee-session", employee, "OFFICE", "2026-06-15T08:30", "2026-06-15T17:30")], []);
+
+    const result = await getAdminAttendanceSummary({ role: Role.HR_ADMINISTRATOR }, { date: "2026-06-15" }, stub.database);
+
+    assert.equal(result.metrics.totalEmployees, 1);
+    assert.deepEqual(result.employees.map(({ employee: item }) => item.id), ["employee"]);
+    assert.deepEqual(stub.queries[0], { role: "EMPLOYEE", isActive: true });
+  });
+
   it("requires admin authorization and rejects invalid selected dates", async () => {
     const stub = createDatabase([], [], []);
     await assert.rejects(getAdminAttendanceSummary({ role: Role.EMPLOYEE }, { date: "2026-06-15" }, stub.database), /Administrator access/);

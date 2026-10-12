@@ -5,7 +5,7 @@ import {
   dailyAttendanceFiltersSchema,
   listCalculatedDailyAttendance,
 } from "@/lib/attendance/daily-read";
-import { requireAdmin } from "@/lib/auth/session";
+import { requirePagePermission } from "@/lib/auth/session";
 
 type SearchParams = Record<string, string | string[] | undefined>;
 
@@ -18,6 +18,9 @@ function statusPresentation(status: string | null) {
     case "PRESENT": return { label: "Present", className: "bg-emerald-50 text-emerald-800" };
     case "LATE": return { label: "Late", className: "bg-amber-50 text-amber-800" };
     case "EARLY_OUT": return { label: "Early Out", className: "bg-orange-50 text-orange-800" };
+    case "ABSENT": return { label: "Absent", className: "bg-rose-50 text-rose-800" };
+    case "LEAVE": return { label: "Leave", className: "bg-[var(--mint)] text-[var(--mint-ink)]" };
+    case "WFH": return { label: "WFH", className: "bg-sky-50 text-sky-800" };
     case "MISSING_PUNCH": return { label: "Missing Punch", className: "bg-rose-50 text-rose-800" };
     case "WEEKEND": return { label: "Weekend", className: "bg-slate-100 text-slate-700" };
     case "HOLIDAY": return { label: "Holiday", className: "bg-[var(--mint)] text-[var(--mint-ink)]" };
@@ -57,7 +60,8 @@ export default async function DailyAttendancePage({
 }: {
   searchParams: Promise<SearchParams>;
 }) {
-  const admin = await requireAdmin();
+  const actor = await requirePagePermission("attendance:manage");
+  const audienceLabel = actor.role === "HR_ADMINISTRATOR" ? "HR attendance" : "Administration";
   const params = await searchParams;
   const filterResult = dailyAttendanceFiltersSchema.safeParse({
     date: single(params.date),
@@ -71,7 +75,7 @@ export default async function DailyAttendancePage({
     return (
       <div className="space-y-6">
         <div>
-          <p className="text-sm font-medium text-[var(--blue)]">Administration</p>
+          <p className="text-sm font-medium text-[var(--blue)]">{audienceLabel}</p>
           <h1 className="mt-1 text-2xl font-semibold sm:text-[28px]">Daily attendance</h1>
         </div>
         <section className="rounded-lg border border-[var(--line)] bg-white p-5 shadow-sm" aria-label="Invalid attendance filters">
@@ -88,13 +92,13 @@ export default async function DailyAttendancePage({
 
   let result: Awaited<ReturnType<typeof listCalculatedDailyAttendance>>;
   try {
-    result = await listCalculatedDailyAttendance(admin, filterResult.data);
+    result = await listCalculatedDailyAttendance(actor, filterResult.data);
   } catch (error) {
     console.error("Calculated daily attendance read failed", error instanceof Error ? error.name : "Unknown error");
     return (
       <div className="space-y-6">
         <div>
-          <p className="text-sm font-medium text-[var(--blue)]">Administration</p>
+          <p className="text-sm font-medium text-[var(--blue)]">{audienceLabel}</p>
           <h1 className="mt-1 text-2xl font-semibold sm:text-[28px]">Daily attendance</h1>
         </div>
         <section className="rounded-lg border border-[var(--line)] bg-white p-5 shadow-sm">
@@ -110,7 +114,7 @@ export default async function DailyAttendancePage({
     <div className="space-y-6">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <p className="text-sm font-medium text-[var(--blue)]">Administration</p>
+          <p className="text-sm font-medium text-[var(--blue)]">{audienceLabel}</p>
           <h1 className="mt-1 text-2xl font-semibold sm:text-[28px]">Daily attendance</h1>
           <p className="mt-2 text-sm text-[var(--muted)]">
             {result.total} calculated record{result.total === 1 ? "" : "s"}
@@ -158,6 +162,9 @@ export default async function DailyAttendancePage({
             <option value="PRESENT">Present</option>
             <option value="LATE">Late</option>
             <option value="EARLY_OUT">Early Out</option>
+            <option value="ABSENT">Absent</option>
+            <option value="LEAVE">Leave</option>
+            <option value="WFH">WFH</option>
             <option value="MISSING_PUNCH">Missing Punch</option>
             <option value="WEEKEND">Weekend</option>
             <option value="HOLIDAY">Holiday</option>

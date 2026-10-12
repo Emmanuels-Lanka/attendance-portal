@@ -2,6 +2,7 @@ import "server-only";
 
 import type { PrismaClient, Role } from "@prisma/client";
 import { fromZonedTime } from "date-fns-tz";
+import { hasPermission } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
 import { adminEmployeeSelect, AdminAttendanceAuthorizationError } from "@/lib/attendance/admin-service";
 import { adminAttendanceFilterSchema } from "@/lib/attendance/admin-validation";
@@ -13,7 +14,9 @@ type AdminActor = { role: Role } | null;
 type SummaryDatabase = Pick<PrismaClient, "user" | "employee" | "workSession">;
 
 function assertAdmin(admin: AdminActor): asserts admin is { role: Role } {
-  if (!admin || admin.role !== "ADMIN") throw new AdminAttendanceAuthorizationError();
+  if (!admin || (admin.role !== "ADMIN" && !hasPermission(admin.role, "attendance:manage"))) {
+    throw new AdminAttendanceAuthorizationError();
+  }
 }
 
 function nextLocalDay(date: string, timeZone: string) {

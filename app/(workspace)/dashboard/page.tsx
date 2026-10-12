@@ -3,14 +3,115 @@ import { formatInTimeZone } from "date-fns-tz";
 import Link from "next/link";
 import { AttendanceToday } from "@/components/attendance-today";
 import { hasPermission } from "@/lib/auth/permissions";
+import { getAdminAttendanceSummary } from "@/lib/attendance/admin-dashboard";
 import { formatWorkedDuration } from "@/lib/attendance/history";
-import { getEmployeeMonthlyReport } from "@/lib/attendance/reports";
+import { getEmployeeMonthlyReport, getMonthlyAttendanceSummaryReport } from "@/lib/attendance/reports";
 import { getEmployeeAttendanceDashboard } from "@/lib/attendance/service";
 import { classifyWorkSession } from "@/lib/attendance/schedule";
 import { requirePageUser } from "@/lib/auth/session";
 
 export default async function DashboardPage() {
   const user = await requirePageUser();
+  const currentMonth = formatInTimeZone(new Date(), user.timeZone, "yyyy-MM");
+
+  if (user.role === "HR_ADMINISTRATOR") {
+    const today = formatInTimeZone(new Date(), user.timeZone, "yyyy-MM-dd");
+    const [todaySummary, monthlyReport] = await Promise.all([
+      getAdminAttendanceSummary(user, { date: today }),
+      getMonthlyAttendanceSummaryReport(user, currentMonth),
+    ]);
+    const employeesWithWfh = todaySummary.employees.filter(({ day }) => day.sessions.some(({ session }) => session.mode === "WFH")).length;
+    const departmentMetrics = new Map<string, {
+      departmentName: string;
+      employeeCount: number;
+      presentDays: number | null;
+      lateDays: number | null;
+      wfhDays: number;
+    }>();
+    for (const { employee, report } of monthlyReport.employees) {
+      const departmentKey = employee.departmentId ?? "unassigned";
+      const department = departmentMetrics.get(departmentKey) ?? {
+        departmentName: employee.departmentName ?? "Unassigned",
+        employeeCount: 0,
+        presentDays: null,
+        lateDays: null,
+        wfhDays: 0,
+      };
+      department.employeeCount += 1;
+      department.wfhDays += report.summary.workFromHomeDays ?? 0;
+      if ((report.summary.totalCalculatedDays ?? 0) > 0) {
+        department.presentDays = (department.presentDays ?? 0) + (report.summary.presentDays ?? 0);
+        department.lateDays = (department.lateDays ?? 0) + (report.summary.lateDays ?? 0);
+      }
+      departmentMetrics.set(departmentKey, department);
+    }
+    const departments = [...departmentMetrics.values()].sort((left, right) => left.departmentName.localeCompare(right.departmentName));
+    const todayMetrics = [
+      { label: "Active employees", value: todaySummary.metrics.totalEmployees },
+      { label: "With attendance", value: todaySummary.metrics.withAttendance },
+      { label: "Late arrivals", value: todaySummary.metrics.lateArrivals },
+      { label: "Early departures", value: todaySummary.metrics.earlyDepartures },
+      { label: "WFH sessions", value: employeesWithWfh },
+      { label: "Open sessions", value: todaySummary.metrics.activeNow },
+      { label: "No session recorded", value: todaySummary.metrics.withoutAttendance },
+    ];
+    const monthlyMetrics = [
+      { label: "Employees", value: monthlyReport.summary.employeeCount },
+      { label: "Present days", value: monthlyReport.summary.presentDays ?? "Not calculated" },
+      { label: "Late days", value: monthlyReport.summary.lateDays ?? "Not calculated" },
+      { label: "Absence", value: monthlyReport.summary.absentDays ?? "Not recorded" },
+      { label: "Approved leave days", value: monthlyReport.summary.approvedLeaveDays ?? "Unavailable" },
+      { label: "WFH days", value: monthlyReport.summary.workFromHomeDays },
+      { label: "Engine hours", value: monthlyReport.summary.engineWorkedMs == null ? "Not calculated" : formatWorkedDuration(monthlyReport.summary.engineWorkedMs) },
+      { label: "Approved OT estimate", value: `${monthlyReport.summary.approvedExpectedHours.toFixed(2)} h` },
+    ];
+
+    return (
+      <div className="space-y-7">
+        <header className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <p className="text-sm font-medium text-[var(--blue)]">HR workspace</p>
+            <h1 className="mt-1 text-2xl font-semibold sm:text-[28px]">Attendance overview</h1>
+            <p className="mt-2 text-sm text-[var(--muted)]">Today&apos;s employee sessions and this month&apos;s saved attendance calculations.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Link href="/admin/attendance/daily" className="inline-flex h-10 items-center rounded-md bg-[var(--action)] px-4 text-sm font-semibold text-white hover:bg-[var(--action-hover)]">Daily attendance</Link>
+            <Link href="/reports/monthly" className="inline-flex h-10 items-center rounded-md border border-[var(--line)] bg-white px-4 text-sm font-semibold text-[var(--ink)] hover:bg-zinc-50">Monthly report</Link>
+            <Link href="/approvals/attendance-corrections" className="inline-flex h-10 items-center rounded-md border border-[var(--line)] bg-white px-4 text-sm font-semibold text-[var(--ink)] hover:bg-zinc-50">Correction approvals</Link>
+          </div>
+        </header>
+
+        <section aria-labelledby="today-attendance-title" className="space-y-3">
+          <div><h2 id="today-attendance-title" className="text-base font-semibold">Today · {today}</h2><p className="mt-1 text-xs text-[var(--muted)]">Session counts use each employee&apos;s local day. No-session employees are not automatically classified as absent.</p></div>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
+            {todayMetrics.map(({ label, value }) => <div key={label} className="min-h-24 rounded-lg border border-[var(--line)] bg-white p-4 shadow-sm"><p className="text-xs font-medium text-[var(--muted)]">{label}</p><p className="mt-3 text-xl font-semibold tabular-nums">{value}</p></div>)}
+          </div>
+        </section>
+
+        <section aria-labelledby="month-attendance-title" className="space-y-3">
+          <div><h2 id="month-attendance-title" className="text-base font-semibold">Month to date · {currentMonth}</h2><p className="mt-1 text-xs text-[var(--muted)]">Absences are reported only when an ABSENT status has been explicitly saved.</p></div>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
+            {monthlyMetrics.map(({ label, value }) => <div key={label} className="min-h-24 rounded-lg border border-[var(--line)] bg-white p-4 shadow-sm"><p className="text-xs font-medium text-[var(--muted)]">{label}</p><p className="mt-3 text-xl font-semibold tabular-nums">{value}</p></div>)}
+          </div>
+        </section>
+
+        <section aria-labelledby="department-attendance-title" className="space-y-3">
+          <div><h2 id="department-attendance-title" className="text-base font-semibold">Department attendance · {currentMonth}</h2><p className="mt-1 text-xs text-[var(--muted)]">Employee-day totals are based on the same authorized monthly summary.</p></div>
+          {departments.length === 0 ? (
+            <p role="status" className="rounded-lg border border-[var(--line)] bg-white px-4 py-6 text-sm text-[var(--muted)]">No employee attendance is available for this month.</p>
+          ) : (
+            <div className="overflow-x-auto rounded-lg border border-[var(--line)] bg-white">
+              <table className="w-full min-w-[640px] text-left text-sm">
+                <thead className="border-b border-[var(--line)] bg-zinc-50 text-xs text-[var(--muted)]"><tr><th className="px-4 py-3 font-semibold">Department</th><th className="px-4 py-3 font-semibold">Employees</th><th className="px-4 py-3 font-semibold">Present days</th><th className="px-4 py-3 font-semibold">Late days</th><th className="px-4 py-3 font-semibold">WFH days</th></tr></thead>
+                <tbody className="divide-y divide-[var(--line)]">{departments.map((department) => <tr key={department.departmentName}><td className="px-4 py-3 font-medium">{department.departmentName}</td><td className="px-4 py-3 tabular-nums">{department.employeeCount}</td><td className="px-4 py-3 tabular-nums">{department.presentDays ?? "Not calculated"}</td><td className="px-4 py-3 tabular-nums">{department.lateDays ?? "Not calculated"}</td><td className="px-4 py-3 tabular-nums">{department.wfhDays}</td></tr>)}</tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      </div>
+    );
+  }
+
   const {
     date,
     activeSession,
@@ -23,7 +124,6 @@ export default async function DashboardPage() {
   const previousDayActiveSessionTiming = previousDayActiveSession
     ? classifyWorkSession(previousDayActiveSession, user.timeZone)
     : null;
-  const currentMonth = formatInTimeZone(new Date(), user.timeZone, "yyyy-MM");
   const monthlyReport = await getEmployeeMonthlyReport(user, currentMonth);
   const thisMonthMetrics = [
     { label: "Present", value: monthlyReport.summary.presentDays ?? "Not calculated" },

@@ -27,7 +27,7 @@ const persistedRecord = {
 };
 
 function makeDatabase(total = 1, records = [persistedRecord]) {
-  const calls: { count?: unknown; findMany?: unknown } = {};
+  const calls: { count?: unknown; findMany?: unknown; employees?: unknown } = {};
   const database = {
     attendanceDaily: {
       count: async (args: unknown) => {
@@ -40,7 +40,10 @@ function makeDatabase(total = 1, records = [persistedRecord]) {
       },
     },
     employee: {
-      findMany: async () => [{ id: "employee-1", name: "Alex Employee", employeeId: "E-1" }],
+      findMany: async (args: unknown) => {
+        calls.employees = args;
+        return [{ id: "employee-1", name: "Alex Employee", employeeId: "E-1" }];
+      },
     },
     department: {
       findMany: async () => [{ id: "department-1", name: "Operations" }],
@@ -85,6 +88,29 @@ describe("calculated daily attendance read service", () => {
     };
     assert.deepEqual(stub.calls.count, { where: expectedWhere });
     assert.deepEqual((stub.calls.findMany as { where: unknown }).where, expectedWhere);
+  });
+
+  it("allows HR to read employee attendance and scopes both choices and records away from privileged accounts", async () => {
+    const stub = makeDatabase();
+    await listCalculatedDailyAttendance({ role: Role.HR_ADMINISTRATOR }, {
+      date: "2026-10-05",
+      employeeId: "privileged-employee-record",
+      departmentId: "department-1",
+    }, stub.database);
+
+    const employeeScope = { user: { is: { role: "EMPLOYEE" } } };
+    assert.deepEqual(stub.calls.employees, {
+      where: employeeScope,
+      select: { id: true, name: true, employeeId: true },
+      orderBy: { name: "asc" },
+    });
+    assert.deepEqual(stub.calls.count, {
+      where: {
+        date: new Date("2026-10-05T00:00:00.000Z"),
+        employeeId: "privileged-employee-record",
+        employee: { ...employeeScope, departmentId: "department-1" },
+      },
+    });
   });
 
   it("returns a persisted status value unchanged without inventing status data", async () => {
@@ -133,16 +159,21 @@ describe("calculated daily attendance read service", () => {
   it("rejects unauthorized reads before querying any data", async () => {
     const stub = makeDatabase();
     await assert.rejects(listCalculatedDailyAttendance({ role: Role.EMPLOYEE }, {}, stub.database), DailyAttendanceAuthorizationError);
+    await assert.rejects(listCalculatedDailyAttendance({ role: Role.DEPARTMENT_MANAGER }, {}, stub.database), DailyAttendanceAuthorizationError);
+    await assert.rejects(listCalculatedDailyAttendance({ role: Role.SUPERVISOR }, {}, stub.database), DailyAttendanceAuthorizationError);
     await assert.rejects(listCalculatedDailyAttendance(null, {}, stub.database), DailyAttendanceAuthorizationError);
     assert.deepEqual(stub.calls, {});
   });
 
-  it("accepts Holiday status and rejects invalid dates and unknown statuses", async () => {
+  it("accepts persisted SRS statuses and rejects invalid dates and unknown statuses", async () => {
     const stub = makeDatabase();
     await assert.rejects(listCalculatedDailyAttendance(admin, { date: "2026-02-30" }, stub.database));
     await listCalculatedDailyAttendance(admin, { status: "HOLIDAY" }, stub.database);
+    await listCalculatedDailyAttendance(admin, { status: "ABSENT" }, stub.database);
+    await listCalculatedDailyAttendance(admin, { status: "LEAVE" }, stub.database);
+    await listCalculatedDailyAttendance(admin, { status: "WFH" }, stub.database);
     await assert.rejects(listCalculatedDailyAttendance(admin, { status: "FUTURE_STATUS" }, stub.database));
-    assert.deepEqual(stub.calls.count, { where: { status: "HOLIDAY" } });
+    assert.deepEqual(stub.calls.count, { where: { status: "WFH" } });
   });
 
   it("rejects invalid dates before querying any data", async () => {

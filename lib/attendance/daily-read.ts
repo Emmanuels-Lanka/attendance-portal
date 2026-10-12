@@ -2,12 +2,16 @@ import "server-only";
 
 import type { Prisma, PrismaClient, Role } from "@prisma/client";
 import { z } from "zod";
+import { hasPermission } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
 
 export const calculatedAttendanceStatuses = [
   "PRESENT",
   "LATE",
   "EARLY_OUT",
+  "ABSENT",
+  "LEAVE",
+  "WFH",
   "MISSING_PUNCH",
   "WEEKEND",
   "HOLIDAY",
@@ -37,7 +41,7 @@ const pageSize = 50;
 
 export class DailyAttendanceAuthorizationError extends Error {
   constructor() {
-    super("Administrator access is required.");
+    super("Attendance management access is required.");
     this.name = "DailyAttendanceAuthorizationError";
   }
 }
@@ -47,19 +51,29 @@ export async function listCalculatedDailyAttendance(
   input: unknown,
   database: DailyAttendanceDatabase = prisma,
 ) {
-  if (!actor || actor.role !== "ADMIN") throw new DailyAttendanceAuthorizationError();
+  if (!actor || (actor.role !== "ADMIN" && !hasPermission(actor.role, "attendance:manage"))) {
+    throw new DailyAttendanceAuthorizationError();
+  }
   const filters = dailyAttendanceFiltersSchema.parse(input);
+  const hrEmployeeScope: Prisma.EmployeeWhereInput = actor.role === "HR_ADMINISTRATOR"
+    ? { user: { is: { role: "EMPLOYEE" } } }
+    : {};
+  const employeeFilter: Prisma.EmployeeWhereInput = {
+    ...hrEmployeeScope,
+    ...(filters.departmentId ? { departmentId: filters.departmentId } : {}),
+  };
 
   const where: Prisma.AttendanceDailyWhereInput = {
     ...(filters.date ? { date: new Date(`${filters.date}T00:00:00.000Z`) } : {}),
     ...(filters.employeeId ? { employeeId: filters.employeeId } : {}),
-    ...(filters.departmentId ? { employee: { departmentId: filters.departmentId } } : {}),
+    ...(Object.keys(employeeFilter).length > 0 ? { employee: employeeFilter } : {}),
     ...(filters.status !== "ALL" ? { status: filters.status } : {}),
   };
 
   const [total, employees, departments] = await Promise.all([
     database.attendanceDaily.count({ where }),
     database.employee.findMany({
+      where: hrEmployeeScope,
       select: { id: true, name: true, employeeId: true },
       orderBy: { name: "asc" },
     }),
