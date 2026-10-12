@@ -14,6 +14,7 @@ export function AppShell({ user, children }: { user: AppUser; children: React.Re
   const canReadLeaveBalance = user.role === "EMPLOYEE" && hasPermission(user.role, "leave:balance:self:read");
   const canManageEmployees = hasPermission(user.role, "employee:manage");
   const canManageShifts = hasPermission(user.role, "shift:manage");
+  const canManageLeave = hasPermission(user.role, "leave:manage");
   const canReadReports = hasPermission(user.role, "reports:read");
   const canReadDepartmentReports = hasPermission(user.role, "reports:department:read");
   const canSubmitOvertime = user.role === "EMPLOYEE" && hasPermission(user.role, "overtime:submit");
@@ -29,7 +30,7 @@ export function AppShell({ user, children }: { user: AppUser; children: React.Re
         <div className="flex h-[70px] items-center border-b border-white/15 px-6">
           <Image src="/eliot-logo.png" alt="ELIoT" width={1200} height={600} priority className="h-10 w-[92px] object-contain object-left" />
         </div>
-        <AppNav isAdmin={user.role === "ADMIN"} canManageEmployees={canManageEmployees} canManageShifts={canManageShifts} canReadLeaveBalance={canReadLeaveBalance} canReviewCorrections={canReviewCorrections} canReviewLeave={canReviewLeave} canReadReports={canReadReports} canReadDepartmentReports={canReadDepartmentReports} canSubmitOvertime={canSubmitOvertime} canReviewOvertime={canReviewOvertime} canSubmitWorkFromHome={canSubmitWorkFromHome} canReviewWorkFromHome={canReviewWorkFromHome} />
+        <AppNav isAdmin={user.role === "ADMIN"} canManageEmployees={canManageEmployees} canManageShifts={canManageShifts} canManageLeave={canManageLeave} canReadLeaveBalance={canReadLeaveBalance} canReviewCorrections={canReviewCorrections} canReviewLeave={canReviewLeave} canReadReports={canReadReports} canReadDepartmentReports={canReadDepartmentReports} canSubmitOvertime={canSubmitOvertime} canReviewOvertime={canReviewOvertime} canSubmitWorkFromHome={canSubmitWorkFromHome} canReviewWorkFromHome={canReviewWorkFromHome} />
         <div className="mt-auto border-t border-white/15 p-4">
           <p className="truncate text-xs font-semibold text-white">{user.name}</p>
           <p className="mt-1 truncate text-[11px] text-white/60">{user.email}</p>
@@ -38,7 +39,7 @@ export function AppShell({ user, children }: { user: AppUser; children: React.Re
       <div className="min-h-screen min-w-0 flex-1 md:ml-64">
         <header className="sticky top-0 z-30 flex h-[70px] items-center justify-between border-b border-[var(--line)] bg-white px-4 shadow-sm sm:px-7">
           <div className="flex items-center gap-3 md:hidden">
-            <MobileNav isAdmin={user.role === "ADMIN"} canManageEmployees={canManageEmployees} canManageShifts={canManageShifts} canReadLeaveBalance={canReadLeaveBalance} canReviewCorrections={canReviewCorrections} canReviewLeave={canReviewLeave} canReadReports={canReadReports} canReadDepartmentReports={canReadDepartmentReports} canSubmitOvertime={canSubmitOvertime} canReviewOvertime={canReviewOvertime} canSubmitWorkFromHome={canSubmitWorkFromHome} canReviewWorkFromHome={canReviewWorkFromHome} user={user} />
+            <MobileNav isAdmin={user.role === "ADMIN"} canManageEmployees={canManageEmployees} canManageShifts={canManageShifts} canManageLeave={canManageLeave} canReadLeaveBalance={canReadLeaveBalance} canReviewCorrections={canReviewCorrections} canReviewLeave={canReviewLeave} canReadReports={canReadReports} canReadDepartmentReports={canReadDepartmentReports} canSubmitOvertime={canSubmitOvertime} canReviewOvertime={canReviewOvertime} canSubmitWorkFromHome={canSubmitWorkFromHome} canReviewWorkFromHome={canReviewWorkFromHome} user={user} />
             <Image src="/eliot-logo.png" alt="ELIoT Attendance" width={1200} height={600} priority className="h-9 w-[82px] object-contain object-left" />
           </div>
           <div className="hidden min-w-0 items-center gap-3 md:flex">

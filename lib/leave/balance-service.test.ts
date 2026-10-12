@@ -6,6 +6,7 @@ import {
   calculateApprovedLeaveUsage,
   calculateAvailableLeaveBalance,
   getLeaveEntitlement,
+  getManagedLeaveBalance,
   InsufficientLeaveBalanceError,
   LeaveBalanceAccessError,
   LeaveEntitlementAccessError,
@@ -14,11 +15,15 @@ import {
   LeaveUsageEmployeeConflictError,
   LeaveUsageSourceConflictError,
   listOwnLeaveBalanceCredits,
+  listOwnLeaveBalances,
+  listLeaveEntitlementEmployees,
+  listLeaveTypesForEntitlements,
   setLeaveEntitlement,
 } from "@/lib/leave/balance-service";
 import { leaveEntitlementSchema } from "@/lib/leave/validation";
 
 const admin = { id: "admin-user", role: Role.ADMIN };
+const hrAdmin = { id: "hr-user", role: Role.HR_ADMINISTRATOR };
 const employee = { id: "employee-user", role: Role.EMPLOYEE };
 const input = {
   employeeId: "employee-1",
@@ -28,27 +33,36 @@ const input = {
   openingBalance: "2",
   entitlement: "14",
   carryForward: "1.5",
+  reason: "Annual allowance for the 2026/27 period",
 };
 
 function createEntitlementDatabaseStub() {
   const employeeIds = new Set(["employee-1"]);
+  const employeeRoles = new Map<string, Role>([["employee-1", Role.EMPLOYEE]]);
   const leaveTypeIds = new Set(["leave-type-1", "leave-type-2"]);
   const records = new Map<string, Record<string, unknown>>();
   const audits: Record<string, unknown>[] = [];
+  let entitlementLookups = 0;
   let nextId = 1;
   const tx = {
     employee: {
+      findMany: async () => [{ id: "employee-1", name: "Ravi Employee", employeeId: "EMP-1", department: { name: "People" } }],
       findUnique: async ({ where }: { where: { id?: string; userId?: string } }) => {
-        if (where.id) return employeeIds.has(where.id) ? { id: where.id, userId: "employee-user" } : null;
-        if (where.userId === "employee-user") return { id: "employee-1", userId: "employee-user" };
+        if (where.id) return employeeIds.has(where.id) ? { id: where.id, name: "Ravi Employee", employeeId: "EMP-1", userId: "employee-user", user: { role: employeeRoles.get(where.id) ?? Role.EMPLOYEE }, department: { name: "People" }, shift: { workingDays: ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"] } } : null;
+        if (where.userId === "employee-user") return { id: "employee-1", userId: "employee-user", shift: { workingDays: ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"] } };
         return null;
       },
     },
     leaveType: {
+      findMany: async () => [{ id: "leave-type-1", name: "Annual" }],
       findUnique: async ({ where }: { where: { id: string } }) => leaveTypeIds.has(where.id) ? { id: where.id } : null,
     },
     leaveEntitlement: {
+      findMany: async ({ where }: { where: { employeeId: string; periodStart: { lte: Date }; periodEnd: { gte: Date } } }) => [...records.values()]
+        .filter((record) => record.employeeId === where.employeeId)
+        .map((record) => ({ ...record, leaveType: { id: record.leaveTypeId, name: "Annual" } })),
       findUnique: async ({ where }: { where: { employeeId_leaveTypeId_periodStart_periodEnd: { employeeId: string; leaveTypeId: string; periodStart: Date; periodEnd: Date } } }) => {
+        entitlementLookups += 1;
         const key = entitlementKey(where.employeeId_leaveTypeId_periodStart_periodEnd);
         return records.get(key) ?? null;
       },
@@ -66,6 +80,19 @@ function createEntitlementDatabaseStub() {
         return saved;
       },
     },
+    leaveRequest: {
+      findMany: async () => [{
+        id: "approved-request-1",
+        employeeId: "employee-1",
+        leaveTypeId: "leave-type-1",
+        status: "APPROVED",
+        startDate: new Date("2026-06-01T00:00:00.000Z"),
+        endDate: new Date("2026-06-05T00:00:00.000Z"),
+      }],
+    },
+    holiday: {
+      findMany: async () => [{ date: new Date("2026-06-03T00:00:00.000Z"), branch: "", applicableEmployeeGroups: [] }],
+    },
     attendanceAuditLog: {
       create: async ({ data }: { data: Record<string, unknown> }) => {
         audits.push(data);
@@ -74,9 +101,20 @@ function createEntitlementDatabaseStub() {
     },
   };
   const database = {
+    employee: {
+      findMany: async () => [{ id: "employee-1", name: "Ravi Employee", employeeId: "EMP-1", department: { name: "People" } }],
+      findUnique: tx.employee.findUnique,
+    },
+    leaveType: {
+      findMany: async () => [{ id: "leave-type-1", name: "Annual" }],
+      findUnique: tx.leaveType.findUnique,
+    },
+    leaveEntitlement: tx.leaveEntitlement,
+    leaveRequest: tx.leaveRequest,
+    holiday: tx.holiday,
     $transaction: async <T>(operation: (transaction: typeof tx) => Promise<T>) => operation(tx),
   } as never;
-  return { database, tx, records, audits, employeeIds, leaveTypeIds };
+  return { database, tx, records, audits, employeeIds, employeeRoles, leaveTypeIds, get entitlementLookups() { return entitlementLookups; } };
 }
 
 function entitlementKey(key: { employeeId: string; leaveTypeId: string; periodStart: Date; periodEnd: Date }) {
@@ -117,6 +155,7 @@ describe("Leave entitlement validation", () => {
     assert.equal(leaveEntitlementSchema.safeParse({ ...input, leaveTypeId: "" }).success, false);
     assert.equal(leaveEntitlementSchema.safeParse({ ...input, periodStart: "2026-02-30" }).success, false);
     assert.equal(leaveEntitlementSchema.safeParse({ ...input, periodEnd: "2026-03-31" }).success, false);
+    assert.equal(leaveEntitlementSchema.safeParse({ ...input, reason: " " }).success, false);
   });
 
   it("accepts zero and precise decimal quantities, and rejects negative or over-precision values", () => {
@@ -130,11 +169,104 @@ describe("Leave entitlement validation", () => {
 });
 
 describe("Leave entitlement management", () => {
-  it("requires ADMIN before any entitlement lookup or write", async () => {
+  it("allows HR to create, read, and update employee-specific entitlements while denying employees", async () => {
     const stub = createEntitlementDatabaseStub();
-    await assert.rejects(getLeaveEntitlement(employee, input, { leaveEntitlement: stub.tx.leaveEntitlement } as never), LeaveEntitlementAccessError);
+    await assert.rejects(getLeaveEntitlement(employee, input, stub.database), LeaveEntitlementAccessError);
     await assert.rejects(setLeaveEntitlement(employee, input, stub.database), LeaveEntitlementAccessError);
     assert.equal(stub.records.size, 0);
+
+    await setLeaveEntitlement(hrAdmin, input, stub.database);
+    assert.equal((await getLeaveEntitlement(hrAdmin, input, stub.database))?.entitlement.toString(), "14");
+    await setLeaveEntitlement(hrAdmin, { ...input, entitlement: "16", carryForward: "2", reason: "Approved carry-forward adjustment" }, stub.database);
+    assert.equal(stub.audits.at(-1)?.actorId, hrAdmin.id);
+    assert.equal(stub.audits.at(-1)?.reason, "Approved carry-forward adjustment");
+    assert.deepEqual(stub.audits.at(-1)?.newValues && (stub.audits.at(-1)?.newValues as { changedFields: string[] }).changedFields, ["entitlement", "carryForward"]);
+  });
+
+  it("denies HR direct writes and reads for administrator accounts without exposing their entitlement", async () => {
+    const stub = createEntitlementDatabaseStub();
+    stub.employeeIds.add("super-admin-employee");
+    stub.employeeRoles.set("super-admin-employee", Role.ADMIN);
+    stub.employeeIds.add("hr-admin-employee");
+    stub.employeeRoles.set("hr-admin-employee", Role.HR_ADMINISTRATOR);
+
+    for (const employeeId of ["super-admin-employee", "hr-admin-employee"]) {
+      const restrictedInput = { ...input, employeeId };
+      await assert.rejects(setLeaveEntitlement(hrAdmin, restrictedInput, stub.database), LeaveEntitlementEmployeeNotFoundError);
+      assert.equal(await getLeaveEntitlement(hrAdmin, restrictedInput, stub.database), null);
+      await assert.rejects(getManagedLeaveBalance(hrAdmin, restrictedInput, stub.database), LeaveEntitlementEmployeeNotFoundError);
+    }
+    assert.equal(stub.records.size, 0);
+    assert.equal(stub.audits.length, 0);
+    assert.equal(stub.entitlementLookups, 0);
+  });
+
+  it("preserves Super Administrator access to administrator-account entitlements", async () => {
+    const stub = createEntitlementDatabaseStub();
+    stub.employeeIds.add("hr-admin-employee");
+    stub.employeeRoles.set("hr-admin-employee", Role.HR_ADMINISTRATOR);
+
+    await setLeaveEntitlement(admin, { ...input, employeeId: "hr-admin-employee" }, stub.database);
+
+    assert.equal(stub.records.size, 1);
+    assert.equal(stub.audits[0]?.actorId, admin.id);
+  });
+
+  it("lists employee and leave-type choices only for HR or Super Administrators", async () => {
+    const stub = createEntitlementDatabaseStub();
+    assert.equal((await listLeaveEntitlementEmployees(hrAdmin, stub.database)).length, 1);
+    assert.equal((await listLeaveTypesForEntitlements(hrAdmin, stub.database)).length, 1);
+    await assert.rejects(listLeaveEntitlementEmployees(employee, stub.database), LeaveEntitlementAccessError);
+    await assert.rejects(listLeaveTypesForEntitlements(employee, stub.database), LeaveEntitlementAccessError);
+  });
+
+  it("calculates HR balance from credits minus approved scheduled leave for the exact period", async () => {
+    const stub = createEntitlementDatabaseStub();
+    await setLeaveEntitlement(hrAdmin, input, stub.database);
+
+    const result = await getManagedLeaveBalance(hrAdmin, input, stub.database);
+
+    assert.equal(result.employee.id, input.employeeId);
+    assert.equal(result.leaveType.id, input.leaveTypeId);
+    assert.equal(result.balance?.approvedLeaveUsed?.toString(), "4");
+    assert.equal(result.balance?.availableBalance?.toString(), "13.5");
+    assert.equal(result.balance?.scheduleUnavailable, false);
+  });
+
+  it("does not deduct cancelled Leave requests", async () => {
+    const usage = await calculateApprovedLeaveUsage({
+      employeeId: "employee-1",
+      leaveTypeId: "leave-type-1",
+      periodStart: "2026-04-01",
+      periodEnd: "2027-03-31",
+      approvedLeaves: [{
+        sourceId: "cancelled-request",
+        employeeId: "employee-1",
+        leaveTypeId: "leave-type-1",
+        status: "CANCELLED",
+        startDate: "2026-06-01",
+        endDate: "2026-06-05",
+      }],
+    }, { database: {
+      employee: { findUnique: async () => ({ id: "employee-1", userId: "employee-user", shift: { workingDays: [ShiftWeekday.MONDAY] } }) },
+      leaveType: { findUnique: async () => ({ id: "leave-type-1" }) },
+    } as never, resolveHolidayDates: async () => new Set<string>() });
+    assert.equal(usage.toString(), "0");
+  });
+
+  it("flags scoped holidays that cannot be attributed to an employee", async () => {
+    const stub = createEntitlementDatabaseStub();
+    (stub.database as unknown as { holiday: { findMany: () => Promise<{ date: Date; branch: string; applicableEmployeeGroups: string[] }[]> } }).holiday.findMany = async () => [{
+      date: new Date("2026-06-03T00:00:00.000Z"),
+      branch: "Colombo",
+      applicableEmployeeGroups: [],
+    }];
+    await setLeaveEntitlement(hrAdmin, input, stub.database);
+
+    const result = await getManagedLeaveBalance(hrAdmin, input, stub.database);
+
+    assert.equal(result.balance?.approvedLeaveUsed?.toString(), "5");
+    assert.equal(result.balance?.scopedHolidaysUnresolved, true);
   });
 
   it("gets the entitlement for the exact Employee, Leave Type, and explicit period and keeps periods independent", async () => {
@@ -143,7 +275,7 @@ describe("Leave entitlement management", () => {
     await setLeaveEntitlement(admin, { ...input, leaveTypeId: "leave-type-2", entitlement: "9" }, stub.database);
     const nextPeriod = { ...input, periodStart: "2027-04-01", periodEnd: "2028-03-31", entitlement: "4" };
     await setLeaveEntitlement(admin, nextPeriod, stub.database);
-    const database = { leaveEntitlement: stub.tx.leaveEntitlement } as never;
+    const database = stub.database;
     const saved = await getLeaveEntitlement(admin, input, database);
     const otherType = await getLeaveEntitlement(admin, { ...input, leaveTypeId: "leave-type-2" }, database);
     const otherPeriod = await getLeaveEntitlement(admin, nextPeriod, database);
@@ -174,10 +306,22 @@ describe("Leave entitlement management", () => {
     assert.equal(JSON.stringify(stub.audits).includes("16"), false);
     assert.equal(stub.audits[0]?.actionType, "LEAVE_ENTITLEMENT_CREATED");
     assert.equal(stub.audits[1]?.actionType, "LEAVE_ENTITLEMENT_UPDATED");
+    assert.equal(stub.audits[1]?.reason, input.reason);
   });
 });
 
 describe("Leave balance calculation", () => {
+  it("shows employee self-service remaining balances calculated from approved scheduled Leave", async () => {
+    const stub = createEntitlementDatabaseStub();
+    await setLeaveEntitlement(admin, input, stub.database);
+
+    const balances = await listOwnLeaveBalances(employee, stub.database);
+
+    assert.equal(balances.length, 1);
+    assert.equal(balances[0]?.balance.approvedLeaveUsed?.toString(), "4");
+    assert.equal(balances[0]?.balance.availableBalance?.toString(), "13.5");
+  });
+
   it("lists only the authenticated Employee's entitlement credits for periods active today", async () => {
     const stub = createOwnBalanceDatabaseStub();
     const result = await listOwnLeaveBalanceCredits(employee, stub.database);

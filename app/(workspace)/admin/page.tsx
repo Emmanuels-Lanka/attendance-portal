@@ -9,6 +9,7 @@ const sections = [
   { href: "/admin/designations", label: "Designations", description: "Manage employee designations", icon: BriefcaseBusiness },
   { href: "/admin/shifts", label: "Shifts", description: "Manage employee shifts", icon: Clock3 },
   { href: "/admin/leave-types", label: "Leave Types", description: "Manage configurable Leave Types", icon: BriefcaseBusiness },
+  { href: "/admin/leave-balances", label: "Leave balances", description: "Review employee leave credits and calculated balances", icon: BriefcaseBusiness },
   { href: "/admin/attendance", label: "Attendance", description: "Organization attendance records", icon: CalendarDays },
   { href: "/admin/reports", label: "Reports", description: "Organization reporting foundation", icon: ChartNoAxesColumn },
   { href: "/admin/settings", label: "Settings", description: "Policy configuration foundation", icon: SlidersHorizontal },

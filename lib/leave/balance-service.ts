@@ -3,7 +3,7 @@ import "server-only";
 import { Prisma, type PrismaClient, type Role } from "@prisma/client";
 import { hasPermission } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
-import { calculateEmployeeLeaveWorkdays, type LeaveHolidayResolver } from "@/lib/leave/workdays";
+import { calculateEmployeeLeaveWorkdays, LeaveWorkdayScheduleError, type LeaveHolidayResolver } from "@/lib/leave/workdays";
 import {
   approvedLeaveUsageInputSchema,
   leaveEntitlementLookupSchema,
@@ -13,9 +13,10 @@ import {
 
 type LeaveBalanceAdmin = { id: string; role: Role };
 type LeaveBalanceEmployee = { id: string; role: Role };
-type LeaveEntitlementReadDatabase = Pick<PrismaClient, "leaveEntitlement">;
+type LeaveEntitlementReadDatabase = Pick<PrismaClient, "employee" | "leaveEntitlement">;
 type OwnLeaveBalanceReadDatabase = Pick<PrismaClient, "employee" | "leaveEntitlement">;
 type LeaveEntitlementTransactionDatabase = Pick<PrismaClient, "$transaction">;
+type LeaveEntitlementManagementDatabase = Pick<PrismaClient, "employee" | "leaveType" | "leaveEntitlement" | "leaveRequest" | "holiday">;
 type LeaveQuantity = Prisma.Decimal | string | number;
 
 export class LeaveBalanceAccessError extends Error {
@@ -27,7 +28,7 @@ export class LeaveBalanceAccessError extends Error {
 
 export class LeaveEntitlementAccessError extends Error {
   constructor() {
-    super("Only administrators can manage Leave entitlements.");
+    super("Only HR Administrators and Super Administrators can manage Leave entitlements.");
     this.name = "LeaveEntitlementAccessError";
   }
 }
@@ -67,8 +68,20 @@ export class InsufficientLeaveBalanceError extends Error {
   }
 }
 
-function assertAdmin(admin: LeaveBalanceAdmin) {
-  if (admin.role !== "ADMIN") throw new LeaveEntitlementAccessError();
+function assertCanManageLeave(admin: LeaveBalanceAdmin) {
+  if (admin.role !== "ADMIN" && !hasPermission(admin.role, "leave:manage")) {
+    throw new LeaveEntitlementAccessError();
+  }
+}
+
+function canHrManageEmployee(employee: { user: { role: Role } | null }) {
+  return employee.user !== null && ["EMPLOYEE", "SUPERVISOR", "DEPARTMENT_MANAGER"].includes(employee.user.role);
+}
+
+function assertCanManageEmployee(admin: LeaveBalanceAdmin, employee: { user: { role: Role } | null }) {
+  if (admin.role === "HR_ADMINISTRATOR" && !canHrManageEmployee(employee)) {
+    throw new LeaveEntitlementEmployeeNotFoundError();
+  }
 }
 
 function assertEmployeeSelfAccess(actor: LeaveBalanceEmployee | null): asserts actor is LeaveBalanceEmployee {
@@ -110,6 +123,7 @@ export async function listOwnLeaveBalanceCredits(
     },
     select: {
       id: true,
+      employeeId: true,
       periodStart: true,
       periodEnd: true,
       openingBalance: true,
@@ -118,6 +132,29 @@ export async function listOwnLeaveBalanceCredits(
       leaveType: { select: { id: true, name: true } },
     },
     orderBy: [{ leaveType: { name: "asc" } }, { periodStart: "asc" }, { id: "asc" }],
+  });
+}
+
+export async function listLeaveEntitlementEmployees(
+  admin: LeaveBalanceAdmin,
+  database: Pick<PrismaClient, "employee"> = prisma,
+) {
+  assertCanManageLeave(admin);
+  return database.employee.findMany({
+    where: { user: { is: { role: { in: ["EMPLOYEE", "SUPERVISOR", "DEPARTMENT_MANAGER"] } } } },
+    select: { id: true, name: true, employeeId: true, department: { select: { name: true } } },
+    orderBy: [{ name: "asc" }, { id: "asc" }],
+  });
+}
+
+export async function listLeaveTypesForEntitlements(
+  admin: LeaveBalanceAdmin,
+  database: Pick<PrismaClient, "leaveType"> = prisma,
+) {
+  assertCanManageLeave(admin);
+  return database.leaveType.findMany({
+    select: { id: true, name: true },
+    orderBy: [{ name: "asc" }, { id: "asc" }],
   });
 }
 
@@ -142,8 +179,14 @@ export async function getLeaveEntitlement(
   input: unknown,
   database: LeaveEntitlementReadDatabase = prisma,
 ) {
-  assertAdmin(admin);
+  assertCanManageLeave(admin);
   const { employeeId, leaveTypeId, periodStart, periodEnd } = leaveEntitlementLookupSchema.parse(input);
+  const employee = await database.employee.findUnique({
+    where: { id: employeeId },
+    select: { user: { select: { role: true } } },
+  });
+  if (!employee) return null;
+  if (admin.role === "HR_ADMINISTRATOR" && !canHrManageEmployee(employee)) return null;
   return database.leaveEntitlement.findUnique({
     where: {
       employeeId_leaveTypeId_periodStart_periodEnd: {
@@ -161,15 +204,17 @@ export async function setLeaveEntitlement(
   input: unknown,
   database: LeaveEntitlementTransactionDatabase = prisma,
 ) {
-  assertAdmin(admin);
+  assertCanManageLeave(admin);
   const parsed = leaveEntitlementSchema.parse(input);
+  const { reason, ...credits } = parsed;
 
   return database.$transaction(async (transaction) => {
     const employee = await transaction.employee.findUnique({
       where: { id: parsed.employeeId },
-      select: { id: true, userId: true },
+      select: { id: true, userId: true, user: { select: { role: true } } },
     });
     if (!employee) throw new LeaveEntitlementEmployeeNotFoundError();
+    assertCanManageEmployee(admin, employee);
     const leaveType = await transaction.leaveType.findUnique({
       where: { id: parsed.leaveTypeId },
       select: { id: true },
@@ -188,14 +233,14 @@ export async function setLeaveEntitlement(
     const entitlement = await transaction.leaveEntitlement.upsert({
       where: uniqueKey,
       create: {
-        ...parsed,
+        ...credits,
         periodStart: asDatabaseDate(parsed.periodStart),
         periodEnd: asDatabaseDate(parsed.periodEnd),
       },
       update: {
-        openingBalance: parsed.openingBalance,
-        entitlement: parsed.entitlement,
-        carryForward: parsed.carryForward,
+        openingBalance: credits.openingBalance,
+        entitlement: credits.entitlement,
+        carryForward: credits.carryForward,
       },
     });
     const changedFields = previous
@@ -227,7 +272,7 @@ export async function setLeaveEntitlement(
             periodEnd: parsed.periodEnd,
             changedFields,
           },
-          reason: "Administrator changed Leave entitlement credits; balance quantities are omitted.",
+          reason,
         },
         select: { id: true },
       });
@@ -235,6 +280,133 @@ export async function setLeaveEntitlement(
 
     return entitlement;
   });
+}
+
+type LeaveBalanceCalculationDatabase = Pick<PrismaClient, "employee" | "leaveType" | "leaveRequest" | "holiday">;
+
+async function calculateEntitlementBalance(
+  input: { employeeId: string; leaveTypeId: string; periodStart: string; periodEnd: string },
+  credits: { openingBalance: LeaveQuantity; entitlement: LeaveQuantity; carryForward: LeaveQuantity },
+  database: LeaveBalanceCalculationDatabase,
+) {
+  const approvedRequests = await database.leaveRequest.findMany({
+    where: {
+      employeeId: input.employeeId,
+      leaveTypeId: input.leaveTypeId,
+      status: "APPROVED",
+      startDate: { lte: asDatabaseDate(input.periodEnd) },
+      endDate: { gte: asDatabaseDate(input.periodStart) },
+    },
+    select: { id: true, employeeId: true, leaveTypeId: true, status: true, startDate: true, endDate: true },
+    orderBy: [{ startDate: "asc" }, { id: "asc" }],
+  });
+  const holidayDates: string[] = [];
+  const rangeStart = asDatabaseDate(input.periodStart);
+  const rangeEnd = asDatabaseDate(input.periodEnd);
+  const holidays = await database.holiday.findMany({
+    where: { date: { gte: rangeStart, lte: rangeEnd } },
+    select: { date: true, branch: true, applicableEmployeeGroups: true },
+  });
+  let scopedHolidaysUnresolved = false;
+  for (const holiday of holidays) {
+    if (holiday.branch || holiday.applicableEmployeeGroups.length > 0) scopedHolidaysUnresolved = true;
+    else holidayDates.push(holiday.date.toISOString().slice(0, 10));
+  }
+
+  try {
+    const approvedLeaveUsed = await calculateApprovedLeaveUsage({
+      ...input,
+      approvedLeaves: approvedRequests.map((request) => ({
+        sourceId: request.id,
+        employeeId: request.employeeId,
+        leaveTypeId: request.leaveTypeId,
+        status: request.status,
+        startDate: request.startDate.toISOString().slice(0, 10),
+        endDate: request.endDate.toISOString().slice(0, 10),
+      })),
+    }, {
+      database,
+      resolveHolidayDates: async ({ startDate, endDate }) => new Set(
+        holidayDates.filter((date) => date >= startDate && date <= endDate),
+      ),
+    });
+    return {
+      approvedLeaveUsed,
+      availableBalance: calculateAvailableLeaveBalance(credits, approvedLeaveUsed),
+      scopedHolidaysUnresolved,
+      scheduleUnavailable: false,
+    };
+  } catch (error) {
+    if (!(error instanceof LeaveWorkdayScheduleError)) throw error;
+    return {
+      approvedLeaveUsed: null,
+      availableBalance: null,
+      scopedHolidaysUnresolved,
+      scheduleUnavailable: true,
+    };
+  }
+}
+
+export async function getManagedLeaveBalance(
+  admin: LeaveBalanceAdmin,
+  input: unknown,
+  database: LeaveEntitlementManagementDatabase = prisma,
+) {
+  assertCanManageLeave(admin);
+  const parsed = leaveEntitlementLookupSchema.parse(input);
+  const employee = await database.employee.findUnique({
+    where: { id: parsed.employeeId },
+    select: { id: true, name: true, employeeId: true, userId: true, user: { select: { role: true } }, department: { select: { name: true } } },
+  });
+  if (!employee) throw new LeaveEntitlementEmployeeNotFoundError();
+  assertCanManageEmployee(admin, employee);
+
+  const [leaveType, entitlement] = await Promise.all([
+    database.leaveType.findUnique({ where: { id: parsed.leaveTypeId }, select: { id: true, name: true } }),
+    database.leaveEntitlement.findUnique({
+      where: {
+        employeeId_leaveTypeId_periodStart_periodEnd: {
+          employeeId: parsed.employeeId,
+          leaveTypeId: parsed.leaveTypeId,
+          periodStart: asDatabaseDate(parsed.periodStart),
+          periodEnd: asDatabaseDate(parsed.periodEnd),
+        },
+      },
+    }),
+  ]);
+  if (!leaveType) throw new LeaveEntitlementTypeNotFoundError();
+
+  const balance = entitlement
+    ? await calculateEntitlementBalance(parsed, entitlement, database)
+    : null;
+  return {
+    employee: {
+      id: employee.id,
+      name: employee.name,
+      employeeId: employee.employeeId,
+      department: employee.department,
+    },
+    leaveType,
+    entitlement,
+    balance,
+  };
+}
+
+export async function listOwnLeaveBalances(
+  actor: LeaveBalanceEmployee | null,
+  database: LeaveEntitlementManagementDatabase = prisma,
+) {
+  assertEmployeeSelfAccess(actor);
+  const credits = await listOwnLeaveBalanceCredits(actor, database);
+  return Promise.all(credits.map(async (entitlement) => ({
+    ...entitlement,
+    balance: await calculateEntitlementBalance({
+      employeeId: entitlement.employeeId,
+      leaveTypeId: entitlement.leaveType.id,
+      periodStart: entitlement.periodStart.toISOString().slice(0, 10),
+      periodEnd: entitlement.periodEnd.toISOString().slice(0, 10),
+    }, entitlement, database),
+  })));
 }
 
 export async function calculateApprovedLeaveUsage(input: {

@@ -31,6 +31,7 @@ export async function decideLeaveRequestAction(
     });
     revalidatePath("/approvals/leave");
     revalidatePath("/leave");
+    revalidatePath("/leave/balance");
     return { success: result.status === "APPROVED" ? "Leave request approved." : "Leave request rejected." };
   } catch (error) {
     if (error instanceof z.ZodError) return { error: error.issues[0]?.message ?? "Check the decision." };

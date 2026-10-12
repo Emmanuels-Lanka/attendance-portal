@@ -35,6 +35,7 @@ export const leaveEntitlementSchema = z.object({
   openingBalance: leaveQuantitySchema,
   entitlement: leaveQuantitySchema,
   carryForward: leaveQuantitySchema,
+  reason: z.string().trim().min(1, "Enter a reason for the entitlement change.").max(500),
 }).refine((period) => period.periodEnd >= period.periodStart, {
   path: ["periodEnd"],
   message: "The entitlement period end must be on or after its start.",
@@ -59,7 +60,7 @@ export const approvedLeaveUsageInputSchema = z.array(z.object({
   sourceId: z.string().trim().min(1),
   employeeId: z.string().trim().min(1),
   leaveTypeId: z.string().trim().min(1),
-  status: z.enum(["PENDING", "APPROVED", "REJECTED"]),
+  status: z.enum(["PENDING", "APPROVED", "REJECTED", "CANCELLED"]),
   startDate: leaveDateSchema,
   endDate: leaveDateSchema,
 }).refine((item) => item.endDate >= item.startDate, {
