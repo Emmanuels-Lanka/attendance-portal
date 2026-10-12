@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Role } from "@prisma/client";
-import { hasPermission } from "./permissions";
+import { canReadScopedAttendance, hasPermission } from "./permissions";
 
 describe("role permissions", () => {
   it("preserves ADMIN as the full-access compatibility role", () => {
@@ -35,6 +35,14 @@ describe("role permissions", () => {
     assert.equal(hasPermission(Role.SUPERVISOR, "leave:approve"), true);
     assert.equal(hasPermission(Role.SUPERVISOR, "attendance:department:read"), false);
     assert.equal(hasPermission(Role.SUPERVISOR, "leave:manage"), false);
+    assert.equal(canReadScopedAttendance(Role.SUPERVISOR), true);
+  });
+
+  it("grants scoped attendance reads only to Department Managers and monitored Supervisors", () => {
+    assert.equal(canReadScopedAttendance(Role.DEPARTMENT_MANAGER), true);
+    assert.equal(canReadScopedAttendance(Role.HR_ADMINISTRATOR), false);
+    assert.equal(canReadScopedAttendance(Role.EMPLOYEE), false);
+    assert.equal(canReadScopedAttendance(Role.ADMIN), false);
   });
 
   it("keeps Employee permissions self-service only", () => {

@@ -6,7 +6,7 @@ import {
   dailyAttendanceFiltersSchema,
   listCalculatedDailyAttendance,
 } from "@/lib/attendance/daily-read";
-import { hasPermission } from "@/lib/auth/permissions";
+import { canReadScopedAttendance, hasPermission } from "@/lib/auth/permissions";
 import { requirePageUser } from "@/lib/auth/session";
 
 type SearchParams = Record<string, string | string[] | undefined>;
@@ -65,8 +65,7 @@ export default async function DailyAttendancePage({
   const actor = await requirePageUser();
   const canReadAttendance = actor.role === "ADMIN"
     || hasPermission(actor.role, "attendance:manage")
-    || hasPermission(actor.role, "attendance:department:read")
-    || (hasPermission(actor.role, "attendance:assigned:read") && hasPermission(actor.role, "attendance:monitor"));
+    || canReadScopedAttendance(actor.role);
   if (!canReadAttendance) redirect("/dashboard");
   const audienceLabel = actor.role === "HR_ADMINISTRATOR" ? "HR attendance"
     : actor.role === "DEPARTMENT_MANAGER" ? "Department attendance"

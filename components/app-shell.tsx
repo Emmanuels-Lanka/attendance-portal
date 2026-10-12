@@ -3,7 +3,7 @@ import { LogOut } from "lucide-react";
 import { AppNav, MobileNav } from "@/components/app-nav";
 import { logoutAction } from "@/app/(auth)/logout/action";
 import type { Role } from "@prisma/client";
-import { hasPermission } from "@/lib/auth/permissions";
+import { canReadScopedAttendance, hasPermission } from "@/lib/auth/permissions";
 
 type AppUser = { name: string; email: string; role: Role };
 
@@ -15,8 +15,7 @@ export function AppShell({ user, children }: { user: AppUser; children: React.Re
   const canManageEmployees = hasPermission(user.role, "employee:manage");
   const canReadTeamAttendance = user.role !== "ADMIN" && (
     hasPermission(user.role, "attendance:manage")
-    || hasPermission(user.role, "attendance:department:read")
-    || (hasPermission(user.role, "attendance:assigned:read") && hasPermission(user.role, "attendance:monitor"))
+    || canReadScopedAttendance(user.role)
   );
   const canManageShifts = hasPermission(user.role, "shift:manage");
   const canManageLeave = hasPermission(user.role, "leave:manage");

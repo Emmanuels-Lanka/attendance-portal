@@ -66,6 +66,7 @@ function createDatabase(options: {
   requesterExists?: boolean;
   supervisorUserId?: string | null;
   failDailyUpdate?: boolean;
+  changeSupervisorBeforeConditionalUpdate?: boolean;
 } = {}) {
   const sourceDaily = options.daily === undefined ? originalDaily : options.daily;
   const daily = sourceDaily ? structuredClone(sourceDaily) : null;
@@ -169,9 +170,15 @@ function createDatabase(options: {
           } : null,
         };
       },
-      updateMany: async ({ where, data }: { where: { id: string; status: AttendanceCorrectionStatus; currentApprovalStage: AttendanceCorrectionApprovalStage }; data: Record<string, unknown> }) => {
+      updateMany: async ({ where, data }: { where: { id: string; status: AttendanceCorrectionStatus; currentApprovalStage: AttendanceCorrectionApprovalStage; dailyAttendance?: { employee: { supervisor: { userId: string } } } }; data: Record<string, unknown> }) => {
         const request = requests.find(({ id }) => id === where.id);
-        if (!request || request.status !== where.status || request.currentApprovalStage !== where.currentApprovalStage) {
+        if (options.changeSupervisorBeforeConditionalUpdate) options.supervisorUserId = "other-supervisor";
+        if (
+          !request
+          || request.status !== where.status
+          || request.currentApprovalStage !== where.currentApprovalStage
+          || (where.dailyAttendance && (options.supervisorUserId ?? daily?.employee.supervisor?.userId) !== where.dailyAttendance.employee.supervisor.userId)
+        ) {
           return { count: 0 };
         }
         Object.assign(request, data);
@@ -509,6 +516,21 @@ describe("attendance correction approvals", () => {
     assert.equal(stub.audits.at(-1)?.actorId, supervisorActor.id);
     assert.equal(stub.audits.at(-1)?.correctionRequestId, request.id);
     assert.deepEqual(stub.notifications, []);
+  });
+
+  it("does not commit a Supervisor decision if employee assignment changes before the conditional update", async () => {
+    const stub = createDatabase({ changeSupervisorBeforeConditionalUpdate: true });
+    const request = await employeeCorrection(stub);
+
+    await assert.rejects(
+      decideDailyAttendanceCorrection(supervisorActor, request.id, { action: "APPROVE" }, stub.database),
+      DailyAttendanceCorrectionStageError,
+    );
+
+    assert.equal(stub.requests[0]?.status, AttendanceCorrectionStatus.PENDING);
+    assert.equal(stub.requests[0]?.currentApprovalStage, AttendanceCorrectionApprovalStage.SUPERVISOR);
+    assert.equal(stub.audits.length, 1);
+    assert.equal(stub.daily?.lastOut, null);
   });
 
   it("allows the assigned Supervisor to reject and records the rejection", async () => {

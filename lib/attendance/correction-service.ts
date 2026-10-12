@@ -433,6 +433,9 @@ export async function decideDailyAttendanceCorrection(
         id: correction.id,
         status: AttendanceCorrectionStatus.PENDING,
         currentApprovalStage: correction.currentApprovalStage,
+        ...(correction.currentApprovalStage === AttendanceCorrectionApprovalStage.SUPERVISOR
+          ? { dailyAttendance: { employee: { supervisor: { userId: actor.id } } } }
+          : {}),
       },
       data: {
         status,

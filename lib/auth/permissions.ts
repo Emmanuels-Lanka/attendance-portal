@@ -77,3 +77,8 @@ export function hasPermission(role: Role, permission: Permission) {
   if (role === "ADMIN") return true;
   return rolePermissions[role].includes(permission);
 }
+
+export function canReadScopedAttendance(role: Role) {
+  return role !== "ADMIN" && (hasPermission(role, "attendance:department:read")
+    || (hasPermission(role, "attendance:assigned:read") && hasPermission(role, "attendance:monitor")));
+}
