@@ -12,7 +12,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
       <div className="flex flex-1 items-center justify-center px-4 py-8 sm:px-8 sm:py-12">
         <section className="w-full max-w-2xl rounded-xl border border-slate-200 bg-white px-6 py-7 shadow-xl sm:px-12 sm:py-10">
           <div className="mb-7 flex flex-col items-center justify-center text-center">
-            <Image src="/eml-company-logo.jpg" alt="Emmanuel's Lanka Pvt Ltd" width={768} height={768} priority className="mb-3 size-24 object-contain" />
+            <Image src="/eml-company-logo.png" alt="Emmanuel's Lanka Pvt Ltd" width={768} height={768} priority className="mb-3 size-24 object-contain" />
             <h1 className="text-lg font-medium text-slate-900">EML – Attendance Management System</h1>
             <p className="mt-1 text-sm font-medium text-slate-600">Emmanuel&apos;s Lanka Pvt Ltd</p>
             <p className="mt-2 max-w-sm text-sm leading-6 text-slate-500">Sign in to view your attendance records and work sessions.</p>

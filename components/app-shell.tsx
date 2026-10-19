@@ -32,7 +32,7 @@ export function AppShell({ user, children }: { user: AppUser; children: React.Re
     <div className="min-h-screen md:flex">
       <aside className="fixed inset-y-0 z-40 hidden w-64 shrink-0 flex-col bg-[var(--sidebar)] text-white md:flex">
         <div className="flex h-[70px] items-center gap-3 border-b border-white/15 px-5">
-          <Image src="/eml-company-logo.jpg" alt="Emmanuel's Lanka Pvt Ltd" width={768} height={768} priority className="size-11 shrink-0 object-contain" />
+          <Image src="/eml-company-logo.png" alt="Emmanuel's Lanka Pvt Ltd" width={768} height={768} priority className="size-11 shrink-0 object-contain" />
           <div className="min-w-0">
             <p className="text-xs font-semibold leading-4">EML – Attendance Management System</p>
             <p className="mt-0.5 text-[10px] leading-3 text-white/70">Emmanuel&apos;s Lanka Pvt Ltd</p>
@@ -48,7 +48,7 @@ export function AppShell({ user, children }: { user: AppUser; children: React.Re
         <header className="sticky top-0 z-30 flex h-[70px] items-center justify-between border-b border-[var(--line)] bg-white px-4 shadow-sm sm:px-7">
           <div className="flex items-center gap-3 md:hidden">
             <MobileNav isAdmin={user.role === "ADMIN"} canManageEmployees={canManageEmployees} canReadTeamAttendance={canReadTeamAttendance} canManageShifts={canManageShifts} canManageLeave={canManageLeave} canReadLeaveBalance={canReadLeaveBalance} canReviewCorrections={canReviewCorrections} canReviewLeave={canReviewLeave} canReadReports={canReadReports} canReadDepartmentReports={canReadDepartmentReports} canSubmitOvertime={canSubmitOvertime} canReviewOvertime={canReviewOvertime} canSubmitWorkFromHome={canSubmitWorkFromHome} canReviewWorkFromHome={canReviewWorkFromHome} user={user} />
-            <Image src="/eml-company-logo.jpg" alt="Emmanuel's Lanka Pvt Ltd" width={768} height={768} priority className="size-9 shrink-0 rounded-sm bg-white object-contain" />
+            <Image src="/eml-company-logo.png" alt="Emmanuel's Lanka Pvt Ltd" width={768} height={768} priority className="size-9 shrink-0 object-contain" />
           </div>
           <div className="hidden min-w-0 items-center gap-3 md:flex">
             <span className="grid size-9 place-items-center rounded-full bg-slate-100 text-xs font-bold text-[var(--blue)]">{initials || "U"}</span>

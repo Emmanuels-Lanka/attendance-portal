@@ -95,7 +95,7 @@ export async function createMonthlyAttendancePdf({
   summary: PdfSummary;
   title: string;
 }) {
-  const logo = await readFile(resolveProjectAssetPath("public", "eml-company-logo.jpg"));
+  const logo = await readFile(resolveProjectAssetPath("public", "eml-company-logo.png"));
   const fontDir = resolveProjectAssetPath("public", "fonts");
   const pdf = new PDFDocument({ size: "A4", margins: { top: 40, right: 40, bottom: 48, left: 40 }, bufferPages: true });
   pdf.registerFont("AppHelvetica", join(fontDir, "Helvetica.ttf"));

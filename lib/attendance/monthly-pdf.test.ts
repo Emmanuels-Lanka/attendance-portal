@@ -222,8 +222,10 @@ describe("monthly attendance PDF export", () => {
 
   it("includes PDFKit's dynamically loaded standard-font modules in every route trace", () => {
     const tracePattern = "./node_modules/pdfkit/js/standard-fonts/**/*.cjs";
+    const logoPath = "./public/eml-company-logo.png";
     for (const route of ["/reports/export", "/reports/monthly/export", "/admin/reports/export"]) {
       assert.ok(nextConfig.outputFileTracingIncludes?.[route]?.includes(tracePattern));
+      assert.ok(nextConfig.outputFileTracingIncludes?.[route]?.includes(logoPath));
     }
   });
 });

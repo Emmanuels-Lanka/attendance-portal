@@ -128,7 +128,7 @@ export function MobileNav({ isAdmin, canManageEmployees, canReadTeamAttendance, 
           <aside id="mobile-navigation" role="dialog" aria-modal="true" aria-label="Mobile navigation" className="relative flex h-full w-64 max-w-[85vw] flex-col bg-[var(--sidebar)] text-white shadow-xl">
             <div className="flex h-[70px] items-center justify-between border-b border-white/15 px-5">
               <div className="flex min-w-0 items-center gap-3">
-                <Image src="/eml-company-logo.jpg" alt="Emmanuel's Lanka Pvt Ltd" width={768} height={768} className="size-11 shrink-0 rounded-sm bg-white object-contain" />
+                <Image src="/eml-company-logo.png" alt="Emmanuel's Lanka Pvt Ltd" width={768} height={768} className="size-11 shrink-0 object-contain" />
                 <div className="min-w-0">
                   <p className="text-xs font-semibold leading-4">EML – Attendance Management System</p>
                   <p className="mt-0.5 text-[10px] leading-3 text-white/70">Emmanuel&apos;s Lanka Pvt Ltd</p>

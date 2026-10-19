@@ -15,7 +15,7 @@ This work does not claim that the application has been deployed or is production
 - `prisma.config.ts`, `prisma/schema.prisma`, `prisma/migrations/`, and migration lock: PostgreSQL provider and two checked-in migrations.
 - `lib/prisma.ts`: module-scoped Prisma client, development-only global reuse, production error-only Prisma logging.
 - Authentication: JWT session uses `SESSION_SECRET`, issuer/audience and HS256 verification; seven-day `httpOnly`, `SameSite=Lax` cookie with `Secure` in production. Page and action paths enforce employee/admin authorization.
-- Server actions and route handlers use Next.js server APIs. PDF exports use Node/PDFKit and the production route traces include `public/eliot-logo.png` for both export handlers.
+- Server actions and route handlers use Next.js server APIs. PDF exports use Node/PDFKit and the production route traces include `public/eml-company-logo.png` for the export handlers.
 - Environment references: `DATABASE_URL`, `DIRECT_URL`, `SESSION_SECRET`, five one-time `ADMIN_*` seed variables, plus `NODE_ENV`. No application base URL or other integration variable is read.
 - `.gitignore` excludes `.env` and `.env.*`, with `.env.example` explicitly allowed. Local `.env` values were not displayed or committed.
 - Current branch was `main`, initially equal to `origin/main`. No unrelated worktree changes were present.
