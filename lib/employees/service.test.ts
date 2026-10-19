@@ -20,7 +20,7 @@ import {
   updateEmployee,
   writeEmployeeAuditEvent,
 } from "@/lib/employees/service";
-import { createEmployeeSchema } from "@/lib/employees/validation";
+import { createEmployeeSchema, updateEmployeeSchema } from "@/lib/employees/validation";
 import { OrganizationNotFoundError } from "@/lib/organization/service";
 import { ShiftNotFoundError } from "@/lib/shifts/service";
 
@@ -30,6 +30,7 @@ const employeeInput = {
   name: "Ravi Employee",
   employeeCode: "EMP-1001",
   email: "ravi@example.com",
+  username: "ravi.employee",
   password: "Employee-Test-Password-2026",
   role: Role.EMPLOYEE,
   countryCode: "LK",
@@ -114,6 +115,7 @@ describe("employee management", () => {
 
     assert.equal(created.email, "ravi@example.com");
     assert.equal(created.isActive, true);
+    assert.equal(stub.getCreateData()?.username, "ravi.employee");
     assert.equal("passwordHash" in created, false);
     assert.equal("passwordHash" in (stub.getCreateSelect() ?? {}), false);
     assert.notEqual(stub.getCreateData()?.passwordHash, employeeInput.password);
@@ -204,6 +206,30 @@ describe("employee management", () => {
     }
   });
 
+  it("normalizes usernames and enforces the agreed format and length", () => {
+    const normalized = createEmployeeSchema.safeParse({ ...employeeInput, username: "Ravi.Employee-1" });
+    const lowercase = createEmployeeSchema.safeParse({ ...employeeInput, username: "ravi.employee-1" });
+    assert.equal(normalized.success, true);
+    assert.equal(lowercase.success, true);
+    if (normalized.success && lowercase.success) {
+      assert.equal(normalized.data.username, "ravi.employee-1");
+      assert.equal(normalized.data.username, lowercase.data.username);
+    }
+
+    for (const username of ["ab", "a".repeat(31), "bad name", "bad@name", "bad/name", ""]) {
+      assert.equal(createEmployeeSchema.safeParse({ ...employeeInput, username }).success, false, username);
+    }
+    assert.equal(createEmployeeSchema.safeParse({ ...employeeInput, username: "abc" }).success, true);
+    assert.equal(createEmployeeSchema.safeParse({ ...employeeInput, username: "a".repeat(30) }).success, true);
+  });
+
+  it("requires usernames for new accounts but permits legacy accounts to remain username-less", () => {
+    assert.equal(createEmployeeSchema.safeParse({ ...employeeInput, username: undefined }).success, false);
+    const updated = updateEmployeeSchema.safeParse({ ...employeeInput, password: "", username: "" });
+    assert.equal(updated.success, true);
+    if (updated.success) assert.equal(updated.data.username, null);
+  });
+
   it("requires profile onboarding for every non-administrator role", async () => {
     const stub = createDatabaseStub();
     await createEmployee(admin, { ...employeeInput, role: Role.SUPERVISOR }, stub.database);
@@ -218,7 +244,7 @@ describe("employee management", () => {
   });
 
   it("translates duplicate email and employee code constraints", async () => {
-    for (const target of ["email", "employeeCode", "employeeId", "nic"]) {
+    for (const target of ["email", "username", "employeeCode", "employeeId", "nic"]) {
       const database = {
         user: {
           create: async () => {
@@ -250,6 +276,7 @@ describe("employee management", () => {
 
     await updateEmployee(admin, "employee-1", { ...employeeInput, name: "Updated Employee", employeeCode: "EMP-1002", password: "" }, stub.database);
 
+    assert.equal(stub.getUpdateData()?.username, employeeInput.username);
     assert.deepEqual(stub.getUpdateData()?.employee, {
       upsert: {
         create: { name: "Updated Employee", employeeId: "EMP-1002", departmentId: null, designationId: null, shiftId: null, supervisorId: null, managerId: null, profileOnboardingRequired: false },
@@ -524,6 +551,24 @@ describe("employee management", () => {
     assert.equal(stub.getUpdateData(), undefined);
   });
 
+  it("normalizes updated usernames and translates case-insensitive unique-index conflicts", async () => {
+    const stub = createDatabaseStub();
+    await createEmployee(admin, employeeInput, stub.database);
+    await updateEmployee(admin, "employee-1", { ...employeeInput, username: "RAVI-UPDATED", password: "" }, stub.database);
+    assert.equal(stub.getUpdateData()?.username, "ravi-updated");
+
+    const database = {
+      user: {
+        create: async () => { throw { code: "P2002", meta: { target: "User_username_lower_key" } }; },
+      },
+    } as never;
+    await assert.rejects(createEmployee(admin, { ...employeeInput, username: "RAVI.EMPLOYEE" }, database), (error: unknown) => {
+      assert.ok(error instanceof EmployeeDuplicateError);
+      assert.equal(error.field, "username");
+      return true;
+    });
+  });
+
   it("translates duplicate Employee ID and NIC conflicts during update", async () => {
     for (const target of ["employeeId", "nic"]) {
       const database = {
@@ -637,13 +682,13 @@ describe("employee management", () => {
 
   it("keeps audit payloads to changed field names rather than personal values", () => {
     const changedFields = changedEmployeeFieldNames(
-      { name: "Before", nic: "SECRET-NIC", email: "before@example.com" },
-      { name: "After", nic: "SECRET-NIC", email: "after@example.com" },
+      { name: "Before", nic: "SECRET-NIC", email: "before@example.com", loginUsername: "before.user" },
+      { name: "After", nic: "SECRET-NIC", email: "after@example.com", loginUsername: "after.user" },
     );
     const metadata = employeeAuditMetadata(changedFields);
 
-    assert.deepEqual(changedFields, ["email", "name"]);
-    assert.deepEqual(metadata, { changedFields: ["email", "name"] });
+    assert.deepEqual(changedFields, ["email", "loginUsername", "name"]);
+    assert.deepEqual(metadata, { changedFields: ["email", "loginUsername", "name"] });
     assert.equal(JSON.stringify(metadata).includes("SECRET-NIC"), false);
     assert.equal(JSON.stringify(metadata).includes("after@example.com"), false);
   });

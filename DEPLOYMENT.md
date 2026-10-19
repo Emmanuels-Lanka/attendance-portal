@@ -24,7 +24,7 @@ Do not put credentials in Git, screenshots, issue text, build output, or this gu
    - `DATABASE_URL`: Neon pooled connection string.
    - `DIRECT_URL`: Neon direct connection string.
    - `SESSION_SECRET`: a unique random value with at least 32 characters. Generate a different value for Preview and Development; never use the example value.
-6. `ADMIN_NAME`, `ADMIN_EMAIL`, `ADMIN_COUNTRY_CODE`, `ADMIN_TIME_ZONE`, and `ADMIN_PASSWORD` are only required when running the one-time initial-admin seed. Do not run seeding from the Vercel build. Prefer a controlled, private operator environment for that one-time command and remove/unset those secrets afterward.
+6. `ADMIN_NAME`, `ADMIN_EMAIL`, `ADMIN_USERNAME`, `ADMIN_COUNTRY_CODE`, `ADMIN_TIME_ZONE`, and `ADMIN_PASSWORD` are only required when running the one-time initial-admin seed. Do not run seeding from the Vercel build. Prefer a controlled, private operator environment for that one-time command and remove/unset those secrets afterward.
 7. Deploy and inspect the build log and deployment status. Confirm the build has completed Prisma Client generation and Next.js compilation. A successful build does not prove that the database is migrated, reachable, or safe to use.
 
 No application base URL variable is currently read by the code. Redirects are relative paths, and production cookies are marked `Secure` based on `NODE_ENV=production`; HTTPS should remain enabled at the hosting edge.
@@ -84,6 +84,7 @@ Run it once from an operator-controlled environment with production credentials,
 | `SESSION_SECRET` | Runtime | Unique session-signing secret, minimum 32 characters |
 | `ADMIN_NAME` | One-time seed only | Initial administrator name |
 | `ADMIN_EMAIL` | One-time seed only | Initial administrator email |
+| `ADMIN_USERNAME` | One-time seed only | Initial administrator username (3–30 letters, numbers, periods, underscores, or hyphens) |
 | `ADMIN_COUNTRY_CODE` | One-time seed only | Two-letter country code |
 | `ADMIN_TIME_ZONE` | One-time seed only | Supported IANA timezone |
 | `ADMIN_PASSWORD` | One-time seed only | Strong initial password, at most 72 UTF-8 bytes |

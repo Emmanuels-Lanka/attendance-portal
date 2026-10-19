@@ -61,6 +61,7 @@ function employeeFormData(formData: FormData) {
     supervisorId: formData.get("supervisorId"),
     managerId: formData.get("managerId"),
     email: formData.get("email"),
+    username: formData.get("username"),
     password: formData.get("password"),
     role: formData.get("role"),
     countryCode: formData.get("countryCode"),
@@ -82,6 +83,7 @@ function employeeAuditSnapshot(employee: NonNullable<Awaited<ReturnType<typeof l
     supervisorId: employee.supervisorId,
     managerId: employee.managerId,
     loginEmail: employee.user?.email,
+    loginUsername: employee.user?.username,
     role: employee.user?.role,
     isActive: employee.user?.isActive,
     countryCode: employee.user?.countryCode,
@@ -115,7 +117,7 @@ export async function createEmployeeAction(_state: EmployeeActionState, formData
         employeeId: created.id,
         actorId: admin.id,
         actionType: "EMPLOYEE_CREATED",
-        changedFields: ["name", "employeeId", "nic", "epfId", "etfId", "departmentId", "designationId", "shiftId", "supervisorId", "managerId", "loginEmail", "role", "countryCode", "timeZone"],
+        changedFields: ["name", "employeeId", "nic", "epfId", "etfId", "departmentId", "designationId", "shiftId", "supervisorId", "managerId", "loginEmail", "loginUsername", "role", "countryCode", "timeZone"],
       });
       return created;
     });

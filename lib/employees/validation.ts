@@ -28,6 +28,14 @@ const employeeFields = {
   timeZone: z.string().trim().refine(isIanaTimeZone, "Choose a valid IANA timezone."),
 };
 
+const usernamePattern = /^[a-z0-9._-]{3,30}$/;
+const usernameMessage = "Username must be 3-30 characters using letters, numbers, periods, underscores, or hyphens.";
+const usernameSchema = z.string().trim().toLowerCase().regex(usernamePattern, usernameMessage);
+const optionalUsernameSchema = z.preprocess(
+  (value) => value === undefined ? undefined : value === null || typeof value === "string" && value.trim() === "" ? null : value,
+  z.string().trim().toLowerCase().regex(usernamePattern, usernameMessage).nullable(),
+).optional();
+
 function optionalNullableText(maxLength: number) {
   return z.preprocess(
     (value) => value === undefined ? undefined : value === null ? null : value,
@@ -95,6 +103,7 @@ function validateLocation(countryCode: string, timeZone: string, context: z.Refi
 
 export const createEmployeeSchema = z.object({
   ...employeeFields,
+  username: usernameSchema,
   employeeCode: z.string().trim().min(1, "Employee ID is required.").max(50),
   ...employeeIdentityFields,
   ...organizationAssignmentsSchema,
@@ -106,6 +115,7 @@ export const createEmployeeSchema = z.object({
 
 export const updateEmployeeSchema = z.object({
   ...employeeFields,
+  username: optionalUsernameSchema,
   employeeCode: optionalNullableText(50),
   ...employeeIdentityFields,
   ...organizationAssignmentsSchema,

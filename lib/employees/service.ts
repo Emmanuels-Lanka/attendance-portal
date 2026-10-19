@@ -47,7 +47,7 @@ export const adminEmployeeSelect = {
   shift: { select: { id: true, name: true } },
   supervisor: { select: { id: true, name: true, employeeId: true } },
   manager: { select: { id: true, name: true, employeeId: true } },
-  user: { select: { id: true, email: true, role: true, isActive: true, countryCode: true, timeZone: true } },
+  user: { select: { id: true, email: true, username: true, role: true, isActive: true, countryCode: true, timeZone: true } },
   profile: {
     select: {
       permanentAddress: true,
@@ -115,8 +115,8 @@ export class EmployeeAdministratorAccountError extends Error {
 }
 
 export class EmployeeDuplicateError extends Error {
-  constructor(readonly field: "email" | "employeeCode" | "employeeId" | "nic" | "unknown") {
-    const label = field === "email" ? "login email" : field === "employeeCode" || field === "employeeId" ? "Employee ID" : "NIC";
+  constructor(readonly field: "email" | "username" | "employeeCode" | "employeeId" | "nic" | "unknown") {
+    const label = field === "email" ? "login email" : field === "username" ? "username" : field === "employeeCode" || field === "employeeId" ? "Employee ID" : "NIC";
     super(field === "unknown" ? "An employee with these details already exists." : `That ${label} is already in use.`);
     this.name = "EmployeeDuplicateError";
   }
@@ -193,13 +193,14 @@ async function assertCanManageExistingAccount(actor: EmployeeAdmin, employeeId: 
   }
 }
 
-function duplicateField(error: unknown): "email" | "employeeCode" | "employeeId" | "nic" | "unknown" | null {
+function duplicateField(error: unknown): "email" | "username" | "employeeCode" | "employeeId" | "nic" | "unknown" | null {
   if (!error || typeof error !== "object" || !("code" in error) || error.code !== "P2002") return null;
   const target = "meta" in error && error.meta && typeof error.meta === "object" && "target" in error.meta
     ? error.meta.target
     : undefined;
   const targetText = Array.isArray(target) ? target.join(",") : String(target ?? "");
   if (targetText.includes("email")) return "email";
+  if (targetText.toLowerCase().includes("username")) return "username";
   if (targetText.includes("employeeCode")) return "employeeCode";
   if (targetText.includes("employeeId")) return "employeeId";
   if (targetText.includes("nic")) return "nic";

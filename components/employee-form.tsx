@@ -19,6 +19,7 @@ type EmployeeFormValues = {
   supervisorId: string | null;
   managerId: string | null;
   email: string;
+  username: string | null;
   role: Role;
   countryCode: string;
   timeZone: string;
@@ -131,6 +132,10 @@ export function EmployeeForm({
         <div>
           <label htmlFor="email" className="mb-2 block text-sm font-semibold">Login email</label>
           <input id="email" name="email" type="email" autoComplete="email" required maxLength={254} defaultValue={employee?.email} className="h-10 w-full rounded-md border border-[var(--line)] bg-white px-3 text-sm" />
+        </div>
+        <div>
+          <label htmlFor="username" className="mb-2 block text-sm font-semibold">Username</label>
+          <input id="username" name="username" autoComplete="username" autoCapitalize="none" required={!employee} minLength={3} maxLength={30} pattern="[A-Za-z0-9._-]{3,30}" defaultValue={employee?.username ?? ""} className="h-10 w-full rounded-md border border-[var(--line)] bg-white px-3 text-sm" />
         </div>
         <div>
           <label htmlFor="countryCode" className="mb-2 block text-sm font-semibold">Country code</label>

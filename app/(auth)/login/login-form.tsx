@@ -11,16 +11,16 @@ export function LoginForm({ passwordResetCompleted = false }: { passwordResetCom
   return (
     <form action={formAction} aria-busy={pending} className="mt-6 w-full space-y-6">
       <div>
-        <label htmlFor="email" className="mb-2 block text-base font-medium text-slate-700">Email</label>
+        <label htmlFor="username" className="mb-2 block text-base font-medium text-slate-700">Username</label>
         <input
-          id="email"
-          name="email"
-          type="email"
+          id="username"
+          name="identifier"
+          type="text"
           autoComplete="username"
           required
           maxLength={254}
           className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 ring-offset-white transition placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-          placeholder="Enter your email"
+          placeholder="Enter your username"
         />
       </div>
       <div>
