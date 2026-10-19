@@ -41,6 +41,7 @@ export async function GET(request: NextRequest) {
         earlyOutDays: report.summary.earlyOutDays,
         approvedLeaveDays: report.summary.approvedLeaveDays,
         holidayDays: report.summary.holidayDays,
+        unmatchedScopedHolidayDates: report.summary.unmatchedScopedHolidayDates,
         missingPunchDays: report.summary.missingPunchDays,
         weekendDays: report.summary.weekendDays,
         undeterminedDays: report.summary.undeterminedDays,

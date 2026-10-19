@@ -21,6 +21,7 @@ const totals: MonthlyAttendanceExportTotals = {
   earlyOutDays: 0,
   approvedLeaveDays: 1,
   holidayDays: 1,
+  unmatchedScopedHolidayDates: 1,
   missingPunchDays: 0,
   weekendDays: 4,
   undeterminedDays: 0,
@@ -59,6 +60,7 @@ const employees = [{
       approvedLeaveDays: 1,
       workFromHomeDays: 1,
       holidayDays: 1,
+      unmatchedScopedHolidayDates: 1,
       missingPunchDays: 0,
       weekendDays: 4,
       undeterminedDays: 0,
@@ -120,12 +122,14 @@ describe("monthly attendance report exports", () => {
     assert.equal(workbook.creator, "EML – Attendance Management System");
     assert.equal(workbook.company, "Emmanuel's Lanka Pvt Ltd");
     assert.equal(worksheet?.getCell(1, 1).value, "Month");
-    assert.equal(worksheet?.getCell(1, 17).value, "Absent days (saved)");
+    assert.equal(worksheet?.getCell(1, 17).value, "Potential scoped holiday dates not applied");
+    assert.equal(worksheet?.getCell(2, 17).value, 1);
+    assert.equal(worksheet?.getCell(1, 18).value, "Absent days (saved)");
     assert.equal(worksheet?.getCell(2, 4).value, '=HYPERLINK("https://example.invalid")');
     assert.equal(worksheet?.getCell(2, 5).value, "People, Research");
     assert.equal(worksheet?.getCell(3, 4).value, "TOTAL");
     assert.equal(worksheet?.getCell(3, 2).value, 1);
-    assert.equal(worksheet?.getCell(3, 25).value, 0);
+    assert.equal(worksheet?.getCell(3, 26).value, 0);
   });
 
   it("keeps headers and a zero-count totals row for an empty report", async () => {

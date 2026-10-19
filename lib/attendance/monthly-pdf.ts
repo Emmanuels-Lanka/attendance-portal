@@ -29,6 +29,7 @@ type PdfSummary = {
   earlyOutDays?: number | null;
   approvedLeaveDays?: number | null;
   holidayDays?: number | null;
+  unmatchedScopedHolidayDates?: number;
   missingPunchDays?: number | null;
   weekendDays?: number | null;
   undeterminedDays?: number | null;
@@ -61,7 +62,10 @@ export function overtimeSummaryText(summary: PdfSummary) {
 
 export function attendanceStatusSummaryText(summary: PdfSummary) {
   const absent = summary.absentDays === null || summary.absentDays === undefined ? "Not recorded" : String(summary.absentDays);
-  return `Attendance days: scheduled ${summary.totalWorkingDays ?? "Unavailable"}; present ${summary.presentDays ?? "Not calculated"}; late ${summary.lateDays ?? "Not calculated"}; early out ${summary.earlyOutDays ?? "Not calculated"}; approved leave ${summary.approvedLeaveDays ?? "Unavailable"}; WFH ${summary.workFromHomeDays ?? 0}; holidays ${summary.holidayDays ?? 0}; absent ${absent}; missing punch ${summary.missingPunchDays ?? "Not calculated"}; weekend ${summary.weekendDays ?? "Not calculated"}; undetermined ${summary.undeterminedDays ?? "Not calculated"}; calculated dates ${summary.totalCalculatedDays ?? 0}`;
+  const scopedHolidays = summary.unmatchedScopedHolidayDates
+    ? `; potential scoped holiday dates not applied ${summary.unmatchedScopedHolidayDates}`
+    : "";
+  return `Attendance days: scheduled ${summary.totalWorkingDays ?? "Unavailable"}; present ${summary.presentDays ?? "Not calculated"}; late ${summary.lateDays ?? "Not calculated"}; early out ${summary.earlyOutDays ?? "Not calculated"}; approved leave ${summary.approvedLeaveDays ?? "Unavailable"}; WFH ${summary.workFromHomeDays ?? 0}; holidays ${summary.holidayDays ?? 0}${scopedHolidays}; absent ${absent}; missing punch ${summary.missingPunchDays ?? "Not calculated"}; weekend ${summary.weekendDays ?? "Not calculated"}; undetermined ${summary.undeterminedDays ?? "Not calculated"}; calculated dates ${summary.totalCalculatedDays ?? 0}; approved leave excludes dates with attendance records`;
 }
 
 function safeCell(value: string, width: number, fontSize = 8) {

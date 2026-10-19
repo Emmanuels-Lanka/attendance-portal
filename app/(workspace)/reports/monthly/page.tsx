@@ -135,8 +135,10 @@ export default async function MonthlyAttendanceSummaryPage({ searchParams }: { s
           ? <p role="note" className="text-xs text-[var(--muted)]">Actual OT is not recorded; request estimates are not treated as worked overtime.</p>
           : <p role="note" className="text-xs text-[var(--muted)]">Recorded actual OT covers {result.summary.recordedActualEmployees} employees and {result.summary.recordedActualDays} employee-days; conflicting daily values are excluded.</p>}
         {result.summary.absentDays === null && <p role="note" className="text-xs text-[var(--muted)]">Absence is shown only when an ABSENT status has been explicitly saved; missing attendance is not automatically classified as absence.</p>}
+        {result.summary.approvedLeaveDays !== null && <p role="note" className="text-xs text-[var(--muted)]">Approved leave counts scheduled workdays without attendance evidence; recorded attendance takes precedence for a date to prevent double-counting.</p>}
         {result.summary.totalCalculatedDays > 0 && <p className="text-xs text-[var(--muted)]">Status totals cover {result.summary.totalCalculatedDays} employee-dates with saved or on-demand engine results.</p>}
         {result.summary.engineCalculatedDays > 0 && <p className="text-xs text-[var(--muted)]">Engine hours cover {result.summary.engineCalculatedDays} date{result.summary.engineCalculatedDays === 1 ? "" : "s"} with saved daily calculations.</p>}
+        {result.summary.unmatchedScopedHolidayDates > 0 && <p role="note" className="text-xs text-[var(--muted)]">{result.summary.unmatchedScopedHolidayDates} potential branch/group-specific holiday date{result.summary.unmatchedScopedHolidayDates === 1 ? "" : "s"} could not be applied because employee branch/group assignments are not available in report data.</p>}
         <p role="note" className="text-xs text-[var(--muted)]">Approved, pending, and rejected OT values are request estimates. Recorded actual OT is read only from AttendanceDaily.overtimeHours; the engine currently does not calculate it.</p>
       </section>
 

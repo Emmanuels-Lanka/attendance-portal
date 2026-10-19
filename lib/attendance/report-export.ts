@@ -44,6 +44,7 @@ export const monthlyAttendanceExportHeaders = [
   "Approved leave days",
   "Approved WFH days",
   "Holidays",
+  "Potential scoped holiday dates not applied",
   "Absent days (saved)",
   "Missing-punch days",
   "Weekend days",
@@ -80,6 +81,7 @@ export type MonthlyAttendanceExportTotals = {
   earlyOutDays: number | null;
   approvedLeaveDays: number | null;
   holidayDays: number;
+  unmatchedScopedHolidayDates: number;
   missingPunchDays: number | null;
   weekendDays: number | null;
   undeterminedDays: number | null;
@@ -110,6 +112,7 @@ export function monthlyEmployeeExportTotals(report: MonthlyEmployeeReport): Mont
     earlyOutDays: report.summary.earlyOutDays ?? null,
     approvedLeaveDays: report.summary.approvedLeaveDays ?? null,
     holidayDays: report.summary.holidayDays ?? 0,
+    unmatchedScopedHolidayDates: report.summary.unmatchedScopedHolidayDates ?? 0,
     missingPunchDays: report.summary.missingPunchDays ?? null,
     weekendDays: report.summary.weekendDays ?? null,
     undeterminedDays: report.summary.undeterminedDays ?? null,
@@ -152,6 +155,7 @@ function employeeRow(month: string, { employeeId, name, departmentName, report }
     attendanceStatus(summary.approvedLeaveDays, "Unavailable"),
     summary.workFromHomeDays ?? 0,
     summary.holidayDays ?? 0,
+    summary.unmatchedScopedHolidayDates ?? 0,
     attendanceStatus(summary.absentDays, "Not recorded"),
     attendanceStatus(summary.missingPunchDays, "Not calculated"),
     attendanceStatus(summary.weekendDays, "Not calculated"),
@@ -189,6 +193,7 @@ function totalRow(month: string, totals: MonthlyAttendanceExportTotals): ReportE
     attendanceStatus(totals.approvedLeaveDays, "Unavailable"),
     totals.workFromHomeDays,
     totals.holidayDays,
+    totals.unmatchedScopedHolidayDates,
     attendanceStatus(totals.absentDays, "Not recorded"),
     attendanceStatus(totals.missingPunchDays, "Not calculated"),
     attendanceStatus(totals.weekendDays, "Not calculated"),

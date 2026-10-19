@@ -58,8 +58,7 @@ export default async function ReportsPage({
       {requestedMonth && !validMonth && <p role="alert" className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">Invalid month. Showing the current month instead.</p>}
 
       <section aria-labelledby="monthly-summary-title" className="space-y-3">
-        <div><h2 id="monthly-summary-title" className="text-base font-semibold">Summary for {month}</h2><p className="mt-1 text-xs text-[var(--muted)]">Attendance statuses reflect saved daily calculations; session time and engine-calculated hours are shown separately.</p></div>
-          <div><h2 id="monthly-summary-title" className="text-base font-semibold">Summary for {month}</h2><p className="mt-1 text-xs text-[var(--muted)]">Saved corrected daily rows take precedence; other punch dates use the attendance engine.</p></div>
+        <div><h2 id="monthly-summary-title" className="text-base font-semibold">Summary for {month}</h2><p className="mt-1 text-xs text-[var(--muted)]">Saved corrected daily rows take precedence; other punch dates use the attendance engine.</p></div>
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-5">
           {summaryMetrics.map(({ label, value }) => (
             <div key={label} className="min-h-24 rounded-lg border border-[var(--line)] bg-white p-4 shadow-sm">
@@ -69,9 +68,11 @@ export default async function ReportsPage({
           ))}
         </div>
         {report.summary.absentDays === null && <p role="note" className="text-xs text-[var(--muted)]">Absence is shown only when an ABSENT status has been explicitly saved; missing attendance is not automatically classified as absence.</p>}
+        {report.summary.approvedLeaveDays !== null && report.summary.approvedLeaveDays !== undefined && <p role="note" className="text-xs text-[var(--muted)]">Approved leave counts scheduled workdays without attendance evidence; recorded attendance takes precedence for a date to prevent double-counting.</p>}
         {report.summary.totalWorkingDays === null && <p role="note" className="text-xs text-[var(--muted)]">Scheduled workdays are unavailable because no Shift with working days is assigned.</p>}
         {(report.summary.totalCalculatedDays ?? 0) > 0 && <p className="text-xs text-[var(--muted)]">Status counts cover {report.summary.totalCalculatedDays} dates with saved or on-demand engine results; unpunched scheduled days are not inferred as absences.</p>}
         {report.summary.engineCalculatedDays !== undefined && report.summary.engineCalculatedDays > 0 && <p className="text-xs text-[var(--muted)]">Engine hours include {report.summary.engineCalculatedDays} date{report.summary.engineCalculatedDays === 1 ? "" : "s"} with stored daily calculations.</p>}
+        {(report.summary.unmatchedScopedHolidayDates ?? 0) > 0 && <p role="note" className="text-xs text-[var(--muted)]">{report.summary.unmatchedScopedHolidayDates} potential branch/group-specific holiday date{report.summary.unmatchedScopedHolidayDates === 1 ? "" : "s"} could not be applied because employee branch/group assignments are not available in report data.</p>}
       </section>
 
       <div className="grid gap-4 md:grid-cols-4">

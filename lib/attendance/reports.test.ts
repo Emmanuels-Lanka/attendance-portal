@@ -88,6 +88,7 @@ describe("employee-local monthly report windows", () => {
 
     assert.equal(report.summary.holidayDays, 1);
     assert.equal(report.summary.totalCalculatedDays, 1);
+    assert.equal(report.summary.absentDays, 0);
   });
 
   it("counts duplicate daily rows once and marks conflicting statuses undetermined", () => {
@@ -259,13 +260,16 @@ describe("employee-local monthly report windows", () => {
         },
       },
       holiday: {
-        findMany: async () => [{ date: new Date("2026-06-03T00:00:00.000Z") }],
+        findMany: async () => [
+          { date: new Date("2026-06-03T00:00:00.000Z"), branch: "", applicableEmployeeGroups: [] },
+          { date: new Date("2026-06-12T00:00:00.000Z"), branch: "Colombo", applicableEmployeeGroups: [] },
+        ],
       },
       leaveRequest: {
         findMany: async ({ where }: { where: { employeeId: string; status: string } }) => {
           calls.leaveWhere = where;
           return [
-            { startDate: new Date("2026-06-02T00:00:00.000Z"), endDate: new Date("2026-06-03T00:00:00.000Z") },
+            { startDate: new Date("2026-06-01T00:00:00.000Z"), endDate: new Date("2026-06-03T00:00:00.000Z") },
             { startDate: new Date("2026-06-03T00:00:00.000Z"), endDate: new Date("2026-06-04T00:00:00.000Z") },
           ];
         },
@@ -310,6 +314,7 @@ describe("employee-local monthly report windows", () => {
     assert.equal(report.summary.totalWorkingDays, 21);
     assert.equal(report.summary.approvedLeaveDays, 2);
     assert.equal(report.summary.holidayDays, 1);
+    assert.equal(report.summary.unmatchedScopedHolidayDates, 1);
     assert.equal(report.summary.lateDays, 2);
     assert.equal(report.summary.missingPunchDays, 2);
     assert.equal(report.summary.weekendDays, 8);

@@ -38,6 +38,7 @@ export type MonthlyEmployeeReport = {
     missingPunchDays?: number | null;
     weekendDays?: number | null;
     holidayDays?: number | null;
+    unmatchedScopedHolidayDates?: number;
     approvedLeaveDays?: number | null;
     undeterminedDays?: number | null;
     totalCalculatedDays?: number;
@@ -180,7 +181,7 @@ function summarizeCalculatedDailyStatuses(dailySummaries: MonthlyDailyStatus[]) 
 
   return {
     presentDays: statusByDate.size > 0 ? counts.PRESENT : null,
-    absentDays: counts.ABSENT > 0 ? counts.ABSENT : null,
+    absentDays: statusByDate.size > 0 ? counts.ABSENT : null,
     lateDays: statusByDate.size > 0 ? counts.LATE : null,
     earlyOutDays: statusByDate.size > 0 ? counts.EARLY_OUT : null,
     missingPunchDays: statusByDate.size > 0 ? counts.MISSING_PUNCH : null,
@@ -275,7 +276,7 @@ export function buildEmployeeMonthlyReport(
   month: string,
   sessions: MonthlySession[],
   dailySummaries: MonthlyDailyStatus[] = [],
-  monthlyTotals: { totalWorkingDays?: number | null; approvedLeaveDays?: number | null; holidayDays?: number | null; approvedWorkFromHomeDates?: readonly string[] } & Partial<MonthlyOvertimeSummary> = {},
+  monthlyTotals: { totalWorkingDays?: number | null; approvedLeaveDays?: number | null; holidayDays?: number | null; unmatchedScopedHolidayDates?: number; approvedWorkFromHomeDates?: readonly string[] } & Partial<MonthlyOvertimeSummary> = {},
 ): MonthlyEmployeeReport {
   const window = buildMonthWindow(month, employee.timeZone);
   const filtered = sessions.filter((session) => {
@@ -336,6 +337,7 @@ export function buildEmployeeMonthlyReport(
       approvedLeaveDays: monthlyTotals.approvedLeaveDays ?? null,
       ...calculatedStatusSummary,
       ...(monthlyTotals.holidayDays !== undefined ? { holidayDays: monthlyTotals.holidayDays } : {}),
+      ...(monthlyTotals.unmatchedScopedHolidayDates !== undefined ? { unmatchedScopedHolidayDates: monthlyTotals.unmatchedScopedHolidayDates } : {}),
       ...(monthlyTotals.pendingExpectedHours !== undefined ? { pendingExpectedOvertimeHours: monthlyTotals.pendingExpectedHours } : {}),
       ...(monthlyTotals.pendingRequestCount !== undefined ? { pendingOvertimeRequestCount: monthlyTotals.pendingRequestCount } : {}),
       ...(monthlyTotals.approvedExpectedHours !== undefined ? { approvedExpectedOvertimeHours: monthlyTotals.approvedExpectedHours } : {}),
@@ -417,12 +419,8 @@ export async function getEmployeeMonthlyReport(
       orderBy: [{ timestamp: "asc" }, { id: "asc" }],
     }) : Promise.resolve([]),
     database.holiday.findMany({
-      where: {
-        date: { gte: dateStart, lt: dateEnd },
-        branch: "",
-        applicableEmployeeGroups: { isEmpty: true },
-      },
-      select: { date: true },
+      where: { date: { gte: dateStart, lt: dateEnd } },
+      select: { date: true, branch: true, applicableEmployeeGroups: true },
     }),
     employeeRecord ? database.leaveRequest.findMany({
       where: {
@@ -447,7 +445,14 @@ export async function getEmployeeMonthlyReport(
     }) : Promise.resolve([]),
   ]);
 
-  const holidayDates = new Set(holidays.map(({ date }) => date.toISOString().slice(0, 10)));
+  const globalHolidayDates = new Set(holidays
+    .filter(({ branch, applicableEmployeeGroups }) => branch === "" && applicableEmployeeGroups.length === 0)
+    .map(({ date }) => date.toISOString().slice(0, 10)));
+  const unmatchedScopedHolidayDates = new Set(holidays
+    .filter(({ branch, applicableEmployeeGroups }) => branch !== "" || applicableEmployeeGroups.length > 0)
+    .map(({ date }) => date.toISOString().slice(0, 10))
+    .filter((date) => !globalHolidayDates.has(date)));
+  const holidayDates = globalHolidayDates;
   const dailySummaries: MonthlyDailyStatus[] = dailyRows.map((row) => ({
     date: row.date.toISOString().slice(0, 10),
     status: row.status ?? undefined,
@@ -508,8 +513,14 @@ export async function getEmployeeMonthlyReport(
     startDate: startDate.toISOString().slice(0, 10),
     endDate: endDate.toISOString().slice(0, 10),
   })), monthDateStart, monthDateEnd);
+  const attendanceDates = new Set([
+    ...dailySummaries.filter(({ status }) => status != null).map(({ date }) => date),
+    ...punchesByDate.keys(),
+    ...sessions.map(({ startAt }) => formatInTimeZone(startAt, employee.timeZone, "yyyy-MM-dd")),
+  ]);
+  const leaveExclusionDates = new Set([...holidayDates, ...attendanceDates]);
   const approvedLeaveDays = workingDays.length > 0
-    ? approvedLeaveRanges.reduce((sum, range) => sum + countScheduledWorkdays(range.startDate, range.endDate, workingDays, holidayDates), 0)
+    ? approvedLeaveRanges.reduce((sum, range) => sum + countScheduledWorkdays(range.startDate, range.endDate, workingDays, leaveExclusionDates), 0)
     : null;
   const overtimeSummary = buildMonthlyOvertimeSummary(
     month,
@@ -538,6 +549,7 @@ export async function getEmployeeMonthlyReport(
       totalWorkingDays,
       approvedLeaveDays,
       holidayDays: holidayDates.size,
+      unmatchedScopedHolidayDates: unmatchedScopedHolidayDates.size,
       approvedWorkFromHomeDates: approvedWorkFromHomeRequests.map(({ date }) => date.toISOString().slice(0, 10)),
       ...overtimeSummary,
     },
@@ -716,11 +728,12 @@ export async function getMonthlyAttendanceSummaryReport(
       engineCalculatedDays: sum((report) => report.summary.engineCalculatedDays ?? 0),
       totalWorkingDays: sumWhenComplete((report) => report.summary.totalWorkingDays ?? null),
       presentDays: sumCalculatedStatuses((report) => report.summary.presentDays),
-      absentDays: sumWhenComplete((report) => report.summary.absentDays ?? null),
+      absentDays: sumCalculatedStatuses((report) => report.summary.absentDays),
       lateDays: sumCalculatedStatuses((report) => report.summary.lateDays),
       earlyOutDays: sumCalculatedStatuses((report) => report.summary.earlyOutDays),
       approvedLeaveDays: sumWhenComplete((report) => report.summary.approvedLeaveDays ?? null),
       holidayDays: sum((report) => report.summary.holidayDays ?? 0),
+      unmatchedScopedHolidayDates: rows.reduce((count, row) => Math.max(count, row.report.summary.unmatchedScopedHolidayDates ?? 0), 0),
       missingPunchDays: sumCalculatedStatuses((report) => report.summary.missingPunchDays),
       weekendDays: sumCalculatedStatuses((report) => report.summary.weekendDays),
       undeterminedDays: sumCalculatedStatuses((report) => report.summary.undeterminedDays),
@@ -730,4 +743,3 @@ export async function getMonthlyAttendanceSummaryReport(
     },
   };
 }
-
