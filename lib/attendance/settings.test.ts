@@ -65,4 +65,24 @@ describe("organization setting controls", () => {
     assert.equal(stub.settings.get("defaultTimeZone")?.value, "Asia/Colombo");
     assert.equal(stub.auditEntries[1].actionType, "SETTING_RESET");
   });
+
+  it("resets the stored company name to the approved default", async () => {
+    const stub = createDatabase();
+    stub.settings.set("companyName", {
+      key: "companyName",
+      value: "Legacy Company Name",
+      category: "GENERAL",
+      isAdminOnly: true,
+      updatedById: "admin-1",
+    });
+
+    await updateOrganizationSetting(admin, {
+      key: "companyName",
+      intent: "reset",
+      confirmReset: true,
+    }, stub.database);
+
+    assert.equal(stub.settings.get("companyName")?.value, "Emmanuel's Lanka Pvt Ltd");
+    assert.deepEqual(stub.auditEntries[0].newValues, { value: "Emmanuel's Lanka Pvt Ltd" });
+  });
 });
