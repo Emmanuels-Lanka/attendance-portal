@@ -55,7 +55,7 @@ export async function sendPasswordResetEmail({ email, name, token }: PasswordRes
     await transport.sendMail({
       from,
       to: email,
-      subject: "Reset your EML – Attendance System password",
+      subject: "Reset your EML – Attendance Management System password",
       text: `Hello ${name},\n\nUse this link to reset your password. It expires in 30 minutes and can only be used once:\n${resetUrl}\n\nIf you did not request a password reset, you can ignore this email.`,
       html: `<p>Hello ${safeName},</p><p>Use the link below to reset your password. It expires in 30 minutes and can only be used once.</p><p><a href="${resetUrl}">Reset password</a></p><p>If you did not request a password reset, you can ignore this email.</p>`,
     });

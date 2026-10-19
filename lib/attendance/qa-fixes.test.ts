@@ -5,6 +5,10 @@ import { describe, it } from "node:test";
 import { buildMonthlyEmployeeReport, createNotification, getSettingsSnapshot } from "./qa-fixes";
 
 describe("attendance QA implementation helpers", () => {
+  it("uses the approved company name when no stored setting is available", () => {
+    assert.equal(getSettingsSnapshot().companyName, "Emmanuel's Lanka Pvt Ltd");
+  });
+
   it("groups employee records by local month and keeps empty months explicit", () => {
     const report = buildMonthlyEmployeeReport({
       id: "employee-1",

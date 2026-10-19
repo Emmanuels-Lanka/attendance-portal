@@ -5,7 +5,7 @@ import "./globals.css";
 const poppins = Poppins({ subsets: ["latin"], weight: ["400", "500", "600", "700"] });
 
 export const metadata: Metadata = {
-  title: "EML – Attendance System",
+  title: "EML – Attendance Management System",
   description: "Employee attendance and work session management.",
 };
 

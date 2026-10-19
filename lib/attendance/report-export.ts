@@ -231,7 +231,7 @@ export function createCsvReport(headers: readonly string[], rows: readonly Repor
 
 export async function createXlsxReport(sheetName: string, headers: readonly string[], rows: readonly ReportExportCell[][]) {
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = "EML – Attendance System";
+  workbook.creator = "EML – Attendance Management System";
   workbook.company = "Emmanuel's Lanka Pvt Ltd";
   const worksheet = workbook.addWorksheet(sheetName);
   worksheet.addRow([...headers]);
