@@ -41,7 +41,7 @@ export type EmployeeMonthlyReport = {
 };
 
 export function getSettingsSnapshot(values: Partial<Record<string, string | string[] | boolean>> = {}) {
-  const companyName = typeof values.companyName === "string" && values.companyName.trim() ? values.companyName.trim() : "ELIoT";
+  const companyName = typeof values.companyName === "string" && values.companyName.trim() ? values.companyName.trim() : "Emmanuel's Lanka Pvt Ltd";
   const attendanceStart = typeof values.attendanceStart === "string" && values.attendanceStart.trim() ? values.attendanceStart.trim() : "08:30";
   const attendanceEnd = typeof values.attendanceEnd === "string" && values.attendanceEnd.trim() ? values.attendanceEnd.trim() : "17:30";
   const defaultTimeZone = typeof values.defaultTimeZone === "string" && values.defaultTimeZone.trim() ? values.defaultTimeZone.trim() : "Asia/Colombo";

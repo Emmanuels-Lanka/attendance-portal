@@ -4,7 +4,7 @@ import type { PrismaClient, Role } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { isIanaTimeZone } from "@/lib/attendance/timezone";
 
-const settingDefaults = { companyName: "ELIoT", defaultTimeZone: "Asia/Colombo" } as const;
+const settingDefaults = { companyName: "Emmanuel's Lanka Pvt Ltd", defaultTimeZone: "Asia/Colombo" } as const;
 type EditableSettingKey = keyof typeof settingDefaults;
 type SettingActor = { id: string; role: Role };
 type SettingDatabase = Pick<PrismaClient, "$transaction">;

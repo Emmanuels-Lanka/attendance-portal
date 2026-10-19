@@ -127,7 +127,13 @@ export function MobileNav({ isAdmin, canManageEmployees, canReadTeamAttendance, 
           <button type="button" aria-label="Close menu" onClick={() => setOpen(false)} className="absolute inset-0 bg-black/50" />
           <aside id="mobile-navigation" role="dialog" aria-modal="true" aria-label="Mobile navigation" className="relative flex h-full w-64 max-w-[85vw] flex-col bg-[var(--sidebar)] text-white shadow-xl">
             <div className="flex h-[70px] items-center justify-between border-b border-white/15 px-5">
-              <Image src="/eliot-logo.png" alt="ELIoT" width={1200} height={600} className="h-10 w-[92px] object-contain object-left" />
+              <div className="flex min-w-0 items-center gap-3">
+                <Image src="/eml-company-logo.jpg" alt="Emmanuel's Lanka Pvt Ltd" width={768} height={768} className="size-11 shrink-0 object-contain" />
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold leading-4">EML – Attendance System</p>
+                  <p className="mt-0.5 text-[10px] leading-3 text-white/70">Emmanuel&apos;s Lanka Pvt Ltd</p>
+                </div>
+              </div>
               <button type="button" aria-label="Close menu" onClick={() => setOpen(false)} className="grid size-9 place-items-center rounded-sm text-white/80 hover:bg-white/10 hover:text-white"><X size={19} aria-hidden="true" /></button>
             </div>
             <nav aria-label="Mobile main navigation" className="flex-1 overflow-y-auto px-4 py-4">

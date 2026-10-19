@@ -37,7 +37,7 @@ export default async function AdminSettingsPage({ searchParams }: { searchParams
           </form>
           <form action={saveSettingAction} className="flex flex-wrap items-end gap-2">
             <input type="hidden" name="key" value="companyName" /><input type="hidden" name="intent" value="reset" />
-            <label className="flex items-center gap-2 text-xs text-[var(--muted)]"><input type="checkbox" name="confirmReset" value="yes" required />Confirm reset of company name to ELIoT</label>
+            <label className="flex items-center gap-2 text-xs text-[var(--muted)]"><input type="checkbox" name="confirmReset" value="yes" required />Confirm reset of company name to Emmanuel&apos;s Lanka Pvt Ltd</label>
             <button type="submit" className="rounded-md border border-[var(--line)] px-3 py-2 text-sm font-medium">Reset default</button>
           </form>
 

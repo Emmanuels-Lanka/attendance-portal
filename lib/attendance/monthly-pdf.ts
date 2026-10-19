@@ -95,7 +95,7 @@ export async function createMonthlyAttendancePdf({
   summary: PdfSummary;
   title: string;
 }) {
-  const logo = await readFile(resolveProjectAssetPath("public", "eliot-logo.png"));
+  const logo = await readFile(resolveProjectAssetPath("public", "eml-company-logo.jpg"));
   const fontDir = resolveProjectAssetPath("public", "fonts");
   const pdf = new PDFDocument({ size: "A4", margins: { top: 40, right: 40, bottom: 48, left: 40 }, bufferPages: true });
   pdf.registerFont("AppHelvetica", join(fontDir, "Helvetica.ttf"));
@@ -248,7 +248,7 @@ export async function createMonthlyAttendancePdf({
   const pageRange = pdf.bufferedPageRange();
   for (let index = 0; index < pageRange.count; index += 1) {
     pdf.switchToPage(pageRange.start + index);
-    pdf.font("AppHelvetica").fontSize(8).fillColor("#666666").text(`ELIoT Attendance | ${month} | Page ${index + 1} of ${pageRange.count}`, pdf.page.margins.left, pdf.page.height - 32, { width: contentWidth, align: "right" });
+    pdf.font("AppHelvetica").fontSize(8).fillColor("#666666").text(`EML – Attendance System | Emmanuel's Lanka Pvt Ltd | ${month} | Page ${index + 1} of ${pageRange.count}`, pdf.page.margins.left, pdf.page.height - 32, { width: contentWidth, align: "right" });
   }
   pdf.end();
   return finished;

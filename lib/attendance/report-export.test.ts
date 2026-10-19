@@ -117,6 +117,8 @@ describe("monthly attendance report exports", () => {
     const worksheet = workbook.getWorksheet("Attendance");
 
     assert.ok(buffer.subarray(0, 2).equals(Buffer.from("PK")));
+    assert.equal(workbook.creator, "EML – Attendance System");
+    assert.equal(workbook.company, "Emmanuel's Lanka Pvt Ltd");
     assert.equal(worksheet?.getCell(1, 1).value, "Month");
     assert.equal(worksheet?.getCell(1, 17).value, "Absent days (saved)");
     assert.equal(worksheet?.getCell(2, 4).value, '=HYPERLINK("https://example.invalid")');
