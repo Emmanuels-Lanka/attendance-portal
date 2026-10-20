@@ -6,6 +6,7 @@ import {
   dailyAttendanceFiltersSchema,
   listCalculatedDailyAttendance,
 } from "@/lib/attendance/daily-read";
+import { listAttendanceLocations } from "@/lib/attendance/location-service";
 import { canReadScopedAttendance, hasPermission } from "@/lib/auth/permissions";
 import { requirePageUser } from "@/lib/auth/session";
 
@@ -117,6 +118,21 @@ export default async function DailyAttendancePage({
   }
 
   const { filters } = result;
+  const canReadLocations = hasPermission(actor.role, "attendance:locations:read");
+  let locationRecords: Awaited<ReturnType<typeof listAttendanceLocations>> = [];
+  let locationReadFailed = false;
+  if (canReadLocations && filters.date) {
+    try {
+      locationRecords = await listAttendanceLocations(actor, {
+        date: filters.date,
+        employeeId: filters.employeeId,
+        departmentId: filters.departmentId,
+      });
+    } catch (error) {
+      locationReadFailed = true;
+      console.error("Attendance location read failed", error instanceof Error ? error.name : "Unknown error");
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -188,6 +204,71 @@ export default async function DailyAttendancePage({
           </Link>
         </div>
       </form>
+
+      {canReadLocations && (
+        <section className="overflow-hidden rounded-lg border border-[var(--line)] bg-white shadow-sm" aria-labelledby="attendance-locations-title">
+          <header className="border-b border-[var(--line)] px-4 py-4 sm:px-5">
+            <h2 id="attendance-locations-title" className="text-base font-semibold">Precise punch locations</h2>
+            <p className="mt-1 text-xs leading-5 text-[var(--muted)]">
+              Device-reported location for each individual IN and OUT punch. Historical punches without saved coordinates remain listed.
+            </p>
+          </header>
+          {!filters.date ? (
+            <p className="px-4 py-5 text-sm text-[var(--muted)]">Select a date above to inspect punch locations.</p>
+          ) : locationReadFailed ? (
+            <p role="alert" className="px-4 py-5 text-sm text-[var(--danger)]">Punch locations could not be loaded. Try again shortly.</p>
+          ) : locationRecords.length === 0 ? (
+            <p role="status" className="px-4 py-5 text-sm text-[var(--muted)]">No raw attendance punches match this date and employee filter.</p>
+          ) : (
+            <>
+              {locationRecords.length === 1000 && (
+                <p role="status" className="border-b border-[var(--line)] px-4 py-3 text-xs text-[var(--muted)]">
+                  Showing the 1,000 most recent matching punches. Narrow the date or employee filter to inspect fewer records.
+                </p>
+              )}
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[760px] text-left text-sm">
+                  <thead className="border-b border-[var(--line)] bg-zinc-50 text-xs text-[var(--muted)]">
+                    <tr>
+                      <th className="px-4 py-3 font-semibold">Employee</th>
+                      <th className="px-4 py-3 font-semibold">Punch</th>
+                      <th className="px-4 py-3 font-semibold">Recorded time</th>
+                      <th className="px-4 py-3 font-semibold">Coordinates</th>
+                      <th className="px-4 py-3 font-semibold">Accuracy</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[var(--line)]">
+                    {locationRecords.map((punch) => (
+                      <tr key={punch.id}>
+                        <td className="px-4 py-3">
+                          <p className="font-semibold">{punch.employeeName}</p>
+                          {punch.employeeCode && <p className="mt-0.5 text-xs text-[var(--muted)]">{punch.employeeCode}</p>}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`rounded-sm px-2 py-1 text-xs font-semibold ${punch.punchType === "IN" ? "bg-emerald-50 text-emerald-800" : "bg-amber-50 text-amber-800"}`}>
+                            {punch.punchType}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 tabular-nums">
+                          {formatInTimeZone(punch.timestamp, punch.timeZone, "yyyy-MM-dd HH:mm:ss")}
+                        </td>
+                        <td className="px-4 py-3 font-mono text-xs">
+                          {punch.location
+                            ? `${punch.location.latitude}, ${punch.location.longitude}`
+                            : <span className="font-sans text-[var(--muted)]">No stored location</span>}
+                        </td>
+                        <td className="px-4 py-3 tabular-nums">
+                          {punch.location ? `${punch.location.accuracy} m` : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </section>
+      )}
 
       {result.records.length === 0 ? (
         <section className="flex min-h-56 flex-col items-center justify-center rounded-lg border border-[var(--line)] bg-white px-6 text-center">

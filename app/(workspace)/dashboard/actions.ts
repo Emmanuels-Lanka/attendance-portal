@@ -11,9 +11,11 @@ export async function performAttendanceAction(input: unknown): Promise<Attendanc
   try {
     const user = await requireUser();
     const parsed = attendanceActionSchema.safeParse(input);
-    if (!parsed.success) return { ok: false, error: "Choose a valid attendance action." };
+    if (!parsed.success) {
+      return { ok: false, error: "A valid location is required before recording attendance." };
+    }
 
-    await applyAttendanceAction(user.id, parsed.data);
+    await applyAttendanceAction(user.id, parsed.data.action, parsed.data.location);
     revalidatePath("/dashboard");
     revalidatePath("/attendance");
     return { ok: true, message: "Attendance updated." };

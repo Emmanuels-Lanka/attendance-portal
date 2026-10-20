@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { Prisma } from "@prisma/client";
-import { applyAttendanceAction, AttendanceStateError } from "./service";
-import { attendanceActionSchema, type AttendanceAction } from "./validation";
+import { applyAttendanceAction as applyAttendanceActionWithLocation, AttendanceStateError } from "./service";
+import { attendanceActionSchema, attendanceLocationSchema, type AttendanceAction, type AttendanceLocation } from "./validation";
 import { getEmployeeLocalDayWindow } from "./timezone";
 
 type StoredSession = {
@@ -12,6 +11,17 @@ type StoredSession = {
   startAt: Date;
   endAt: Date | null;
 };
+
+const testLocation: AttendanceLocation = { latitude: 6.9271, longitude: 79.8612, accuracy: 12.5 };
+
+function applyAttendanceAction(
+  employeeId: string,
+  action: AttendanceAction,
+  database: never = undefined as never,
+  now?: Date,
+) {
+  return applyAttendanceActionWithLocation(employeeId, action, testLocation, database, now);
+}
 
 function createDatabase(
   initialSessions: StoredSession[] = [],
@@ -26,7 +36,7 @@ function createDatabase(
     punchType: "IN" | "OUT";
     source: string;
     deviceId: null;
-    location: null;
+    location: AttendanceLocation;
   }> = [];
   let nextId = 1;
   let nextRawId = 1;
@@ -75,12 +85,10 @@ function createDatabase(
         },
         attendanceRaw: {
           create: async ({ data }: { data: Omit<(typeof rawPunches)[number], "id"> & { location: unknown } }) => {
-            const location = data.location === Prisma.DbNull ? null : data.location;
-            if (location !== null) throw new Error("Unexpected attendance location.");
             const punch = {
               id: `raw-${nextRawId++}`,
               ...data,
-              location,
+              location: attendanceLocationSchema.parse(data.location),
             };
             rawPunches.push(punch);
             return punch;
@@ -145,10 +153,12 @@ describe("employee attendance transitions", () => {
     const stub = createDatabase();
     const startedAt = new Date("2026-06-15T02:30:17.123Z");
     const endedAt = new Date("2026-06-15T11:30:42.456Z");
+    const inLocation = { latitude: 6.9271, longitude: 79.8612, accuracy: 8 };
+    const outLocation = { latitude: 6.9272, longitude: 79.8613, accuracy: 17 };
 
-    const started = await applyAttendanceAction("user-1", "IN", stub.database, startedAt);
+    const started = await applyAttendanceActionWithLocation("user-1", "IN", inLocation, stub.database, startedAt);
     const acceptedInPunch = structuredClone(stub.rawPunches[0]);
-    const ended = await applyAttendanceAction("user-1", "OUT", stub.database, endedAt);
+    const ended = await applyAttendanceActionWithLocation("user-1", "OUT", outLocation, stub.database, endedAt);
 
     assert.equal(started.startAt.toISOString(), startedAt.toISOString());
     assert.equal(ended.endAt?.toISOString(), endedAt.toISOString());
@@ -167,7 +177,7 @@ describe("employee attendance transitions", () => {
         punchType: "IN",
         source: "WEB",
         deviceId: null,
-        location: null,
+        location: inLocation,
       },
       {
         employeeId: "employee-record-1",
@@ -175,7 +185,7 @@ describe("employee attendance transitions", () => {
         punchType: "OUT",
         source: "WEB",
         deviceId: null,
-        location: null,
+        location: outLocation,
       },
     ]);
     assert.equal(stub.sessions.length, 1);
@@ -196,6 +206,24 @@ describe("employee attendance transitions", () => {
     await assert.rejects(applyAttendanceAction("employee-1", "IN", duplicateStart.database), AttendanceStateError);
     await assert.rejects(applyAttendanceAction("employee-1", "WFH_OUT", duplicateStart.database), /different work mode/);
     assert.deepEqual(duplicateStart.rawPunches, []);
+  });
+
+  it("rejects missing or invalid coordinates before opening a database transaction", async () => {
+    const stub = createDatabase();
+    for (const location of [
+      undefined,
+      { latitude: 91, longitude: 10, accuracy: 1 },
+      { latitude: 10, longitude: -181, accuracy: 1 },
+      { latitude: 10, longitude: 10, accuracy: -1 },
+      { latitude: Number.NaN, longitude: 10, accuracy: 1 },
+    ]) {
+      await assert.rejects(
+        applyAttendanceActionWithLocation("employee-1", "IN", location, stub.database),
+        AttendanceStateError,
+      );
+    }
+    assert.equal(stub.sessions.length, 0);
+    assert.equal(stub.rawPunches.length, 0);
   });
 
   it("serializes competing same-day starts after a completed session", async () => {
@@ -292,9 +320,12 @@ describe("employee attendance transitions", () => {
     assert.equal(stub.sessions[0].endAt?.toISOString(), endedAt.toISOString());
   });
 
-  it("rejects malformed action values at the existing validation boundary", () => {
-    assert.equal(attendanceActionSchema.safeParse("BREAK").success, false);
+  it("validates action payloads and requires valid GPS coordinates", () => {
+    assert.equal(attendanceActionSchema.safeParse({ action: "BREAK", location: testLocation }).success, false);
     assert.equal(attendanceActionSchema.safeParse({ action: "IN" }).success, false);
-    assert.equal(attendanceActionSchema.safeParse("WFH_OUT" as AttendanceAction).success, true);
+    assert.equal(attendanceActionSchema.safeParse({ action: "WFH_OUT", location: testLocation }).success, true);
+    assert.equal(attendanceLocationSchema.safeParse({ latitude: 91, longitude: 0, accuracy: 0 }).success, false);
+    assert.equal(attendanceLocationSchema.safeParse({ latitude: 0, longitude: 181, accuracy: 0 }).success, false);
+    assert.equal(attendanceLocationSchema.safeParse({ latitude: 0, longitude: 0, accuracy: -0.1 }).success, false);
   });
 });

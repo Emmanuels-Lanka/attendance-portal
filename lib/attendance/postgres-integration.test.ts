@@ -4,10 +4,16 @@ import { it } from "node:test";
 import { Role } from "@prisma/client";
 import { prisma } from "../prisma";
 import { correctAdminAttendance, AdminAttendanceCorrectionError } from "./admin-service";
-import { applyAttendanceAction, AttendanceStateError } from "./service";
+import { applyAttendanceAction as applyAttendanceActionWithLocation, AttendanceStateError } from "./service";
 import { getEmployeeLocalDayWindow } from "./timezone";
+import type { AttendanceAction } from "./validation";
 
 const enabled = process.env.ATTENDANCE_POSTGRES_INTEGRATION === "1";
+const testLocation = { latitude: 6.9271, longitude: 79.8612, accuracy: 12.5 };
+
+function applyAttendanceAction(employeeId: string, action: AttendanceAction, database = prisma, now?: Date) {
+  return applyAttendanceActionWithLocation(employeeId, action, testLocation, database, now);
+}
 
 it("serializes real concurrent actions and admin reopen corrections in PostgreSQL", { skip: !enabled }, async () => {
   const databaseName = new URL(process.env.DATABASE_URL ?? "").pathname.slice(1);

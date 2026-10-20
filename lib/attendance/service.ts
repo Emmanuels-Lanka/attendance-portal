@@ -2,7 +2,7 @@ import "server-only";
 
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import type { AttendanceAction } from "@/lib/attendance/validation";
+import { attendanceLocationSchema, type AttendanceAction, type AttendanceLocation } from "@/lib/attendance/validation";
 import { groupSessionsByEmployeeLocalDay } from "@/lib/attendance/history";
 import { getEmployeeLocalDayWindow } from "@/lib/attendance/timezone";
 
@@ -28,9 +28,15 @@ const attendanceCaptureSource = "WEB";
 export async function applyAttendanceAction(
   employeeId: string,
   action: AttendanceAction,
+  locationInput: unknown,
   database: AttendanceWriteDatabase = prisma,
   now: Date = new Date(),
 ) {
+  const locationResult = attendanceLocationSchema.safeParse(locationInput);
+  if (!locationResult.success) {
+    throw new AttendanceStateError("A valid device location is required to record attendance.");
+  }
+  const location: AttendanceLocation = locationResult.data;
   const mode = requestedMode(action);
   const isStart = action === "IN" || action === "WFH_IN";
 
@@ -92,7 +98,7 @@ export async function applyAttendanceAction(
           punchType: "IN",
           source: attendanceCaptureSource,
           deviceId: null,
-          location: Prisma.DbNull,
+          location,
         },
         select: { id: true },
       });
@@ -122,7 +128,7 @@ export async function applyAttendanceAction(
         punchType: "OUT",
         source: attendanceCaptureSource,
         deviceId: null,
-        location: Prisma.DbNull,
+        location,
       },
       select: { id: true },
     });

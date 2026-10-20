@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Check, Clock3, House, LogIn, LogOut } from "lucide-react";
 import { performAttendanceAction } from "@/app/(workspace)/dashboard/actions";
@@ -10,6 +10,7 @@ import { formatWorkedDuration } from "@/lib/attendance/history";
 import type { WorkSessionTiming } from "@/lib/attendance/schedule";
 import { LocalDateTime } from "@/components/local-date-time";
 import { AttendancePunch } from "@/components/attendance-punch";
+import { AttendanceGeolocationError, captureAttendanceLocation } from "@/lib/attendance/geolocation";
 
 type Session = { id: string; mode: "OFFICE" | "WFH"; startAt: Date; endAt: Date | null };
 
@@ -43,8 +44,10 @@ export function AttendanceToday({
   completedSessionToday: boolean;
 }) {
   const [pending, startTransition] = useTransition();
+  const [capturingLocation, setCapturingLocation] = useState(false);
   const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null);
   const [now, setNow] = useState<number | null>(null);
+  const submissionInProgress = useRef(false);
   const router = useRouter();
 
   useEffect(() => {
@@ -54,15 +57,43 @@ export function AttendanceToday({
     return () => window.clearInterval(timer);
   }, []);
 
-  function submit(action: AttendanceAction) {
+  async function submit(action: AttendanceAction) {
+    if (submissionInProgress.current) return;
+    submissionInProgress.current = true;
     setNotice(null);
+    setCapturingLocation(true);
+
+    let location;
+    try {
+      location = await captureAttendanceLocation(
+        typeof navigator === "undefined" ? undefined : navigator.geolocation,
+      );
+    } catch (error) {
+      setNotice({
+        text: error instanceof AttendanceGeolocationError
+          ? error.message
+          : "A location could not be obtained. Enable location access and try again.",
+        error: true,
+      });
+      setCapturingLocation(false);
+      submissionInProgress.current = false;
+      return;
+    }
+
+    setCapturingLocation(false);
     startTransition(async () => {
-      const result = await performAttendanceAction(action);
-      if (result.ok) {
-        setNotice({ text: result.message, error: false });
-        router.refresh();
-      } else {
-        setNotice({ text: result.error, error: true });
+      try {
+        const result = await performAttendanceAction({ action, location });
+        if (result.ok) {
+          setNotice({ text: result.message, error: false });
+          router.refresh();
+        } else {
+          setNotice({ text: result.error, error: true });
+        }
+      } catch {
+        setNotice({ text: "Attendance could not be updated. Try again shortly.", error: true });
+      } finally {
+        submissionInProgress.current = false;
       }
     });
   }
@@ -156,16 +187,19 @@ export function AttendanceToday({
               <button
                 key={action}
                 type="button"
-                disabled={pending}
+                disabled={pending || capturingLocation}
                 onClick={() => submit(action)}
                 className={`flex h-14 items-center justify-center gap-2 rounded-md border px-4 text-sm font-semibold transition disabled:cursor-wait disabled:opacity-60 ${isOut ? "border-[var(--danger)] bg-[var(--danger)] text-white hover:brightness-95" : "border-[var(--logo-blue)] bg-[var(--logo-blue)] text-white hover:brightness-95"}`}
               >
                 <Icon size={18} aria-hidden="true" />
-                {pending ? "Saving..." : label}
+                {capturingLocation ? "Getting location..." : pending ? "Saving..." : label}
               </button>
               );
             })}
           </div>
+          <p className="mt-3 text-xs leading-5 text-[var(--muted)]">
+            Device location is required for every IN and OUT punch, including WFH. It is requested only when you press an attendance button.
+          </p>
           {hasCompletedSession && !sessionToEnd && (
             <p className="text-sm font-medium text-[var(--mint-ink)]">
               {day.sessions.length === 0
@@ -173,7 +207,7 @@ export function AttendanceToday({
                 : "Attendance is already completed for today."}
             </p>
           )}
-          <p aria-live="polite" className={`mt-3 min-h-5 text-xs ${notice?.error ? "text-[var(--danger)]" : "text-[var(--mint-ink)]"}`}>
+          <p role={notice?.error ? "alert" : "status"} aria-live="polite" className={`mt-3 min-h-5 text-xs ${notice?.error ? "text-[var(--danger)]" : "text-[var(--mint-ink)]"}`}>
             {notice?.text ?? ""}
           </p>
         </div>
