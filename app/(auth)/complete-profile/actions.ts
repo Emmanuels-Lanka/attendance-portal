@@ -36,7 +36,7 @@ export async function completeEmployeeProfileAction(
 ): Promise<EmployeeProfileActionState> {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  if (user.role !== "EMPLOYEE") redirect("/dashboard");
+  if (user.role === "ADMIN") redirect("/dashboard");
 
   const input = Object.fromEntries(profileFieldNames.map((field) => [field, formData.get(field)]));
   try {

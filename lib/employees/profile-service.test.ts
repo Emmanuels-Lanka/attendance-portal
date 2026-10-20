@@ -5,6 +5,7 @@ import {
   EmployeeProfileCompletionError,
   employeeProfileCompletionSchema,
   getEmployeeProfileOnboardingStatus,
+  requiresProfileCompletion,
 } from "./profile-service";
 
 const completedAt = new Date("2026-10-03T10:00:00.000Z");
@@ -148,6 +149,15 @@ describe("employee profile validation", () => {
 });
 
 describe("employee profile completion service", () => {
+  it("requires profile completion for every onboarding-required non-admin role", () => {
+    assert.equal(requiresProfileCompletion("EMPLOYEE", true), true);
+    assert.equal(requiresProfileCompletion("HR_ADMINISTRATOR", true), true);
+    assert.equal(requiresProfileCompletion("DEPARTMENT_MANAGER", true), true);
+    assert.equal(requiresProfileCompletion("SUPERVISOR", true), true);
+    assert.equal(requiresProfileCompletion("EMPLOYEE", false), false);
+    assert.equal(requiresProfileCompletion("ADMIN", true), false);
+  });
+
   it("requires completion only when the Employee record is explicitly flagged", async () => {
     const pending = createProfileDatabase();
     const legacy = createProfileDatabase({ onboardingRequired: false });

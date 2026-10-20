@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { Prisma, PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient, Role } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { employeeProfileRequiredFields } from "@/lib/employees/profile-requirements";
@@ -73,6 +73,10 @@ export async function getEmployeeProfileOnboardingStatus(userId: string, databas
     required: employee?.profileOnboardingRequired === true && employee.profileCompletedAt === null,
     completedAt: employee?.profileCompletedAt ?? null,
   };
+}
+
+export function requiresProfileCompletion(role: Role, onboardingRequired: boolean) {
+  return role !== "ADMIN" && onboardingRequired;
 }
 
 export async function completeEmployeeProfileForUser(

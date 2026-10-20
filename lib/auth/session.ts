@@ -5,7 +5,10 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { findActiveSessionUser } from "@/lib/auth/session-user";
-import { getEmployeeProfileOnboardingStatus } from "@/lib/employees/profile-service";
+import {
+  getEmployeeProfileOnboardingStatus,
+  requiresProfileCompletion,
+} from "@/lib/employees/profile-service";
 import { hasPermission, type Permission } from "@/lib/auth/permissions";
 
 const cookieName = "attendance_session";
@@ -99,7 +102,7 @@ export async function getCurrentUser() {
 export async function requireUser() {
   const user = await getCurrentUser();
   if (!user) throw new AuthenticationError();
-  if (user.role !== "ADMIN" && (await getEmployeeProfileOnboardingStatus(user.id)).required) {
+  if (requiresProfileCompletion(user.role, (await getEmployeeProfileOnboardingStatus(user.id)).required)) {
     throw new ProfileCompletionRequiredError();
   }
   return user;
@@ -120,7 +123,7 @@ export async function requirePermission(permission: Permission) {
 export async function requirePageUser() {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  if (user.role !== "ADMIN" && (await getEmployeeProfileOnboardingStatus(user.id)).required) {
+  if (requiresProfileCompletion(user.role, (await getEmployeeProfileOnboardingStatus(user.id)).required)) {
     redirect("/complete-profile");
   }
   return user;

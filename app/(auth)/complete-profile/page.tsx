@@ -7,7 +7,7 @@ import { EmployeeProfileCompletionForm } from "./profile-form";
 export default async function CompleteEmployeeProfilePage() {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  if (user.role !== "EMPLOYEE") redirect("/dashboard");
+  if (user.role === "ADMIN") redirect("/dashboard");
 
   const onboarding = await getEmployeeProfileOnboardingStatus(user.id);
   if (!onboarding.required) redirect("/dashboard");
@@ -17,7 +17,7 @@ export default async function CompleteEmployeeProfilePage() {
       <section className="mx-auto w-full max-w-3xl rounded-xl border border-slate-200 bg-white px-5 py-7 shadow-xl sm:px-9 sm:py-9">
         <div className="mb-7 flex items-start justify-between gap-4 border-b border-slate-200 pb-5">
           <div>
-          <p className="text-sm font-medium text-slate-600">Employee onboarding</p>
+          <p className="text-sm font-medium text-slate-600">Account onboarding</p>
           <h1 className="mt-1 text-2xl font-semibold text-slate-900">Complete your profile</h1>
           <p className="mt-2 text-sm leading-6 text-slate-600">Complete the required information to continue to your attendance workspace.</p>
           </div>
