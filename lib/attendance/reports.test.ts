@@ -249,8 +249,9 @@ describe("employee-local monthly report windows", () => {
         },
       },
       attendanceRaw: {
-        findMany: async ({ where }: { where: { employeeId: string } }) => {
+        findMany: async ({ where, select }: { where: { employeeId: string }; select: Record<string, boolean> }) => {
           calls.rawWhere = where;
+          calls.rawSelect = select;
           return [
             { id: "punch-in", timestamp: new Date("2026-06-05T03:15:00.000Z"), punchType: "IN" },
             { id: "punch-out", timestamp: new Date("2026-06-05T12:00:00.000Z"), punchType: "OUT" },
@@ -302,6 +303,8 @@ describe("employee-local monthly report windows", () => {
     assert.deepEqual(calls.sessionWhere, { record: { employeeId: "user-1" }, startAt: { gte: new Date("2026-05-31T18:30:00.000Z"), lte: new Date("2026-06-30T18:29:59.999Z") } });
     assert.deepEqual(calls.dailyWhere, { employeeId: "employee-record-1", date: { gte: new Date("2026-06-01T00:00:00.000Z"), lt: new Date("2026-07-01T00:00:00.000Z") } });
     assert.deepEqual(calls.rawWhere, { employeeId: "employee-record-1", timestamp: { gte: new Date("2026-05-31T18:30:00.000Z"), lte: new Date("2026-06-30T18:29:59.999Z") } });
+    assert.deepEqual(calls.rawSelect, { id: true, timestamp: true, punchType: true });
+    assert.equal("location" in (calls.rawSelect as Record<string, boolean>), false);
     assert.equal((calls.leaveWhere as { status: string }).status, "APPROVED");
     assert.deepEqual(calls.overtimeWhere, { employeeId: "employee-record-1", date: { gte: new Date("2026-06-01T00:00:00.000Z"), lt: new Date("2026-07-01T00:00:00.000Z") } });
     assert.deepEqual(calls.workFromHomeWhere, {

@@ -6,7 +6,11 @@ import { z } from "zod";
 import { hasPermission } from "@/lib/auth/permissions";
 import { getEmployeeLocalDayWindow } from "@/lib/attendance/timezone";
 import { prisma } from "@/lib/prisma";
-import { attendanceLocationSchema, type AttendanceLocation } from "./validation";
+import { writeAttendanceLocationViewAudit } from "@/lib/attendance/location-audit";
+import {
+  parseAttendanceLocationDetails,
+  type AttendanceLocationDetails,
+} from "./validation";
 
 const locationFiltersSchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
@@ -17,8 +21,9 @@ const locationFiltersSchema = z.object({
   departmentId: z.string().trim().max(100).default(""),
 });
 
-type LocationActor = { role: Role } | null;
-type LocationDatabase = Pick<PrismaClient, "employee" | "attendanceRaw">;
+type LocationActor = { id: string; role: Role } | null;
+type LocationTransaction = Pick<Prisma.TransactionClient, "employee" | "attendanceRaw" | "attendanceAuditLog">;
+type LocationDatabase = Pick<PrismaClient, "$transaction">;
 
 export class AttendanceLocationAuthorizationError extends Error {
   constructor() {
@@ -34,13 +39,8 @@ export type AttendanceLocationRecord = {
   punchType: "IN" | "OUT";
   timestamp: Date;
   timeZone: string;
-  location: AttendanceLocation | null;
+  location: AttendanceLocationDetails | null;
 };
-
-function parseLocation(value: Prisma.JsonValue | null): AttendanceLocation | null {
-  const parsed = attendanceLocationSchema.safeParse(value);
-  return parsed.success ? parsed.data : null;
-}
 
 export async function listAttendanceLocations(
   actor: LocationActor,
@@ -52,57 +52,70 @@ export async function listAttendanceLocations(
   }
 
   const filters = locationFiltersSchema.parse(input);
-  const employees = await database.employee.findMany({
-    where: {
-      user: { is: { role: "EMPLOYEE" } },
-      ...(filters.employeeId ? { id: filters.employeeId } : {}),
-      ...(filters.departmentId ? { departmentId: filters.departmentId } : {}),
-    },
-    select: {
-      id: true,
-      name: true,
-      employeeId: true,
-      user: { select: { timeZone: true } },
-    },
-  });
-  if (employees.length === 0) return [];
+  return database.$transaction(async (transaction) => {
+    const tx: LocationTransaction = transaction;
+    const employees = await tx.employee.findMany({
+      where: {
+        user: { is: { role: "EMPLOYEE" } },
+        ...(filters.employeeId ? { id: filters.employeeId } : {}),
+        ...(filters.departmentId ? { departmentId: filters.departmentId } : {}),
+      },
+      select: {
+        id: true,
+        name: true,
+        employeeId: true,
+        user: { select: { timeZone: true } },
+      },
+    });
 
-  const dateRanges = employees.flatMap((employee) => {
-    const timeZone = employee.user?.timeZone;
-    if (!timeZone) return [];
-    const { startAt, endAt } = getEmployeeLocalDayWindow(
-      fromZonedTime(`${filters.date}T12:00:00.000`, timeZone),
-      timeZone,
-    );
-    return [{ employeeId: employee.id, timestamp: { gte: startAt, lt: endAt } }];
-  });
-  if (dateRanges.length === 0) return [];
+    let records: AttendanceLocationRecord[] = [];
+    if (employees.length > 0) {
+      const dateRanges = employees.flatMap((employee) => {
+        const timeZone = employee.user?.timeZone;
+        if (!timeZone) return [];
+        const { startAt, endAt } = getEmployeeLocalDayWindow(
+          fromZonedTime(`${filters.date}T12:00:00.000`, timeZone),
+          timeZone,
+        );
+        return [{ employeeId: employee.id, timestamp: { gte: startAt, lt: endAt } }];
+      });
 
-  const employeeById = new Map(employees.map((employee) => [employee.id, employee]));
-  const punches = await database.attendanceRaw.findMany({
-    where: { OR: dateRanges },
-    select: {
-      id: true,
-      employeeId: true,
-      timestamp: true,
-      punchType: true,
-      location: true,
-    },
-    orderBy: [{ timestamp: "desc" }, { id: "asc" }],
-    take: 1000,
-  });
+      if (dateRanges.length > 0) {
+        const employeeById = new Map(employees.map((employee) => [employee.id, employee]));
+        const punches = await tx.attendanceRaw.findMany({
+          where: { OR: dateRanges },
+          select: {
+            id: true,
+            employeeId: true,
+            timestamp: true,
+            punchType: true,
+            location: true,
+          },
+          orderBy: [{ timestamp: "desc" }, { id: "asc" }],
+          take: 1000,
+        });
 
-  return punches.flatMap((punch) => {
-    const employee = employeeById.get(punch.employeeId);
-    if (!employee?.user?.timeZone) return [];
-    return [{
-      id: punch.id,
-      employeeName: employee.name,
-      employeeCode: employee.employeeId,
-      punchType: punch.punchType,
-      timestamp: punch.timestamp,
-      timeZone: employee.user.timeZone,
-      location: parseLocation(punch.location),
-    }];
+        records = punches.flatMap((punch) => {
+          const employee = employeeById.get(punch.employeeId);
+          if (!employee?.user?.timeZone) return [];
+          return [{
+            id: punch.id,
+            employeeName: employee.name,
+            employeeCode: employee.employeeId,
+            punchType: punch.punchType,
+            timestamp: punch.timestamp,
+            timeZone: employee.user.timeZone,
+            location: parseAttendanceLocationDetails(punch.location),
+          }];
+        });
+      }
+    }
+
+    await writeAttendanceLocationViewAudit(tx, {
+      actorId: actor.id,
+      viewType: "ADMIN_HR",
+      resultCount: records.length,
+    });
+    return records;
   });
 }

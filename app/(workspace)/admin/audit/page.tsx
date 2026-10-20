@@ -1,6 +1,6 @@
 import { formatInTimeZone } from "date-fns-tz";
 import { prisma } from "@/lib/prisma";
-import { requirePageAdmin } from "@/lib/auth/session";
+import { requirePagePermission } from "@/lib/auth/session";
 
 type SearchParams = { action?: string; employeeId?: string; from?: string; to?: string };
 
@@ -43,7 +43,7 @@ function leaveTypeRecordId(...values: unknown[]) {
 }
 
 export default async function AdminAuditPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
-  await requirePageAdmin();
+  await requirePagePermission("audit:read");
   const params = await searchParams;
   const from = parseDate(params.from);
   const to = parseDate(params.to, true);
@@ -79,7 +79,7 @@ export default async function AdminAuditPage({ searchParams }: { searchParams: P
       <div>
         <p className="text-sm font-medium text-[var(--blue)]">Administration</p>
         <h1 className="mt-1 text-2xl font-semibold sm:text-[28px]">Audit history</h1>
-        <p className="mt-2 text-sm text-[var(--muted)]">Attendance corrections, request reviews, and employee or settings changes.</p>
+        <p className="mt-2 text-sm text-[var(--muted)]">Attendance location access, corrections, request reviews, and employee or settings changes.</p>
       </div>
       <form method="get" className="grid gap-3 rounded-lg border border-[var(--line)] bg-white p-4 sm:grid-cols-2 xl:grid-cols-4 xl:items-end">
         <label className="text-xs font-semibold text-[var(--muted)]">Action type

@@ -13,6 +13,7 @@ export function AppShell({ user, children }: { user: AppUser; children: React.Re
   const canReviewLeave = user.role === "SUPERVISOR" || user.role === "DEPARTMENT_MANAGER";
   const canReadLeaveBalance = user.role === "EMPLOYEE" && hasPermission(user.role, "leave:balance:self:read");
   const canManageEmployees = hasPermission(user.role, "employee:manage");
+  const canReadAuditHistory = hasPermission(user.role, "audit:read");
   const canReadTeamAttendance = user.role !== "ADMIN" && (
     hasPermission(user.role, "attendance:manage")
     || canReadScopedAttendance(user.role)
@@ -38,7 +39,7 @@ export function AppShell({ user, children }: { user: AppUser; children: React.Re
             <p className="mt-0.5 text-[10px] leading-3 text-white/70">Emmanuel&apos;s Lanka Pvt Ltd</p>
           </div>
         </div>
-        <AppNav isAdmin={user.role === "ADMIN"} canManageEmployees={canManageEmployees} canReadTeamAttendance={canReadTeamAttendance} canManageShifts={canManageShifts} canManageLeave={canManageLeave} canReadLeaveBalance={canReadLeaveBalance} canReviewCorrections={canReviewCorrections} canReviewLeave={canReviewLeave} canReadReports={canReadReports} canReadDepartmentReports={canReadDepartmentReports} canSubmitOvertime={canSubmitOvertime} canReviewOvertime={canReviewOvertime} canSubmitWorkFromHome={canSubmitWorkFromHome} canReviewWorkFromHome={canReviewWorkFromHome} />
+        <AppNav isAdmin={user.role === "ADMIN"} canReadAuditHistory={canReadAuditHistory} canManageEmployees={canManageEmployees} canReadTeamAttendance={canReadTeamAttendance} canManageShifts={canManageShifts} canManageLeave={canManageLeave} canReadLeaveBalance={canReadLeaveBalance} canReviewCorrections={canReviewCorrections} canReviewLeave={canReviewLeave} canReadReports={canReadReports} canReadDepartmentReports={canReadDepartmentReports} canSubmitOvertime={canSubmitOvertime} canReviewOvertime={canReviewOvertime} canSubmitWorkFromHome={canSubmitWorkFromHome} canReviewWorkFromHome={canReviewWorkFromHome} />
         <div className="mt-auto border-t border-white/15 p-4">
           <p className="truncate text-xs font-semibold text-white">{user.name}</p>
           <p className="mt-1 truncate text-[11px] text-white/60">{user.email}</p>
@@ -47,7 +48,7 @@ export function AppShell({ user, children }: { user: AppUser; children: React.Re
       <div className="min-h-screen min-w-0 flex-1 md:ml-64">
         <header className="sticky top-0 z-30 flex h-[70px] items-center justify-between border-b border-[var(--line)] bg-white px-4 shadow-sm sm:px-7">
           <div className="flex items-center gap-3 md:hidden">
-            <MobileNav isAdmin={user.role === "ADMIN"} canManageEmployees={canManageEmployees} canReadTeamAttendance={canReadTeamAttendance} canManageShifts={canManageShifts} canManageLeave={canManageLeave} canReadLeaveBalance={canReadLeaveBalance} canReviewCorrections={canReviewCorrections} canReviewLeave={canReviewLeave} canReadReports={canReadReports} canReadDepartmentReports={canReadDepartmentReports} canSubmitOvertime={canSubmitOvertime} canReviewOvertime={canReviewOvertime} canSubmitWorkFromHome={canSubmitWorkFromHome} canReviewWorkFromHome={canReviewWorkFromHome} user={user} />
+            <MobileNav isAdmin={user.role === "ADMIN"} canReadAuditHistory={canReadAuditHistory} canManageEmployees={canManageEmployees} canReadTeamAttendance={canReadTeamAttendance} canManageShifts={canManageShifts} canManageLeave={canManageLeave} canReadLeaveBalance={canReadLeaveBalance} canReviewCorrections={canReviewCorrections} canReviewLeave={canReviewLeave} canReadReports={canReadReports} canReadDepartmentReports={canReadDepartmentReports} canSubmitOvertime={canSubmitOvertime} canReviewOvertime={canReviewOvertime} canSubmitWorkFromHome={canSubmitWorkFromHome} canReviewWorkFromHome={canReviewWorkFromHome} user={user} />
             <Image src="/eml-company-logo.png" alt="Emmanuel's Lanka Pvt Ltd" width={768} height={768} priority className="size-9 shrink-0 object-contain" />
           </div>
           <div className="hidden min-w-0 items-center gap-3 md:flex">

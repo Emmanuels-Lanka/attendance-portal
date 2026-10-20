@@ -2,7 +2,9 @@ import { CalendarDays } from "lucide-react";
 import { formatInTimeZone } from "date-fns-tz";
 import { LocalDateTime } from "@/components/local-date-time";
 import { AttendancePunch } from "@/components/attendance-punch";
+import { AttendanceMapLink } from "@/components/attendance-map-link";
 import { formatWorkedDuration } from "@/lib/attendance/history";
+import { listOwnAttendanceLocations } from "@/lib/attendance/own-location-service";
 import { getEmployeeAttendanceHistory } from "@/lib/attendance/service";
 import { listApprovedWorkFromHomeForAttendance } from "@/lib/wfh/service";
 import { requirePageUser } from "@/lib/auth/session";
@@ -11,6 +13,16 @@ export default async function AttendanceHistoryPage() {
   const user = await requirePageUser();
   const { days, invalidSessions } = await getEmployeeAttendanceHistory(user);
   const approvedWorkFromHome = await listApprovedWorkFromHomeForAttendance(user);
+  let ownLocationHistory: Awaited<ReturnType<typeof listOwnAttendanceLocations>> | null = null;
+  let ownLocationReadFailed = false;
+  if (user.role === "EMPLOYEE") {
+    try {
+      ownLocationHistory = await listOwnAttendanceLocations(user);
+    } catch (error) {
+      ownLocationReadFailed = true;
+      console.error("Employee attendance location read failed", error instanceof Error ? error.name : "Unknown error");
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -19,6 +31,79 @@ export default async function AttendanceHistoryPage() {
         <h1 className="mt-1 text-2xl font-semibold sm:text-[28px]">Attendance history</h1>
         <p className="mt-2 text-sm text-[var(--muted)]">Sessions grouped by local start date ({user.timeZone}).</p>
       </div>
+      {ownLocationReadFailed ? (
+        <section className="overflow-hidden rounded-lg border border-[var(--line)] bg-white px-4 py-5 shadow-sm" aria-labelledby="personal-location-history-title">
+          <h2 id="personal-location-history-title" className="text-base font-semibold">My punch locations</h2>
+          <p role="alert" className="mt-2 text-sm text-[var(--danger)]">Location history could not be loaded. Try again shortly.</p>
+        </section>
+      ) : ownLocationHistory && (
+        <section className="overflow-hidden rounded-lg border border-[var(--line)] bg-white shadow-sm" aria-labelledby="personal-location-history-title">
+          <header className="border-b border-[var(--line)] px-4 py-4 sm:px-5">
+            <h2 id="personal-location-history-title" className="text-base font-semibold">My punch locations</h2>
+            <p className="mt-1 text-xs leading-5 text-[var(--muted)]">
+              Only locations recorded for your own attendance punches are shown here.
+            </p>
+          </header>
+          {!ownLocationHistory.employeeRecordFound ? (
+            <p role="status" className="px-4 py-5 text-sm text-[var(--muted)]">
+              Location history is unavailable because this account has no linked Employee record.
+            </p>
+          ) : ownLocationHistory.records.length === 0 ? (
+            <p role="status" className="px-4 py-5 text-sm text-[var(--muted)]">
+              No raw attendance punches are available in your location history.
+            </p>
+          ) : (
+            <>
+              {ownLocationHistory.limitReached && (
+                <p role="status" className="border-b border-[var(--line)] px-4 py-3 text-xs text-[var(--muted)]">
+                  Showing the 500 most recent punches. Older locations are not included in this view.
+                </p>
+              )}
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[640px] text-left text-sm">
+                  <thead className="border-b border-[var(--line)] bg-zinc-50 text-xs text-[var(--muted)]">
+                    <tr>
+                      <th className="px-4 py-3 font-semibold">Punch</th>
+                      <th className="px-4 py-3 font-semibold">Recorded time</th>
+                      <th className="px-4 py-3 font-semibold">Coordinates</th>
+                      <th className="px-4 py-3 font-semibold">Accuracy</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[var(--line)]">
+                    {ownLocationHistory.records.map((punch) => (
+                      <tr key={punch.id}>
+                        <td className="px-4 py-3">
+                          <span className={`rounded-sm px-2 py-1 text-xs font-semibold ${punch.punchType === "IN" ? "bg-emerald-50 text-emerald-800" : "bg-amber-50 text-amber-800"}`}>
+                            {punch.punchType}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 tabular-nums">
+                          {formatInTimeZone(punch.timestamp, user.timeZone, "yyyy-MM-dd HH:mm:ss")}
+                        </td>
+                        <td className="px-4 py-3 font-mono text-xs">
+                          {punch.location ? (
+                            <>
+                              <span>{punch.location.latitude}, {punch.location.longitude}</span>
+                              <AttendanceMapLink location={punch.location} />
+                            </>
+                          ) : (
+                            <span className="font-sans text-[var(--muted)]">Location unavailable</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 tabular-nums">
+                          {punch.location?.accuracy !== null && punch.location
+                            ? `${punch.location.accuracy} m`
+                            : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </section>
+      )}
       <section className="overflow-hidden rounded-lg border border-[var(--line)] bg-white shadow-sm" aria-label="Attendance sessions">
         {days.length === 0 ? (
           <div className="flex min-h-64 flex-col items-center justify-center px-6 text-center">

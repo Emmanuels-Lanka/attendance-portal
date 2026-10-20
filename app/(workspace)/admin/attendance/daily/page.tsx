@@ -2,6 +2,7 @@ import { formatInTimeZone } from "date-fns-tz";
 import { CalendarDays } from "lucide-react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { AttendanceMapLink } from "@/components/attendance-map-link";
 import {
   dailyAttendanceFiltersSchema,
   listCalculatedDailyAttendance,
@@ -254,11 +255,18 @@ export default async function DailyAttendancePage({
                         </td>
                         <td className="px-4 py-3 font-mono text-xs">
                           {punch.location
-                            ? `${punch.location.latitude}, ${punch.location.longitude}`
+                            ? (
+                              <>
+                                <span>{punch.location.latitude}, {punch.location.longitude}</span>
+                                <AttendanceMapLink location={punch.location} />
+                              </>
+                            )
                             : <span className="font-sans text-[var(--muted)]">No stored location</span>}
                         </td>
                         <td className="px-4 py-3 tabular-nums">
-                          {punch.location ? `${punch.location.accuracy} m` : "—"}
+                          {punch.location?.accuracy !== null && punch.location
+                            ? `${punch.location.accuracy} m`
+                            : "—"}
                         </td>
                       </tr>
                     ))}
