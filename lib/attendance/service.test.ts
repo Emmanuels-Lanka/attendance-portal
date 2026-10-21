@@ -34,6 +34,7 @@ function createDatabase(
     employeeId: string;
     timestamp: Date;
     punchType: "IN" | "OUT";
+    workMode: "OFFICE" | "WFH";
     source: string;
     deviceId: null;
     location: AttendanceLocation;
@@ -163,10 +164,11 @@ describe("employee attendance transitions", () => {
     assert.equal(started.startAt.toISOString(), startedAt.toISOString());
     assert.equal(ended.endAt?.toISOString(), endedAt.toISOString());
     assert.deepEqual(stub.rawPunches[0], acceptedInPunch);
-    assert.deepEqual(stub.rawPunches.map(({ employeeId, timestamp, punchType, source, deviceId, location }) => ({
+    assert.deepEqual(stub.rawPunches.map(({ employeeId, timestamp, punchType, workMode, source, deviceId, location }) => ({
       employeeId,
       timestamp: timestamp.toISOString(),
       punchType,
+      workMode,
       source,
       deviceId,
       location,
@@ -175,6 +177,7 @@ describe("employee attendance transitions", () => {
         employeeId: "employee-record-1",
         timestamp: startedAt.toISOString(),
         punchType: "IN",
+        workMode: "OFFICE",
         source: "WEB",
         deviceId: null,
         location: inLocation,
@@ -183,6 +186,7 @@ describe("employee attendance transitions", () => {
         employeeId: "employee-record-1",
         timestamp: endedAt.toISOString(),
         punchType: "OUT",
+        workMode: "OFFICE",
         source: "WEB",
         deviceId: null,
         location: outLocation,
@@ -191,6 +195,18 @@ describe("employee attendance transitions", () => {
     assert.equal(stub.sessions.length, 1);
     assert.equal(stub.sessions[0].startAt.toISOString(), stub.rawPunches[0].timestamp.toISOString());
     assert.equal(stub.sessions[0].endAt?.toISOString(), stub.rawPunches[1].timestamp.toISOString());
+  });
+
+  it("persists WFH_IN and WFH_OUT as directional punches with separate WFH mode", async () => {
+    const startStub = createDatabase();
+    await applyAttendanceAction("employee-1", "WFH_IN", startStub.database);
+    assert.equal(startStub.rawPunches[0].punchType, "IN");
+    assert.equal(startStub.rawPunches[0].workMode, "WFH");
+
+    const endStub = createDatabase([{ ...activeSession("wfh-open"), mode: "WFH" }]);
+    await applyAttendanceAction("employee-1", "WFH_OUT", endStub.database);
+    assert.equal(endStub.rawPunches[0].punchType, "OUT");
+    assert.equal(endStub.rawPunches[0].workMode, "WFH");
   });
 
   it("does not create raw evidence for rejected actions or users without a linked Employee", async () => {

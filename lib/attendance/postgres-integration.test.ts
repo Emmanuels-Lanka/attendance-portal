@@ -57,6 +57,7 @@ it("serializes real concurrent actions and admin reopen corrections in PostgreSQ
     });
     assert.equal((await openSessions()).length, 1);
     assert.equal(await prisma.attendanceRaw.count({ where: { employeeId: employeeRecord.id, punchType: "IN" } }), 1);
+    assert.equal(await prisma.attendanceRaw.count({ where: { employeeId: employeeRecord.id, punchType: "IN", workMode: "OFFICE" } }), 1);
 
     const concurrentEnds = await Promise.allSettled([
       applyAttendanceAction(employeeId, "OUT", prisma, actionTime),
@@ -67,6 +68,7 @@ it("serializes real concurrent actions and admin reopen corrections in PostgreSQ
     assert.ok(rejectedEnd?.reason instanceof AttendanceStateError);
     assert.equal((await openSessions()).length, 0);
     assert.equal(await prisma.attendanceRaw.count({ where: { employeeId: employeeRecord.id, punchType: "OUT" } }), 1);
+    assert.equal(await prisma.attendanceRaw.count({ where: { employeeId: employeeRecord.id, punchType: "OUT", workMode: "OFFICE" } }), 1);
     assert.equal(await prisma.attendanceRaw.count({ where: { employeeId: employeeRecord.id } }), 2);
 
     const completedSession = await prisma.workSession.findFirst({
@@ -97,6 +99,14 @@ it("serializes real concurrent actions and admin reopen corrections in PostgreSQ
     const nextLocalDay = getEmployeeLocalDayWindow(actionTime, "Asia/Colombo").endAt;
     await applyAttendanceAction(employeeId, "WFH_IN", prisma, nextLocalDay);
     assert.equal((await openSessions()).length, 1);
+    assert.equal(await prisma.attendanceRaw.count({
+      where: { employeeId: employeeRecord.id, timestamp: nextLocalDay, punchType: "IN", workMode: "WFH" },
+    }), 1);
+    const wfhEnd = new Date(nextLocalDay.getTime() + 60_000);
+    await applyAttendanceAction(employeeId, "WFH_OUT", prisma, wfhEnd);
+    assert.equal(await prisma.attendanceRaw.count({
+      where: { employeeId: employeeRecord.id, timestamp: wfhEnd, punchType: "OUT", workMode: "WFH" },
+    }), 1);
   } finally {
     if (employeeRecordId) {
       await prisma.attendanceRaw.deleteMany({ where: { employeeId: employeeRecordId } });
