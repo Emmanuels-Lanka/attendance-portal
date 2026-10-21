@@ -6,11 +6,12 @@ import {
   AttendanceLocationAuthorizationError,
   listAttendanceLocations,
 } from "./location-service";
+import { attendanceLocationPunchLabel, hasPoorGpsAccuracy, POOR_GPS_ACCURACY_THRESHOLD_METERS } from "./location-presentation";
 
 const storedLocation = { latitude: 6.9271, longitude: 79.8612, accuracy: 12.5 };
 
-function makeDatabase(options: { auditFailure?: boolean; queryFailure?: boolean } = {}) {
-  const calls: { employees?: unknown; punches?: unknown } = {};
+function makeDatabase(options: { auditFailure?: boolean; queryFailure?: boolean; sessions?: unknown[]; punches?: unknown[] } = {}) {
+  const calls: { employees?: unknown; punches?: unknown; sessions?: unknown } = {};
   const database = {
     auditEvents: [] as unknown[],
     $transaction: async <T>(callback: (transaction: unknown) => Promise<T>) => callback({
@@ -21,7 +22,7 @@ function makeDatabase(options: { auditFailure?: boolean; queryFailure?: boolean 
             id: "employee-record-1",
             name: "Alex Employee",
             employeeId: "E-1",
-            user: { timeZone: "Asia/Colombo" },
+            user: { id: "employee-user-1", timeZone: "Asia/Colombo" },
           }];
         },
       },
@@ -29,12 +30,13 @@ function makeDatabase(options: { auditFailure?: boolean; queryFailure?: boolean 
         findMany: async (args: unknown) => {
           calls.punches = args;
           if (options.queryFailure) throw new Error("query failed");
-          return [
+          return options.punches ?? [
             {
               id: "raw-out",
               employeeId: "employee-record-1",
               timestamp: new Date("2026-10-05T11:30:00.000Z"),
               punchType: "OUT",
+              workMode: null,
               location: storedLocation,
             },
             {
@@ -42,9 +44,16 @@ function makeDatabase(options: { auditFailure?: boolean; queryFailure?: boolean 
               employeeId: "employee-record-1",
               timestamp: new Date("2026-10-05T02:30:00.000Z"),
               punchType: "IN",
+              workMode: null,
               location: null,
             },
           ];
+        },
+      },
+      workSession: {
+        findMany: async (args: unknown) => {
+          calls.sessions = args;
+          return options.sessions ?? [];
         },
       },
       attendanceAuditLog: {
@@ -69,9 +78,9 @@ describe("attendance location reads", () => {
         stub.database,
       );
 
-      assert.deepEqual(records.map(({ punchType, location }) => [punchType, location]), [
-        ["OUT", storedLocation],
-        ["IN", null],
+      assert.deepEqual(records.map(({ punchType, workMode, location }) => [punchType, workMode, location]), [
+        ["OUT", null, storedLocation],
+        ["IN", null, null],
       ]);
       assert.deepEqual(stub.calls.employees, {
         where: {
@@ -83,7 +92,7 @@ describe("attendance location reads", () => {
           id: true,
           name: true,
           employeeId: true,
-          user: { select: { timeZone: true } },
+          user: { select: { id: true, timeZone: true } },
         },
       });
       const punchQuery = stub.calls.punches as { where: { OR: Array<{ employeeId: string; timestamp: { gte: Date; lt: Date } }> } };
@@ -102,6 +111,111 @@ describe("attendance location reads", () => {
       assert.equal(JSON.stringify(auditEvent).includes("longitude"), false);
       assert.equal(JSON.stringify(auditEvent).includes("accuracy"), false);
     }
+  });
+
+  it("infers a historical mode only from one exact related-session timestamp match", async () => {
+    const startAt = new Date("2026-10-05T02:30:00.000Z");
+    const endAt = new Date("2026-10-05T11:30:00.000Z");
+    const stub = makeDatabase({
+      sessions: [
+        { mode: "WFH", startAt, endAt: null, record: { employeeId: "employee-user-1" } },
+        { mode: "OFFICE", startAt: new Date("2026-10-04T02:30:00.000Z"), endAt, record: { employeeId: "employee-user-1" } },
+      ],
+    });
+    const records = await listAttendanceLocations(
+      { id: "admin", role: Role.ADMIN },
+      { date: "2026-10-05" },
+      stub.database,
+    );
+
+    assert.deepEqual(records.map(({ punchType, workMode }) => [punchType, workMode]), [
+      ["OUT", "OFFICE"],
+      ["IN", "WFH"],
+    ]);
+    assert.ok(stub.calls.sessions);
+  });
+
+  it("keeps a stored work mode after session corrections and leaves ambiguous legacy mode unknown", async () => {
+    const startAt = new Date("2026-10-05T02:30:00.000Z");
+    const stub = makeDatabase({
+      sessions: [
+        { mode: "OFFICE", startAt, endAt: null, record: { employeeId: "employee-user-1" } },
+        { mode: "WFH", startAt, endAt: null, record: { employeeId: "employee-user-1" } },
+      ],
+      punches: [
+        {
+          id: "stored-wfh",
+          employeeId: "employee-record-1",
+          timestamp: startAt,
+          punchType: "IN",
+          workMode: "WFH",
+          location: storedLocation,
+        },
+        {
+          id: "ambiguous-legacy",
+          employeeId: "employee-record-1",
+          timestamp: startAt,
+          punchType: "IN",
+          workMode: null,
+          location: null,
+        },
+      ],
+    });
+    const records = await listAttendanceLocations(
+      { id: "admin", role: Role.ADMIN },
+      { date: "2026-10-05" },
+      stub.database,
+    );
+
+    assert.deepEqual(records.map(({ workMode }) => workMode), ["WFH", null]);
+  });
+
+  it("formats all four punch labels and flags poor accuracy without changing its value", () => {
+    assert.deepEqual([
+      attendanceLocationPunchLabel("IN", "OFFICE"),
+      attendanceLocationPunchLabel("OUT", "OFFICE"),
+      attendanceLocationPunchLabel("IN", "WFH"),
+      attendanceLocationPunchLabel("OUT", "WFH"),
+      attendanceLocationPunchLabel("IN", null),
+    ], ["IN", "OUT", "WFH-IN", "WFH-OUT", "IN"]);
+    assert.equal(hasPoorGpsAccuracy(12.5), false);
+    assert.equal(hasPoorGpsAccuracy(POOR_GPS_ACCURACY_THRESHOLD_METERS), false);
+    const poorAccuracy = 3798.125;
+    assert.equal(hasPoorGpsAccuracy(poorAccuracy), true);
+    assert.equal(poorAccuracy, 3798.125);
+  });
+
+  it("returns ordinary and poor browser-reported accuracy values unchanged", async () => {
+    const poorAccuracy = 3798.125;
+    const stub = makeDatabase({
+      punches: [
+        {
+          id: "ordinary-accuracy",
+          employeeId: "employee-record-1",
+          timestamp: new Date("2026-10-05T02:30:00.000Z"),
+          punchType: "IN",
+          workMode: "OFFICE",
+          location: storedLocation,
+        },
+        {
+          id: "poor-accuracy",
+          employeeId: "employee-record-1",
+          timestamp: new Date("2026-10-05T11:30:00.000Z"),
+          punchType: "OUT",
+          workMode: "WFH",
+          location: { ...storedLocation, accuracy: poorAccuracy },
+        },
+      ],
+    });
+    const records = await listAttendanceLocations(
+      { id: "admin", role: Role.ADMIN },
+      { date: "2026-10-05" },
+      stub.database,
+    );
+
+    assert.deepEqual(records.map(({ location }) => location?.accuracy), [12.5, poorAccuracy]);
+    assert.equal(hasPoorGpsAccuracy(records[0].location!.accuracy!), false);
+    assert.equal(hasPoorGpsAccuracy(records[1].location!.accuracy!), true);
   });
 
   it("rejects employees, department managers, supervisors, and anonymous callers before querying", async () => {

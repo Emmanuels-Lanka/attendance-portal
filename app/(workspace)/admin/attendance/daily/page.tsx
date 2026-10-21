@@ -3,6 +3,7 @@ import { CalendarDays } from "lucide-react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { AttendanceMapLink } from "@/components/attendance-map-link";
+import { AttendanceLocationAccuracy, AttendanceLocationPunchLabel } from "@/components/attendance-location-values";
 import {
   dailyAttendanceFiltersSchema,
   listCalculatedDailyAttendance,
@@ -211,7 +212,7 @@ export default async function DailyAttendancePage({
           <header className="border-b border-[var(--line)] px-4 py-4 sm:px-5">
             <h2 id="attendance-locations-title" className="text-base font-semibold">Precise punch locations</h2>
             <p className="mt-1 text-xs leading-5 text-[var(--muted)]">
-              Device-reported location for each individual IN and OUT punch. Historical punches without saved coordinates remain listed.
+              Device-reported location for each individual punch. Accuracy is the browser/device estimate, not a guaranteed measurement of actual error. Historical punches without saved coordinates remain listed.
             </p>
           </header>
           {!filters.date ? (
@@ -246,9 +247,7 @@ export default async function DailyAttendancePage({
                           {punch.employeeCode && <p className="mt-0.5 text-xs text-[var(--muted)]">{punch.employeeCode}</p>}
                         </td>
                         <td className="px-4 py-3">
-                          <span className={`rounded-sm px-2 py-1 text-xs font-semibold ${punch.punchType === "IN" ? "bg-emerald-50 text-emerald-800" : "bg-amber-50 text-amber-800"}`}>
-                            {punch.punchType}
-                          </span>
+                          <AttendanceLocationPunchLabel direction={punch.punchType} workMode={punch.workMode} />
                         </td>
                         <td className="px-4 py-3 tabular-nums">
                           {formatInTimeZone(punch.timestamp, punch.timeZone, "yyyy-MM-dd HH:mm:ss")}
@@ -264,9 +263,7 @@ export default async function DailyAttendancePage({
                             : <span className="font-sans text-[var(--muted)]">No stored location</span>}
                         </td>
                         <td className="px-4 py-3 tabular-nums">
-                          {punch.location?.accuracy !== null && punch.location
-                            ? `${punch.location.accuracy} m`
-                            : "—"}
+                          <AttendanceLocationAccuracy accuracy={punch.location?.accuracy ?? null} />
                         </td>
                       </tr>
                     ))}
