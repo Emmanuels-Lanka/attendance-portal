@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { inflateSync } from "node:zlib";
 import nextConfig from "../../next.config";
 import { attendanceStatusSummaryText, createMonthlyAttendancePdf, overtimeSummaryText } from "./monthly-pdf";
 
@@ -90,6 +91,60 @@ describe("monthly attendance PDF export", () => {
     assert.ok(pdfSource.includes("/Subtype /Image"));
     assert.ok(pdfSource.includes("/FontFile2"));
     assert.ok(pdf.subarray(-20).toString("ascii").includes("%%EOF"));
+  });
+
+  it("never includes precise location data in monthly PDFs", async () => {
+    const sentinels = [
+      "51.987654321",
+      "-123.987654321",
+      "987654321.125",
+      "GPS_RAW_PRIVACY_SENTINEL",
+      "https://maps.google.com/?q=GPS_MAP_PRIVACY_SENTINEL",
+    ];
+    const sessionWithPrivateData = Object.assign({
+      id: "privacy-test-session",
+      mode: "OFFICE" as const,
+      startAt: new Date("2026-06-15T03:30:00.000Z"),
+      endAt: new Date("2026-06-15T11:30:00.000Z"),
+    }, {
+      location: {
+        latitude: sentinels[0],
+        longitude: sentinels[1],
+        accuracy: sentinels[2],
+      },
+      rawLocationJson: sentinels[3],
+      mapUrl: sentinels[4],
+    });
+    const pdf = await createMonthlyAttendancePdf({
+      month: "2026-06",
+      title: "Employee attendance",
+      employees: [{
+        name: "Jane Employee",
+        timeZone: "Asia/Colombo",
+        report: {
+          monthLabel: "2026-06",
+          empty: false,
+          summary: { totalSessions: 1, completedSessions: 1, activeSessions: 0, totalWorkedMs: 8 * 60 * 60 * 1000 },
+          days: [{
+            date: "2026-06-15",
+            sessions: [sessionWithPrivateData],
+            totalWorkedMs: 8 * 60 * 60 * 1000,
+          }],
+        },
+      }],
+      summary: { totalSessions: 1, totalWorkedMs: 8 * 60 * 60 * 1000 },
+    });
+    const rawContent = pdf.toString("latin1");
+    const inflatedStreams = [...rawContent.matchAll(/stream\r?\n([\s\S]*?)\r?\nendstream/g)]
+      .map(([, stream]) => Buffer.from(stream, "latin1"))
+      .filter((stream) => stream[0] === 0x78)
+      .map((stream) => inflateSync(stream).toString("latin1"))
+      .join("\n");
+    const pdfContent = `${rawContent}\n${inflatedStreams}`;
+
+    for (const sentinel of sentinels) {
+      assert.equal(pdfContent.includes(sentinel), false, `PDF included ${sentinel}`);
+    }
   });
 
   it("summarizes saved attendance statuses and keeps unavailable values explicit", () => {

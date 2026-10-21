@@ -242,6 +242,25 @@ describe("employee attendance transitions", () => {
     assert.equal(stub.rawPunches.length, 0);
   });
 
+  it("rejects invalid server timestamps before writing either IN or OUT", async () => {
+    const invalidTimestamp = new Date(Number.NaN);
+    const startStub = createDatabase();
+    const endStub = createDatabase([activeSession("open")]);
+
+    await assert.rejects(
+      applyAttendanceActionWithLocation("employee-1", "IN", testLocation, startStub.database, invalidTimestamp),
+      /valid server timestamp/,
+    );
+    await assert.rejects(
+      applyAttendanceActionWithLocation("employee-1", "OUT", testLocation, endStub.database, invalidTimestamp),
+      /valid server timestamp/,
+    );
+    assert.equal(startStub.sessions.length, 0);
+    assert.equal(startStub.rawPunches.length, 0);
+    assert.equal(endStub.sessions[0].endAt, null);
+    assert.equal(endStub.rawPunches.length, 0);
+  });
+
   it("serializes competing same-day starts after a completed session", async () => {
     const now = new Date("2026-06-15T04:00:00.000Z");
     const completed = { ...activeSession("completed"), endAt: new Date("2026-06-15T05:00:00.000Z") };
@@ -343,5 +362,8 @@ describe("employee attendance transitions", () => {
     assert.equal(attendanceLocationSchema.safeParse({ latitude: 91, longitude: 0, accuracy: 0 }).success, false);
     assert.equal(attendanceLocationSchema.safeParse({ latitude: 0, longitude: 181, accuracy: 0 }).success, false);
     assert.equal(attendanceLocationSchema.safeParse({ latitude: 0, longitude: 0, accuracy: -0.1 }).success, false);
+    assert.equal(attendanceLocationSchema.safeParse({ latitude: 0, longitude: 0 }).success, false);
+    assert.equal(attendanceLocationSchema.safeParse({ latitude: 0, longitude: 0, accuracy: "10" }).success, false);
+    assert.equal(attendanceLocationSchema.safeParse({ latitude: 0, longitude: 0, accuracy: Number.NaN }).success, false);
   });
 });

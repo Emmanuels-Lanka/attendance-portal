@@ -15,6 +15,7 @@ export async function writeAttendanceLocationViewAudit(
     actorId: string;
     viewType: AttendanceLocationViewType;
     resultCount: number;
+    filters?: { date: string; employeeId: string | null; departmentId: string | null };
   },
 ) {
   try {
@@ -26,6 +27,7 @@ export async function writeAttendanceLocationViewAudit(
         newValues: {
           viewType: input.viewType,
           resultCount: input.resultCount,
+          ...(input.filters ? { filters: input.filters } : {}),
         },
       },
       select: { id: true },

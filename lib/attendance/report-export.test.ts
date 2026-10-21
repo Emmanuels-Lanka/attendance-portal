@@ -145,4 +145,53 @@ describe("monthly attendance report exports", () => {
     assert.equal(workbook.getWorksheet("Attendance")?.rowCount, 2);
     assert.equal(workbook.getWorksheet("Attendance")?.getCell(2, 2).value, 0);
   });
+
+  it("never includes precise location data in monthly CSV or Excel exports", async () => {
+    const locationSentinels = [
+      "51.987654321",
+      "-123.987654321",
+      "987654321.125",
+      "GPS_RAW_PRIVACY_SENTINEL",
+      "https://maps.google.com/?q=GPS_MAP_PRIVACY_SENTINEL",
+    ];
+    const sessionWithPrivateData = Object.assign({
+      id: "privacy-test-session",
+      mode: "OFFICE" as const,
+      startAt: new Date("2026-06-15T03:30:00.000Z"),
+      endAt: new Date("2026-06-15T11:30:00.000Z"),
+    }, {
+      location: {
+        latitude: locationSentinels[0],
+        longitude: locationSentinels[1],
+        accuracy: locationSentinels[2],
+      },
+      rawLocationJson: locationSentinels[3],
+      mapUrl: locationSentinels[4],
+    });
+    const privacyEmployee = {
+      ...employees[0],
+      report: {
+        ...employees[0].report,
+        days: [{
+          date: "2026-06-15",
+          sessions: [sessionWithPrivateData],
+          totalWorkedMs: 28_800_000,
+        }],
+      },
+    };
+    const rows = buildMonthlyAttendanceExportRows("2026-06", [privacyEmployee], totals);
+    const csv = createCsvReport(monthlyAttendanceExportHeaders, rows).toString("utf8");
+    const xlsx = await createXlsxReport("Attendance", monthlyAttendanceExportHeaders, rows);
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(xlsx as unknown as Parameters<typeof workbook.xlsx.load>[0]);
+    const worksheetValues: string[] = [];
+    workbook.getWorksheet("Attendance")?.eachRow((row) => {
+      row.eachCell((cell) => worksheetValues.push(String(cell.value ?? "")));
+    });
+
+    for (const sentinel of locationSentinels) {
+      assert.equal(csv.includes(sentinel), false, `CSV included ${sentinel}`);
+      assert.equal(worksheetValues.some((value) => value.includes(sentinel)), false, `XLSX included ${sentinel}`);
+    }
+  });
 });

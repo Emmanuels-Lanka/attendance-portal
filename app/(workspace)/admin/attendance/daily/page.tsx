@@ -121,11 +121,11 @@ export default async function DailyAttendancePage({
 
   const { filters } = result;
   const canReadLocations = hasPermission(actor.role, "attendance:locations:read");
-  let locationRecords: Awaited<ReturnType<typeof listAttendanceLocations>> = [];
+  let locationResult: Awaited<ReturnType<typeof listAttendanceLocations>> = { records: [], limitReached: false };
   let locationReadFailed = false;
   if (canReadLocations && filters.date) {
     try {
-      locationRecords = await listAttendanceLocations(actor, {
+      locationResult = await listAttendanceLocations(actor, {
         date: filters.date,
         employeeId: filters.employeeId,
         departmentId: filters.departmentId,
@@ -219,11 +219,11 @@ export default async function DailyAttendancePage({
             <p className="px-4 py-5 text-sm text-[var(--muted)]">Select a date above to inspect punch locations.</p>
           ) : locationReadFailed ? (
             <p role="alert" className="px-4 py-5 text-sm text-[var(--danger)]">Punch locations could not be loaded. Try again shortly.</p>
-          ) : locationRecords.length === 0 ? (
+          ) : locationResult.records.length === 0 ? (
             <p role="status" className="px-4 py-5 text-sm text-[var(--muted)]">No raw attendance punches match this date and employee filter.</p>
           ) : (
             <>
-              {locationRecords.length === 1000 && (
+              {locationResult.limitReached && (
                 <p role="status" className="border-b border-[var(--line)] px-4 py-3 text-xs text-[var(--muted)]">
                   Showing the 1,000 most recent matching punches. Narrow the date or employee filter to inspect fewer records.
                 </p>
@@ -240,7 +240,7 @@ export default async function DailyAttendancePage({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[var(--line)]">
-                    {locationRecords.map((punch) => (
+                    {locationResult.records.map((punch) => (
                       <tr key={punch.id}>
                         <td className="px-4 py-3">
                           <p className="font-semibold">{punch.employeeName}</p>

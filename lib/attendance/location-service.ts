@@ -20,6 +20,7 @@ const locationFiltersSchema = z.object({
   employeeId: z.string().trim().max(100).default(""),
   departmentId: z.string().trim().max(100).default(""),
 });
+const locationResultLimit = 1000;
 
 type LocationActor = { id: string; role: Role } | null;
 type LocationTransaction = Pick<Prisma.TransactionClient, "employee" | "attendanceRaw" | "attendanceAuditLog" | "workSession">;
@@ -47,7 +48,7 @@ export async function listAttendanceLocations(
   actor: LocationActor,
   input: unknown,
   database: LocationDatabase = prisma,
-): Promise<AttendanceLocationRecord[]> {
+): Promise<{ records: AttendanceLocationRecord[]; limitReached: boolean }> {
   if (!actor || !hasPermission(actor.role, "attendance:locations:read")) {
     throw new AttendanceLocationAuthorizationError();
   }
@@ -70,6 +71,7 @@ export async function listAttendanceLocations(
     });
 
     let records: AttendanceLocationRecord[] = [];
+    let limitReached = false;
     if (employees.length > 0) {
       const dateRanges = employees.flatMap((employee) => {
         const timeZone = employee.user?.timeZone;
@@ -94,8 +96,9 @@ export async function listAttendanceLocations(
             location: true,
           },
           orderBy: [{ timestamp: "desc" }, { id: "asc" }],
-          take: 1000,
+          take: locationResultLimit + 1,
         });
+        limitReached = punches.length > locationResultLimit;
 
         const historicalPunches = punches.filter((punch) => punch.workMode === null);
         const inTimestamps = [...new Map(
@@ -135,7 +138,7 @@ export async function listAttendanceLocations(
           historicalModes.set(punch.id, matches.length === 1 ? matches[0].mode : null);
         }
 
-        records = punches.flatMap((punch) => {
+        records = punches.slice(0, locationResultLimit).flatMap((punch) => {
           const employee = employeeById.get(punch.employeeId);
           if (!employee?.user?.timeZone) return [];
           return [{
@@ -156,7 +159,12 @@ export async function listAttendanceLocations(
       actorId: actor.id,
       viewType: "ADMIN_HR",
       resultCount: records.length,
+      filters: {
+        date: filters.date,
+        employeeId: filters.employeeId || null,
+        departmentId: filters.departmentId || null,
+      },
     });
-    return records;
+    return { records, limitReached };
   });
 }

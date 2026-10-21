@@ -9,6 +9,7 @@ import {
 
 function makeDatabase(options: { employeeRecordId?: string | null; punches?: unknown[]; auditFailure?: boolean; queryFailure?: boolean } = {}) {
   const calls: { employee?: unknown; punches?: unknown } = {};
+  let auditAttempts = 0;
   const database = {
     auditEvents: [] as unknown[],
     $transaction: async <T>(callback: (transaction: unknown) => Promise<T>) => callback({
@@ -42,6 +43,7 @@ function makeDatabase(options: { employeeRecordId?: string | null; punches?: unk
       },
       attendanceAuditLog: {
         create: async (args: unknown) => {
+          auditAttempts += 1;
           if (options.auditFailure) throw new Error("database details with sensitive data");
           (database.auditEvents as unknown[]).push(args);
           return { id: "audit-1" };
@@ -49,7 +51,7 @@ function makeDatabase(options: { employeeRecordId?: string | null; punches?: unk
       },
     }),
   };
-  return { database: database as never, auditEvents: database.auditEvents, calls };
+  return { database: database as never, auditEvents: database.auditEvents, calls, getAuditAttempts: () => auditAttempts };
 }
 
 describe("employee-owned attendance locations", () => {
@@ -87,6 +89,7 @@ describe("employee-owned attendance locations", () => {
     ]);
     assert.equal(records.employeeRecordFound, true);
     assert.equal(records.limitReached, false);
+    assert.equal(stub.getAuditAttempts(), 1);
     assert.deepEqual(stub.auditEvents, [{
       data: {
         actorId: "authenticated-user",
@@ -99,6 +102,12 @@ describe("employee-owned attendance locations", () => {
     assert.equal(JSON.stringify(stub.auditEvents).includes("latitude"), false);
     assert.equal(JSON.stringify(stub.auditEvents).includes("longitude"), false);
     assert.equal(JSON.stringify(stub.auditEvents).includes("accuracy"), false);
+    assert.equal(JSON.stringify(stub.auditEvents).includes("rawLocationJson"), false);
+    assert.equal(JSON.stringify(stub.auditEvents).includes("mapUrl"), false);
+    assert.equal(JSON.stringify(stub.auditEvents).includes("maps.google.com"), false);
+    assert.equal(JSON.stringify(stub.auditEvents).includes("6.9272"), false);
+    assert.equal(JSON.stringify(stub.auditEvents).includes("79.8613"), false);
+    assert.equal(JSON.stringify(stub.auditEvents).includes("12.5"), false);
   });
 
   it("does not allow supplied employee identifiers to change the session-derived query scope", async () => {
@@ -130,6 +139,7 @@ describe("employee-owned attendance locations", () => {
       },
       select: { id: true },
     });
+    assert.equal(stub.getAuditAttempts(), 1);
   });
 
   it("returns an unavailable empty result when the employee account has no linked record", async () => {
@@ -151,6 +161,7 @@ describe("employee-owned attendance locations", () => {
       },
       select: { id: true },
     });
+    assert.equal(stub.getAuditAttempts(), 1);
   });
 
   it("keeps usable coordinates but marks absent or malformed accuracy unavailable", async () => {
@@ -248,6 +259,7 @@ describe("employee-owned attendance locations", () => {
     );
     assert.ok(stub.calls.punches);
     assert.equal(stub.auditEvents.length, 0);
+    assert.equal(stub.getAuditAttempts(), 1);
   });
 
   it("does not write a successful-view event when the self-location query fails", async () => {
@@ -261,5 +273,27 @@ describe("employee-owned attendance locations", () => {
       /query failed/,
     );
     assert.equal(stub.auditEvents.length, 0);
+    assert.equal(stub.getAuditAttempts(), 0);
+  });
+
+  it("audits an empty self-view result exactly once", async () => {
+    const stub = makeDatabase({ punches: [] });
+    const result = await listOwnAttendanceLocations({
+      id: "authenticated-user",
+      role: Role.EMPLOYEE,
+      timeZone: "Asia/Colombo",
+    }, stub.database);
+
+    assert.deepEqual(result, { employeeRecordFound: true, records: [], limitReached: false });
+    assert.equal(stub.getAuditAttempts(), 1);
+    assert.deepEqual(stub.auditEvents[0], {
+      data: {
+        actorId: "authenticated-user",
+        employeeId: null,
+        actionType: "ATTENDANCE_LOCATIONS_VIEWED",
+        newValues: { viewType: "SELF", resultCount: 0 },
+      },
+      select: { id: true },
+    });
   });
 });

@@ -36,6 +36,9 @@ export async function applyAttendanceAction(
   if (!locationResult.success) {
     throw new AttendanceStateError("A valid device location is required to record attendance.");
   }
+  if (!Number.isFinite(now.getTime())) {
+    throw new AttendanceStateError("A valid server timestamp is required to record attendance.");
+  }
   const location: AttendanceLocation = locationResult.data;
   const mode = requestedMode(action);
   const isStart = action === "IN" || action === "WFH_IN";
