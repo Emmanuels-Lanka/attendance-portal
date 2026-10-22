@@ -11,9 +11,11 @@ import {
   monthlyEmployeeExportTotals,
 } from "@/lib/attendance/report-export";
 import { requirePageUser } from "@/lib/auth/session";
+import { getCompanyName } from "@/lib/attendance/settings";
 
 export async function GET(request: NextRequest) {
   const user = await requirePageUser();
+  const companyName = await getCompanyName();
   const month = request.nextUrl.searchParams.get("month") ?? formatInTimeZone(new Date(), user.timeZone, "yyyy-MM");
   const format = request.nextUrl.searchParams.get("format") ?? "pdf";
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return new NextResponse("Invalid report month.", { status: 400 });
@@ -25,11 +27,12 @@ export async function GET(request: NextRequest) {
     const rows = buildMonthlyAttendanceExportRows(month, employees, monthlyEmployeeExportTotals(report));
     body = format === "csv"
       ? createCsvReport(monthlyAttendanceExportHeaders, rows)
-      : await createXlsxReport("Attendance", monthlyAttendanceExportHeaders, rows);
+      : await createXlsxReport("Attendance", monthlyAttendanceExportHeaders, rows, companyName);
   } else {
     body = await createMonthlyAttendancePdf({
       month,
       title: "Employee attendance",
+      companyName,
       employees: [{ name: user.name, email: user.email, timeZone: user.timeZone, report }],
       summary: {
         totalSessions: report.summary.totalSessions,

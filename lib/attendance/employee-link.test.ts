@@ -30,7 +30,7 @@ describe("attendance Employee compatibility lookup", () => {
 
     assert.deepEqual([...result.entries()], [[
       "user-1",
-      { id: "employee-1", name: "Alex Employee", employeeId: "E-1" },
+      { id: "employee-1", name: "Alex Employee", employeeId: "E-1", shiftAssignments: [] },
     ]]);
     assert.deepEqual(stub.getReceivedUserIds(), ["user-1"]);
   });

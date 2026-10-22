@@ -94,6 +94,9 @@ function createDatabase(options: {
     $queryRaw: async () => [],
     user: {
       findUnique: async ({ where }: { where: { id: string } }) => users.has(where.id) ? { id: where.id, role: roles.get(where.id) } : null,
+      findMany: async ({ where }: { where: { role: Role; isActive: boolean } }) => [...users]
+        .filter((id) => roles.get(id) === where.role)
+        .map((id) => ({ id })),
     },
     employee: {
       findUnique: async ({ where }: { where: { id: string } }) => where.id === daily?.employee.id ? ({
@@ -515,7 +518,10 @@ describe("attendance correction approvals", () => {
     assert.equal(stub.audits.at(-1)?.actionType, "ATTENDANCE_CORRECTION_SUPERVISOR_APPROVED");
     assert.equal(stub.audits.at(-1)?.actorId, supervisorActor.id);
     assert.equal(stub.audits.at(-1)?.correctionRequestId, request.id);
-    assert.deepEqual(stub.notifications, []);
+    assert.deepEqual(stub.notifications.map(({ userId, type }) => ({ userId, type })), [
+      { userId: "supervisor-user", type: "ATTENDANCE_CORRECTION_PENDING" },
+      { userId: "hr-user", type: "ATTENDANCE_CORRECTION_PENDING" },
+    ]);
   });
 
   it("does not commit a Supervisor decision if employee assignment changes before the conditional update", async () => {
@@ -531,6 +537,7 @@ describe("attendance correction approvals", () => {
     assert.equal(stub.requests[0]?.currentApprovalStage, AttendanceCorrectionApprovalStage.SUPERVISOR);
     assert.equal(stub.audits.length, 1);
     assert.equal(stub.daily?.lastOut, null);
+    assert.equal(stub.notifications.length, 1);
   });
 
   it("allows the assigned Supervisor to reject and records the rejection", async () => {
@@ -548,6 +555,12 @@ describe("attendance correction approvals", () => {
     assert.equal(stub.daily?.lastOut, null);
     assert.equal(stub.audits.at(-1)?.actionType, "ATTENDANCE_CORRECTION_REJECTED");
     assert.equal(stub.audits.at(-1)?.reason, "Incorrect requested time");
+    assert.deepEqual(stub.notifications.at(-1), {
+      userId: "user-1",
+      title: "Attendance correction rejected",
+      message: "Your attendance correction was rejected.",
+      type: "ATTENDANCE_CORRECTION_REJECTED",
+    });
   });
 
   it("sends a Supervisor-submitted correction directly to HR review", async () => {
@@ -564,7 +577,12 @@ describe("attendance correction approvals", () => {
     assert.equal(request.currentApprovalStage, AttendanceCorrectionApprovalStage.HR);
     const items = await listDailyAttendanceCorrections({ id: "hr-user", role: Role.HR_ADMINISTRATOR }, stub.database);
     assert.equal(items.length, 1);
-    assert.deepEqual(stub.notifications, []);
+    assert.deepEqual(stub.notifications, [{
+      userId: "hr-user",
+      title: "Attendance correction pending",
+      message: "An attendance correction for 2026-10-05 is awaiting your review.",
+      type: "ATTENDANCE_CORRECTION_PENDING",
+    }]);
     const result = await decideDailyAttendanceCorrection(
       { id: "hr-user", role: Role.HR_ADMINISTRATOR },
       request.id,
@@ -572,7 +590,7 @@ describe("attendance correction approvals", () => {
       stub.database,
     );
     assert.equal(result.status, AttendanceCorrectionStatus.APPROVED);
-    assert.deepEqual(stub.notifications, [{
+    assert.deepEqual(stub.notifications.slice(1), [{
       userId: "subject-user",
       title: "Attendance correction approved",
       message: "Your attendance correction was approved.",
@@ -607,8 +625,8 @@ describe("attendance correction approvals", () => {
     assert.equal(stub.audits.at(-1)?.correctionRequestId, request.id);
     assert.equal(stub.audits.at(-1)?.actionType, "ATTENDANCE_CORRECTION_HR_APPROVED");
     assert.equal(stub.audits.at(-1)?.reason, "Forgot to punch out");
-    assert.equal(stub.notifications.length, 1);
-    assert.deepEqual(stub.notifications[0], {
+    assert.equal(stub.notifications.length, 3);
+    assert.deepEqual(stub.notifications.at(-1), {
       userId: "user-1",
       title: "Attendance correction approved",
       message: "Your attendance correction was approved.",
@@ -623,14 +641,15 @@ describe("attendance correction approvals", () => {
       ),
       DailyAttendanceCorrectionStageError,
     );
-    assert.equal(stub.notifications.length, 1);
+    assert.equal(stub.notifications.length, 3);
   });
 
-  it("does not notify at Supervisor approval or after a failed finalization", async () => {
+  it("notifies the next reviewer and does not notify the employee after a failed finalization", async () => {
     const stub = createDatabase({ failDailyUpdate: true });
     const request = await employeeCorrection(stub);
     await decideDailyAttendanceCorrection(supervisorActor, request.id, { action: "APPROVE" }, stub.database);
-    assert.deepEqual(stub.notifications, []);
+    assert.equal(stub.notifications.length, 2);
+    assert.equal(stub.notifications.at(-1)?.userId, "hr-user");
 
     await assert.rejects(
       decideDailyAttendanceCorrection(
@@ -641,7 +660,7 @@ describe("attendance correction approvals", () => {
       ),
       DailyAttendanceCorrectionConflictError,
     );
-    assert.deepEqual(stub.notifications, []);
+    assert.equal(stub.notifications.length, 2);
   });
 
   it("recalculates late and early metrics from corrected punches using the attendance engine", async () => {
@@ -728,7 +747,10 @@ describe("attendance correction approvals", () => {
       decideDailyAttendanceCorrection(supervisorActor, request.id, { action: "APPROVE" }, stub.database),
       DailyAttendanceCorrectionStageError,
     );
-    assert.deepEqual(stub.notifications, []);
+    assert.deepEqual(stub.notifications.map(({ userId, type }) => ({ userId, type })), [
+      { userId: "supervisor-user", type: "ATTENDANCE_CORRECTION_PENDING" },
+      { userId: "user-1", type: "ATTENDANCE_CORRECTION_REJECTED" },
+    ]);
   });
 
   it("rejects a reviewer whose role does not match the current approval stage", async () => {

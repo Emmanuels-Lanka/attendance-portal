@@ -4,6 +4,11 @@ import { LeaveRequestStatus, type Prisma, type PrismaClient, type Role } from "@
 import { z } from "zod";
 import { hasPermission } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
+import {
+  getActiveManagerDepartmentId,
+  lockActiveManagerDepartmentId,
+  lockEmployeeForApproval,
+} from "@/lib/organization/manager-scope";
 
 type LeaveReviewer = { id: string; role: Role } | null;
 type LeaveApprovalDatabase = Pick<PrismaClient, "$transaction" | "leaveRequest" | "attendanceAuditLog" | "notification">;
@@ -107,15 +112,20 @@ function assertManager(actor: LeaveReviewer): asserts actor is Exclude<LeaveRevi
 
 export async function listManagerLeaveRequests(
   actor: LeaveReviewer,
-  database: Pick<PrismaClient, "leaveRequest"> = prisma,
+  database: Pick<PrismaClient, "employee" | "leaveRequest"> = prisma,
 ) {
   assertManager(actor);
+  const departmentId = await getActiveManagerDepartmentId(database, actor.id);
+  if (!departmentId) return [];
   return database.leaveRequest.findMany({
     where: {
       status: LeaveRequestStatus.PENDING,
       currentApprovalStage: "MANAGER",
       currentApproverId: actor.id,
-      employee: { manager: { userId: actor.id, user: { isActive: true, role: "DEPARTMENT_MANAGER" } } },
+      employee: {
+        departmentId,
+        manager: { userId: actor.id, user: { isActive: true, role: "DEPARTMENT_MANAGER" } },
+      },
     },
     select: reviewRequestSelect,
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
@@ -132,6 +142,12 @@ export async function decideSupervisorLeaveRequest(
   const decision = leaveDecisionSchema.parse(input);
 
   return database.$transaction(async (transaction) => {
+    const requestReference = await transaction.leaveRequest.findUnique({
+      where: { id: leaveRequestId },
+      select: { employeeId: true },
+    });
+    if (!requestReference) throw new LeaveApprovalNotFoundError();
+    await lockEmployeeForApproval(transaction, requestReference.employeeId);
     const request = await transaction.leaveRequest.findUnique({
       where: { id: leaveRequestId },
       select: {
@@ -263,6 +279,14 @@ export async function decideManagerLeaveRequest(
   const decision = leaveDecisionSchema.parse(input);
 
   return database.$transaction(async (transaction) => {
+    const departmentId = await lockActiveManagerDepartmentId(transaction, actor.id);
+    if (!departmentId) throw new LeaveApprovalScopeError();
+    const requestReference = await transaction.leaveRequest.findUnique({
+      where: { id: leaveRequestId },
+      select: { employeeId: true },
+    });
+    if (!requestReference) throw new LeaveApprovalNotFoundError();
+    await lockEmployeeForApproval(transaction, requestReference.employeeId);
     const request = await transaction.leaveRequest.findUnique({
       where: { id: leaveRequestId },
       select: {
@@ -277,6 +301,7 @@ export async function decideManagerLeaveRequest(
         employee: {
           select: {
             userId: true,
+            departmentId: true,
             manager: { select: { userId: true, user: { select: { role: true, isActive: true } } } },
           },
         },
@@ -293,6 +318,7 @@ export async function decideManagerLeaveRequest(
       || request.employee.manager?.userId !== actor.id
       || request.employee.manager.user?.role !== "DEPARTMENT_MANAGER"
       || !request.employee.manager.user.isActive
+      || request.employee.departmentId !== departmentId
     ) throw new LeaveApprovalScopeError();
 
     const status = decision.action === "APPROVE" ? LeaveRequestStatus.APPROVED : LeaveRequestStatus.REJECTED;
@@ -303,7 +329,10 @@ export async function decideManagerLeaveRequest(
         status: LeaveRequestStatus.PENDING,
         currentApprovalStage: "MANAGER",
         currentApproverId: actor.id,
-        employee: { manager: { userId: actor.id, user: { role: "DEPARTMENT_MANAGER", isActive: true } } },
+        employee: {
+          departmentId,
+          manager: { userId: actor.id, user: { role: "DEPARTMENT_MANAGER", isActive: true } },
+        },
       },
       data: {
         status,

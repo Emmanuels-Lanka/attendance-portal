@@ -48,12 +48,18 @@ type TestOvertimeRequest = {
   [key: string]: unknown;
 };
 
-function createDatabase(options: { supervisor?: "assigned" | "inactive" | "missing"; manager?: "assigned" | "inactive" | "missing" } = {}) {
+function createDatabase(options: {
+  supervisor?: "assigned" | "inactive" | "missing";
+  manager?: "assigned" | "inactive" | "missing";
+  employeeDepartmentId?: string | null;
+  managerDepartmentId?: string | null;
+} = {}) {
   const supervisorState = options.supervisor ?? "assigned";
   const managerState = options.manager ?? "assigned";
   const employee = {
     id: "employee-record-1",
     userId: employeeActor.id,
+    departmentId: options.employeeDepartmentId === undefined ? "department-1" : options.employeeDepartmentId,
     name: "Employee One",
     employeeId: "E-001",
     supervisor: supervisorState === "missing" ? null : {
@@ -76,9 +82,15 @@ function createDatabase(options: { supervisor?: "assigned" | "inactive" | "missi
     employee: {
       findUnique: async ({ where }: { where: { userId: string } }) => {
         queries.employees.push(where);
+        if (where.userId === managerActor.id) return {
+          id: "manager-record-1",
+          departmentId: options.managerDepartmentId === undefined ? "department-1" : options.managerDepartmentId,
+          user: { role: Role.DEPARTMENT_MANAGER, isActive: true },
+        };
         return where.userId === employeeActor.id ? employee : null;
       },
     },
+    $queryRaw: async () => [],
     overtimeRequest: {
       create: async ({ data }: { data: Record<string, unknown> }) => {
         const request: TestOvertimeRequest = {
@@ -106,9 +118,11 @@ function createDatabase(options: { supervisor?: "assigned" | "inactive" | "missi
         queries.list.push(where);
         return requests.filter((request) => {
           if (where.employeeId) return request.employeeId === where.employeeId;
+          const managerScope = where.employee as { departmentId?: string } | undefined;
           return request.status === where.status
             && request.currentApprovalStage === where.currentApprovalStage
-            && request.currentApproverId === where.currentApproverId;
+            && request.currentApproverId === where.currentApproverId
+            && (managerScope?.departmentId === undefined || managerScope.departmentId === employee.departmentId);
         }).map((request) => ({
           ...request,
           employee: { ...employee },
@@ -123,7 +137,9 @@ function createDatabase(options: { supervisor?: "assigned" | "inactive" | "missi
           item.id === where.id
           && item.status === where.status
           && item.currentApprovalStage === where.currentApprovalStage
-          && item.currentApproverId === where.currentApproverId,
+          && item.currentApproverId === where.currentApproverId
+          && ((where.employee as { departmentId?: string } | undefined)?.departmentId === undefined
+            || (where.employee as { departmentId?: string }).departmentId === employee.departmentId),
         );
         if (!request) return { count: 0 };
         Object.assign(request, data);
@@ -305,6 +321,20 @@ describe("overtime approval workflow", () => {
     assert.equal(stub.notifications.at(-1)?.userId, managerActor.id);
     const managerRequests = await listOvertimeRequestsForReview(managerActor, stub.database);
     assert.deepEqual(managerRequests.map(({ id }) => id), [request.id]);
+  });
+
+  it("does not expose or allow Manager approval outside the Manager's department", async () => {
+    const stub = createDatabase({ employeeDepartmentId: "department-1", managerDepartmentId: "department-2" });
+    const request = await submitOwnOvertimeRequest(employeeActor, validInput, stub.database);
+    await decideOvertimeRequest(supervisorActor, request.id, { action: "APPROVE" }, stub.database);
+
+    assert.deepEqual(await listOvertimeRequestsForReview(managerActor, stub.database), []);
+    await assert.rejects(
+      decideOvertimeRequest(managerActor, request.id, { action: "APPROVE" }, stub.database),
+      OvertimeApprovalScopeError,
+    );
+    assert.equal(stub.requests[0]?.status, OvertimeRequestStatus.PENDING);
+    assert.equal(stub.audits.length, 2);
   });
 
   it("rejects unauthorized roles, unassigned reviewers, and self-approval", async () => {

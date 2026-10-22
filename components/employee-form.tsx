@@ -16,6 +16,7 @@ type EmployeeFormValues = {
   departmentId: string | null;
   designationId: string | null;
   shiftId: string | null;
+  shiftIds?: string[];
   supervisorId: string | null;
   managerId: string | null;
   email: string;
@@ -97,11 +98,25 @@ export function EmployeeForm({
           </select>
         </div>
         <div>
-          <label htmlFor="shiftId" className="mb-2 block text-sm font-semibold">Shift</label>
-          <select id="shiftId" name="shiftId" defaultValue={employee?.shiftId ?? ""} className="h-10 w-full rounded-md border border-[var(--line)] bg-white px-3 text-sm">
-            <option value="">Unassigned</option>
-            {shifts.map((shift) => <option key={shift.id} value={shift.id}>{shift.name}</option>)}
-          </select>
+          <fieldset className="space-y-2">
+            <legend className="mb-2 text-sm font-semibold">Shift assignments</legend>
+            <p className="text-xs text-[var(--muted)]">Choose shifts with non-overlapping working days. Existing assignments remain in attendance history.</p>
+            <input type="hidden" name="shiftAssignmentsSubmitted" value="true" />
+            {shifts.length === 0 ? <p className="text-sm text-[var(--muted)]">No shifts are configured.</p> : shifts.map((shift) => (
+              <label key={shift.id} className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  name="shiftIds"
+                  value={shift.id}
+                  defaultChecked={employee?.shiftIds?.includes(shift.id) ?? employee?.shiftId === shift.id}
+                  className="size-4 rounded border-[var(--line)]"
+                />
+                {shift.name}
+              </label>
+            ))}
+            <label htmlFor="shiftEffectiveFrom" className="mt-3 block text-xs font-medium">Effective from</label>
+            <input id="shiftEffectiveFrom" name="shiftEffectiveFrom" type="date" defaultValue={new Date().toISOString().slice(0, 10)} className="h-10 w-full rounded-md border border-[var(--line)] bg-white px-3 text-sm" />
+          </fieldset>
         </div>
         <div>
           <label htmlFor="supervisorId" className="mb-2 block text-sm font-semibold">Supervisor</label>

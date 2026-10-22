@@ -269,6 +269,7 @@ model Employee {
   department         Department? @relation(fields: [departmentId], references: [id], onDelete: Restrict)
   designation        Designation? @relation(fields: [designationId], references: [id], onDelete: Restrict)
   shift              Shift? @relation(fields: [shiftId], references: [id], onDelete: Restrict)
+  shiftAssignments   EmployeeShiftAssignment[]
   supervisor         Employee? @relation("EmployeeSupervisor", fields: [supervisorId], references: [id], onDelete: Restrict)
   supervisedEmployees Employee[] @relation("EmployeeSupervisor")
   manager            Employee? @relation("EmployeeManager", fields: [managerId], references: [id], onDelete: Restrict)
@@ -317,7 +318,24 @@ model Shift {
   createdAt DateTime   @default(now()) @db.Timestamptz(3)
   updatedAt DateTime   @updatedAt @db.Timestamptz(3)
   employees Employee[]
+  employeeAssignments EmployeeShiftAssignment[]
   attendanceDaily AttendanceDaily[]
+}
+
+model EmployeeShiftAssignment {
+  id            String    @id @default(cuid())
+  employeeId    String
+  shiftId       String
+  effectiveFrom DateTime  @db.Date
+  effectiveTo   DateTime? @db.Date
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  employee      Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  shift         Shift     @relation(fields: [shiftId], references: [id], onDelete: Restrict)
+
+  @@unique([employeeId, shiftId, effectiveFrom])
+  @@index([employeeId, effectiveFrom, effectiveTo])
+  @@index([shiftId])
+  @@map("employee_shift_assignments")
 }
 
 model Holiday {

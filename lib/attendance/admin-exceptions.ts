@@ -4,6 +4,7 @@ import type { PrismaClient, Role } from "@prisma/client";
 import { getAdminAttendanceSummary } from "@/lib/attendance/admin-dashboard";
 import { adminAttendanceFilterSchema, type AdminAttendanceFilters } from "@/lib/attendance/admin-validation";
 import { prisma } from "@/lib/prisma";
+import { isOptionalSriLankanSaturday } from "./shift-assignment";
 
 type AdminActor = { role: Role } | null;
 type ExceptionsDatabase = Pick<PrismaClient, "user" | "employee" | "workSession">;
@@ -20,17 +21,18 @@ export async function getAdminAttendanceExceptions(
     mode: input.mode,
     exceptionCategory: input.category,
   });
-  if (!filters.summaryDate) throw new Error("Select a local date to view attendance exceptions.");
+  const date = filters.summaryDate;
+  if (!date) throw new Error("Select a local date to view attendance exceptions.");
 
   const selectedModeSummary = await getAdminAttendanceSummary(admin, {
-    date: filters.summaryDate,
+    date,
     employeeId: filters.employeeId,
     mode: filters.mode,
   }, database);
   const allModeSummary = filters.mode === "ALL"
     ? selectedModeSummary
     : await getAdminAttendanceSummary(admin, {
-        date: filters.summaryDate,
+        date,
         employeeId: filters.employeeId,
         mode: "ALL",
       }, database);
@@ -59,12 +61,17 @@ export async function getAdminAttendanceExceptions(
     if (day.sessions.some(({ timing }) => timing?.arrival === "LATE")) categories.push("LATE_ARRIVAL");
     if (day.sessions.some(({ timing }) => timing?.departure === "EARLY_DEPARTURE")) categories.push("EARLY_DEPARTURE");
     if (openSessionCount > 0) categories.push("ACTIVE_SESSION");
-    if ((allModeDays.get(employee.id)?.sessions.length ?? 0) === 0) categories.push("NO_ATTENDANCE");
+    if (
+      (allModeDays.get(employee.id)?.sessions.length ?? 0) === 0
+      && !isOptionalSriLankanSaturday(employee.countryCode, date)
+    ) {
+      categories.push("NO_ATTENDANCE");
+    }
     return { employee, day, openSessionCount, categories };
   });
 
   return {
-    date: filters.summaryDate,
+    date,
     filters,
     metrics: {
       lateArrivals: candidates.filter(({ categories }) => categories.includes("LATE_ARRIVAL")).length,

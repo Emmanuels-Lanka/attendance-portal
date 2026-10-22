@@ -22,7 +22,7 @@ import {
 } from "@/lib/employees/service";
 import { createEmployeeSchema, updateEmployeeSchema } from "@/lib/employees/validation";
 import { OrganizationNotFoundError } from "@/lib/organization/service";
-import { ShiftNotFoundError } from "@/lib/shifts/service";
+import { ShiftAssignmentConflictError, ShiftNotFoundError } from "@/lib/shifts/service";
 
 const admin = { role: Role.ADMIN };
 const hrAdmin = { role: Role.HR_ADMINISTRATOR };
@@ -42,6 +42,8 @@ function createDatabaseStub() {
   let createData: Record<string, unknown> | undefined;
   let createSelect: Record<string, unknown> | undefined;
   let updateData: Record<string, unknown> | undefined;
+  let currentShiftId: string | null = null;
+  let currentShiftAssignments: Array<{ shiftId: string; effectiveFrom: Date; effectiveTo: null }> = [];
   const user = {
     findUnique: async ({ where }: { where: { id: string } }) => storedEmployee?.id === where.id
       ? { role: storedEmployee.role }
@@ -49,11 +51,18 @@ function createDatabaseStub() {
     create: async ({ data, select }: { data: Record<string, unknown>; select: Record<string, unknown> }) => {
       createData = data;
       createSelect = select;
+      const employeeCreate = (data.employee as { create: Record<string, unknown> }).create;
+      currentShiftId = employeeCreate.shiftId as string | null;
+      currentShiftAssignments = ((employeeCreate.shiftAssignments as { create: Array<{ shiftId: string; effectiveFrom: Date }> } | undefined)?.create ?? [])
+        .map((assignment) => ({ ...assignment, effectiveTo: null }));
       storedEmployee = { ...data, id: "employee-1", createdAt: new Date(), updatedAt: new Date(), isActive: true };
       return Object.fromEntries(Object.keys(select).map((key) => [key, storedEmployee?.[key]]));
     },
     update: async ({ data, select }: { data: Record<string, unknown>; select: Record<string, unknown> }) => {
       updateData = data;
+      const employeeUpsert = data.employee as { upsert?: { update?: Record<string, unknown> } } | undefined;
+      const employeeUpdate = employeeUpsert?.upsert?.update;
+      if (employeeUpdate && "shiftId" in employeeUpdate) currentShiftId = employeeUpdate.shiftId as string | null;
       storedEmployee = { ...storedEmployee, ...data, updatedAt: new Date() };
       return Object.fromEntries(Object.keys(select).map((key) => [key, storedEmployee?.[key]]));
     },
@@ -65,11 +74,25 @@ function createDatabaseStub() {
     findUnique: async ({ where }: { where: { id: string } }) => where.id === "designation-1" ? { id: where.id } : null,
   };
   const shift = {
-    findUnique: async ({ where }: { where: { id: string } }) => where.id === "shift-1" ? { id: where.id } : null,
+    findUnique: async ({ where }: { where: { id: string } }) => ["shift-1", "weekday", "saturday", "overlap"].includes(where.id) ? { id: where.id } : null,
+    findMany: async ({ where }: { where: { id: { in: string[] } } }) => {
+      const workingDaysById: Record<string, string[]> = {
+        "shift-1": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"],
+        weekday: ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"],
+        saturday: ["SATURDAY"],
+        overlap: ["MONDAY"],
+      };
+      return where.id.in.flatMap((id) => workingDaysById[id] ? [{ id, workingDays: workingDaysById[id] }] : []);
+    },
+  };
+  const employee = {
+    findUnique: async () => storedEmployee
+      ? { shiftId: currentShiftId, shiftAssignments: currentShiftAssignments }
+      : null,
   };
 
   return {
-    database: { user, department, designation, shift } as never,
+    database: { user, employee, department, designation, shift } as never,
     getCreateData: () => createData,
     getCreateSelect: () => createSelect,
     getUpdateData: () => updateData,
@@ -425,6 +448,7 @@ describe("employee management", () => {
       ...employeeInput,
       password: "",
       shiftId: "",
+      shiftEffectiveFrom: new Date(Date.now() + 86_400_000).toISOString().slice(0, 10),
     }, assigned.database);
     const update = (assigned.getUpdateData()?.employee as { upsert: { update: Record<string, unknown> } }).upsert.update;
     assert.equal(update.shiftId, null);
@@ -445,6 +469,57 @@ describe("employee management", () => {
     }, stub.database), ShiftNotFoundError);
     assert.equal(stub.getCreateData(), undefined);
     assert.equal(stub.getUpdateData(), undefined);
+  });
+
+  it("assigns weekday and weekend shifts with an effective date", async () => {
+    const stub = createDatabaseStub();
+    await createEmployee(admin, {
+      ...employeeInput,
+      shiftIds: ["weekday", "saturday"],
+      shiftEffectiveFrom: "2026-01-01",
+    }, stub.database);
+    const employee = (stub.getCreateData()?.employee as { create: Record<string, unknown> }).create;
+    assert.equal(employee.shiftId, "weekday");
+    assert.deepEqual(employee.shiftAssignments, {
+      create: [
+        { shiftId: "weekday", effectiveFrom: new Date("2026-01-01T00:00:00.000Z") },
+        { shiftId: "saturday", effectiveFrom: new Date("2026-01-01T00:00:00.000Z") },
+      ],
+    });
+  });
+
+  it("closes prior assignments and preserves their historical date range when shifts change", async () => {
+    const stub = createDatabaseStub();
+    await createEmployee(admin, {
+      ...employeeInput,
+      shiftIds: ["weekday", "saturday"],
+      shiftEffectiveFrom: "2026-01-01",
+    }, stub.database);
+    await updateEmployee(admin, "employee-1", {
+      ...employeeInput,
+      password: "",
+      shiftIds: ["weekday"],
+      shiftEffectiveFrom: "2026-07-01",
+    }, stub.database);
+    const update = (stub.getUpdateData()?.employee as { upsert: { update: Record<string, unknown> } }).upsert.update;
+    assert.equal(update.shiftId, "weekday");
+    assert.deepEqual(update.shiftAssignments, {
+      updateMany: {
+        where: { effectiveTo: null },
+        data: { effectiveTo: new Date("2026-06-30T00:00:00.000Z") },
+      },
+      create: [{ shiftId: "weekday", effectiveFrom: new Date("2026-07-01T00:00:00.000Z") }],
+    });
+  });
+
+  it("rejects shift combinations with overlapping configured weekdays", async () => {
+    const stub = createDatabaseStub();
+    await assert.rejects(createEmployee(admin, {
+      ...employeeInput,
+      shiftIds: ["weekday", "overlap"],
+      shiftEffectiveFrom: "2026-01-01",
+    }, stub.database), ShiftAssignmentConflictError);
+    assert.equal(stub.getCreateData(), undefined);
   });
 
   it("creates direct Supervisor and same-department Manager assignments", async () => {

@@ -11,6 +11,11 @@ import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { isValid } from "date-fns";
 import { hasPermission } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
+import {
+  getActiveManagerDepartmentId,
+  lockActiveManagerDepartmentId,
+  lockEmployeeForApproval,
+} from "@/lib/organization/manager-scope";
 import { workFromHomeDecisionSchema, workFromHomeRequestInputSchema } from "./validation";
 
 type WorkFromHomeActor = { id: string; role: Role; timeZone: string } | null;
@@ -234,9 +239,13 @@ export async function listApprovedWorkFromHomeForAttendance(
 
 export async function listWorkFromHomeRequestsForReview(
   actor: WorkFromHomeActor,
-  database: Pick<PrismaClient, "workFromHomeRequest"> = prisma,
+  database: Pick<PrismaClient, "employee" | "workFromHomeRequest"> = prisma,
 ) {
   assertApprover(actor);
+  const managerDepartmentId = actor.role === "DEPARTMENT_MANAGER"
+    ? await getActiveManagerDepartmentId(database, actor.id)
+    : null;
+  if (actor.role === "DEPARTMENT_MANAGER" && !managerDepartmentId) return [];
   const stage = actor.role === "SUPERVISOR"
     ? WorkFromHomeApprovalStage.SUPERVISOR
     : WorkFromHomeApprovalStage.MANAGER;
@@ -247,7 +256,10 @@ export async function listWorkFromHomeRequestsForReview(
       currentApproverId: actor.id,
       employee: actor.role === "SUPERVISOR"
         ? { supervisor: { userId: actor.id, user: { role: "SUPERVISOR", isActive: true } } }
-        : { manager: { userId: actor.id, user: { role: "DEPARTMENT_MANAGER", isActive: true } } },
+        : {
+            departmentId: managerDepartmentId,
+            manager: { userId: actor.id, user: { role: "DEPARTMENT_MANAGER", isActive: true } },
+          },
     },
     select: reviewRequestSelect,
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
@@ -267,6 +279,16 @@ export async function decideWorkFromHomeRequest(
     : WorkFromHomeApprovalStage.MANAGER;
 
   return database.$transaction(async (transaction) => {
+    const managerDepartmentId = actor.role === "DEPARTMENT_MANAGER"
+      ? await lockActiveManagerDepartmentId(transaction, actor.id)
+      : null;
+    if (actor.role === "DEPARTMENT_MANAGER" && !managerDepartmentId) throw new WorkFromHomeApprovalScopeError();
+    const requestReference = await transaction.workFromHomeRequest.findUnique({
+      where: { id: requestId },
+      select: { employeeId: true },
+    });
+    if (!requestReference) throw new WorkFromHomeRequestNotFoundError();
+    await lockEmployeeForApproval(transaction, requestReference.employeeId);
     const request = await transaction.workFromHomeRequest.findUnique({
       where: { id: requestId },
       select: {
@@ -279,6 +301,7 @@ export async function decideWorkFromHomeRequest(
         employee: {
           select: {
             userId: true,
+            departmentId: true,
             supervisor: { select: { userId: true, user: { select: { role: true, isActive: true } } } },
             manager: { select: { userId: true, user: { select: { role: true, isActive: true } } } },
           },
@@ -300,7 +323,8 @@ export async function decideWorkFromHomeRequest(
         && request.employee.supervisor.user.isActive
       : request.employee.manager?.userId === actor.id
         && request.employee.manager.user?.role === "DEPARTMENT_MANAGER"
-        && request.employee.manager.user.isActive;
+        && request.employee.manager.user.isActive
+        && request.employee.departmentId === managerDepartmentId;
     if (!assigned) throw new WorkFromHomeApprovalScopeError();
     if (actor.role === "SUPERVISOR" && decision.action === "APPROVE" && (
       !request.employee.manager?.userId
@@ -325,7 +349,10 @@ export async function decideWorkFromHomeRequest(
         currentApproverId: actor.id,
         employee: actor.role === "SUPERVISOR"
           ? { supervisor: { userId: actor.id, user: { role: "SUPERVISOR", isActive: true } } }
-          : { manager: { userId: actor.id, user: { role: "DEPARTMENT_MANAGER", isActive: true } } },
+          : {
+              departmentId: managerDepartmentId,
+              manager: { userId: actor.id, user: { role: "DEPARTMENT_MANAGER", isActive: true } },
+            },
       },
       data: {
         status,

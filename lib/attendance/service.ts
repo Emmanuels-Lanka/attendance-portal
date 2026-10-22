@@ -3,7 +3,8 @@ import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { attendanceLocationSchema, type AttendanceAction, type AttendanceLocation } from "@/lib/attendance/validation";
-import { groupSessionsByEmployeeLocalDay } from "@/lib/attendance/history";
+import { classifySessionForShiftAssignments, groupSessionsByEmployeeLocalDay } from "@/lib/attendance/history";
+import type { WorkSessionTiming } from "@/lib/attendance/schedule";
 import { getEmployeeLocalDayWindow } from "@/lib/attendance/timezone";
 
 export class AttendanceStateError extends Error {
@@ -141,8 +142,33 @@ export async function applyAttendanceAction(
   });
 }
 
-type EmployeeAttendanceContext = { id: string; timeZone: string };
-type AttendanceReadDatabase = Pick<typeof prisma, "workSession">;
+type EmployeeAttendanceContext = { id: string; timeZone: string; countryCode?: string };
+type AttendanceReadDatabase = Pick<typeof prisma, "workSession" | "employee">;
+
+async function employeeShiftAssignments(employeeId: string, database: AttendanceReadDatabase) {
+  const employeeRecord = await database.employee.findUnique({
+    where: { userId: employeeId },
+    select: {
+      shift: { select: { id: true, startTime: true, endTime: true, gracePeriodMinutes: true, workingDays: true } },
+      shiftAssignments: {
+        select: {
+          effectiveFrom: true,
+          effectiveTo: true,
+          shift: { select: { id: true, startTime: true, endTime: true, gracePeriodMinutes: true, workingDays: true } },
+        },
+      },
+    },
+  });
+  if (!employeeRecord) return [];
+  if (employeeRecord.shiftAssignments.length > 0) return employeeRecord.shiftAssignments;
+  return employeeRecord.shift
+    ? [{
+        effectiveFrom: new Date("0001-01-01T00:00:00.000Z"),
+        effectiveTo: null,
+        shift: employeeRecord.shift,
+      }]
+    : [];
+}
 
 export async function getEmployeeAttendanceDashboard(
   employee: EmployeeAttendanceContext,
@@ -151,7 +177,7 @@ export async function getEmployeeAttendanceDashboard(
 ) {
   const { date, startAt, endAt } = getEmployeeLocalDayWindow(now, employee.timeZone);
   const employeeFilter = { record: { employeeId: employee.id } };
-  const [activeSession, sessions] = await Promise.all([
+  const [activeSession, sessions, shiftAssignments] = await Promise.all([
     database.workSession.findFirst({
       where: { ...employeeFilter, endAt: null },
       orderBy: { startAt: "desc" },
@@ -166,10 +192,18 @@ export async function getEmployeeAttendanceDashboard(
       },
       orderBy: { startAt: "asc" },
     }),
+    employeeShiftAssignments(employee.id, database),
   ]);
 
   const todaySessions = sessions.filter((session) => session.startAt >= startAt && session.startAt < endAt);
-  const grouped = groupSessionsByEmployeeLocalDay(todaySessions, employee.timeZone);
+  const grouped = groupSessionsByEmployeeLocalDay(todaySessions, employee.timeZone, shiftAssignments, employee.countryCode);
+  const sessionTiming = (session: NonNullable<typeof activeSession>): WorkSessionTiming => {
+    return classifySessionForShiftAssignments(session, employee.timeZone, shiftAssignments, employee.countryCode);
+  };
+  const activeSessionTiming = activeSession ? sessionTiming(activeSession) : null;
+  const previousDayActiveSessionTiming = activeSession && activeSession.startAt < startAt
+    ? sessionTiming(activeSession)
+    : null;
   const completedSessionToday = sessions.some((session) => session.endAt && session.endAt >= startAt && session.endAt < endAt);
   return {
     date,
@@ -179,6 +213,8 @@ export async function getEmployeeAttendanceDashboard(
     previousDayActiveSession: activeSession && activeSession.startAt < startAt
       ? activeSession
       : null,
+    activeSessionTiming,
+    previousDayActiveSessionTiming,
     day: grouped.days.find((day) => day.date === date) ?? { date, sessions: [], totalWorkedMs: 0 },
     completedSessionToday,
     invalidSessions: grouped.invalidSessions,
@@ -189,9 +225,12 @@ export async function getEmployeeAttendanceHistory(
   employee: EmployeeAttendanceContext,
   database: AttendanceReadDatabase = prisma,
 ) {
-  const sessions = await database.workSession.findMany({
-    where: { record: { employeeId: employee.id } },
-    orderBy: { startAt: "desc" },
-  });
-  return groupSessionsByEmployeeLocalDay(sessions, employee.timeZone);
+  const [sessions, shiftAssignments] = await Promise.all([
+    database.workSession.findMany({
+      where: { record: { employeeId: employee.id } },
+      orderBy: { startAt: "desc" },
+    }),
+    employeeShiftAssignments(employee.id, database),
+  ]);
+  return groupSessionsByEmployeeLocalDay(sessions, employee.timeZone, shiftAssignments, employee.countryCode);
 }

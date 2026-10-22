@@ -49,6 +49,24 @@ const employeeIdentityFields = {
   etfId: optionalNullableText(120),
 };
 
+const shiftAssignmentFields = {
+  shiftIds: z.array(z.string().trim().min(1)).max(20).refine(
+    (ids) => new Set(ids).size === ids.length,
+    "Choose each shift only once.",
+  ).optional(),
+  shiftEffectiveFrom: z.preprocess(
+    (value) => value === undefined || value === "" ? new Date().toISOString().slice(0, 10) : value,
+    z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
+      const date = new Date(`${value}T00:00:00.000Z`);
+      return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+    }, "Enter a valid shift assignment start date."),
+  ).refine((value) => {
+    const date = new Date(`${value}T00:00:00.000Z`);
+    return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+  }, "Enter a valid shift assignment start date.")
+    .transform((value) => new Date(`${value}T00:00:00.000Z`)),
+};
+
 const profileDateField = z.preprocess(
   (value) => value === undefined ? undefined : value === null || value === "" ? null : value,
   z.union([
@@ -107,6 +125,7 @@ export const createEmployeeSchema = z.object({
   employeeCode: z.string().trim().min(1, "Employee ID is required.").max(50),
   ...employeeIdentityFields,
   ...organizationAssignmentsSchema,
+  ...shiftAssignmentFields,
   supervisorId: organizationIdSchema,
   managerId: organizationIdSchema,
   shiftId: shiftIdSchema,
@@ -119,6 +138,7 @@ export const updateEmployeeSchema = z.object({
   employeeCode: optionalNullableText(50),
   ...employeeIdentityFields,
   ...organizationAssignmentsSchema,
+  ...shiftAssignmentFields,
   supervisorId: organizationIdSchema,
   managerId: organizationIdSchema,
   shiftId: shiftIdSchema,

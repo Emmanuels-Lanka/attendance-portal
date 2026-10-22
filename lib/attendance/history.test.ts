@@ -1,10 +1,36 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { groupSessionsByEmployeeLocalDay, type AttendanceSession } from "./history";
+import type { EffectiveShiftAssignment } from "./shift-assignment";
 
 function session(id: string, mode: AttendanceSession["mode"], startAt: string, endAt: string | null): AttendanceSession {
   return { id, mode, startAt: new Date(startAt), endAt: endAt ? new Date(endAt) : null };
 }
+
+const assignments: EffectiveShiftAssignment[] = [
+  {
+    effectiveFrom: "2026-01-01",
+    effectiveTo: null,
+    shift: {
+      id: "weekday",
+      startTime: new Date("1970-01-01T08:00:00.000Z"),
+      endTime: new Date("1970-01-01T17:30:00.000Z"),
+      gracePeriodMinutes: 10,
+      workingDays: ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"],
+    },
+  },
+  {
+    effectiveFrom: "2026-01-01",
+    effectiveTo: null,
+    shift: {
+      id: "saturday",
+      startTime: new Date("1970-01-01T08:30:00.000Z"),
+      endTime: new Date("1970-01-01T13:30:00.000Z"),
+      gracePeriodMinutes: 10,
+      workingDays: ["SATURDAY"],
+    },
+  },
+];
 
 describe("employee-local attendance history", () => {
   it("groups every multiple and mixed Office/WFH session by employee-local start date", () => {
@@ -54,5 +80,53 @@ describe("employee-local attendance history", () => {
     assert.equal(history.days[0].sessions[0].status, "INVALID");
     assert.equal(history.days[0].sessions[1].status, "INVALID");
     assert.equal(history.days[0].totalWorkedMs, 0);
+  });
+
+  it("classifies office and WFH sessions using the applicable weekday or weekend shift", () => {
+    const history = groupSessionsByEmployeeLocalDay([
+      session("office-on-time", "OFFICE", "2026-06-15T02:40:00.000Z", "2026-06-15T12:30:00.000Z"),
+      session("wfh-late", "WFH", "2026-06-15T02:40:01.000Z", "2026-06-15T12:30:00.000Z"),
+      session("saturday", "OFFICE", "2026-06-20T03:10:01.000Z", "2026-06-20T08:00:00.000Z"),
+    ], "Asia/Colombo", assignments);
+
+    const sessions = new Map(history.days.flatMap((day) => day.sessions.map((item) => [item.session.id, item] as const)));
+    assert.equal(sessions.get("office-on-time")?.timing?.arrival, "ON_TIME");
+    assert.equal(sessions.get("wfh-late")?.timing?.arrival, "LATE");
+    assert.equal(sessions.get("saturday")?.timing?.arrival, "LATE");
+  });
+
+  it("does not infer a WFH or office schedule when no effective assignment exists", () => {
+    const history = groupSessionsByEmployeeLocalDay([
+      session("unassigned", "WFH", "2026-06-15T02:40:00.000Z", null),
+    ], "Asia/Colombo");
+    assert.equal(history.days[0].sessions[0].timing?.arrival, "UNDETERMINED");
+  });
+
+  it("resolves the OUT shift from the OUT event's local date", () => {
+    const history = groupSessionsByEmployeeLocalDay([
+      session("cross-day", "WFH", "2026-06-20T03:10:00.000Z", "2026-06-21T03:30:00.000Z"),
+    ], "Asia/Colombo", assignments);
+    assert.equal(history.days[0].sessions[0].timing?.arrival, "ON_TIME");
+    assert.equal(history.days[0].sessions[0].timing?.departure, "NON_WORKING_DAY");
+  });
+
+  it("leaves Sri Lankan Saturday punches undetermined when no Saturday shift applies", () => {
+    const weekdayOnly = [{
+      effectiveFrom: "2026-01-01",
+      effectiveTo: null,
+      shift: {
+        id: "weekday",
+        startTime: new Date("1970-01-01T08:00:00.000Z"),
+        endTime: new Date("1970-01-01T17:30:00.000Z"),
+        gracePeriodMinutes: 10,
+        workingDays: ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"],
+      },
+    }];
+    const history = groupSessionsByEmployeeLocalDay([
+      session("saturday", "OFFICE", "2026-10-23T18:35:00.000Z", "2026-10-23T22:00:00.000Z"),
+    ], "Asia/Colombo", weekdayOnly, "LK");
+    assert.equal(history.days[0].date, "2026-10-24");
+    assert.equal(history.days[0].sessions[0].timing?.arrival, "UNDETERMINED");
+    assert.equal(history.days[0].sessions[0].timing?.departure, "UNDETERMINED");
   });
 });

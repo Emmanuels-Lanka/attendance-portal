@@ -48,12 +48,15 @@ type TestRequest = {
 function createDatabase(options: {
   supervisor?: "assigned" | "inactive" | "missing";
   manager?: "assigned" | "inactive" | "missing";
+  employeeDepartmentId?: string | null;
+  managerDepartmentId?: string | null;
 } = {}) {
   const supervisorState = options.supervisor ?? "assigned";
   const managerState = options.manager ?? "assigned";
   const employee = {
     id: "employee-record-1",
     userId: employeeActor.id,
+    departmentId: options.employeeDepartmentId === undefined ? "department-1" : options.employeeDepartmentId,
     name: "Employee One",
     employeeId: "E-001",
     supervisor: supervisorState === "missing" ? null : {
@@ -80,9 +83,15 @@ function createDatabase(options: {
     employee: {
       findUnique: async ({ where }: { where: { userId: string } }) => {
         queries.employee.push(where);
+        if (where.userId === managerActor.id) return {
+          id: "manager-record-1",
+          departmentId: options.managerDepartmentId === undefined ? "department-1" : options.managerDepartmentId,
+          user: { role: Role.DEPARTMENT_MANAGER, isActive: true },
+        };
         return where.userId === employeeActor.id ? employee : null;
       },
     },
+    $queryRaw: async () => [],
     workFromHomeRequest: {
       create: async ({ data }: { data: Record<string, unknown> }) => {
         const request: TestRequest = {
@@ -112,9 +121,11 @@ function createDatabase(options: {
         }
         return requests.filter((request) => {
           if (where.employeeId) return request.employeeId === where.employeeId;
+          const managerScope = where.employee as { departmentId?: string } | undefined;
           return request.status === where.status
             && request.currentApprovalStage === where.currentApprovalStage
-            && request.currentApproverId === where.currentApproverId;
+            && request.currentApproverId === where.currentApproverId
+            && (managerScope?.departmentId === undefined || managerScope.departmentId === employee.departmentId);
         }).map((request) => ({ ...request, employee: { ...employee } }));
       },
       findUnique: async ({ where }: { where: { id: string } }) => {
@@ -126,7 +137,9 @@ function createDatabase(options: {
           item.id === where.id
           && item.status === where.status
           && item.currentApprovalStage === where.currentApprovalStage
-          && item.currentApproverId === where.currentApproverId,
+          && item.currentApproverId === where.currentApproverId
+          && ((where.employee as { departmentId?: string } | undefined)?.departmentId === undefined
+            || (where.employee as { departmentId?: string }).departmentId === employee.departmentId),
         );
         if (!request) return { count: 0 };
         Object.assign(request, data);
@@ -278,6 +291,20 @@ describe("work from home approvals", () => {
     assert.equal(stub.notifications[2]?.userId, employeeActor.id);
     assert.equal(stub.notifications[2]?.type, "WFH_REQUEST_APPROVED");
     assert.equal(stub.audits.at(-1)?.actionType, "WFH_REQUEST_APPROVED");
+  });
+
+  it("does not expose or allow Manager approval outside the Manager's department", async () => {
+    const stub = createDatabase({ employeeDepartmentId: "department-1", managerDepartmentId: "department-2" });
+    const request = await submitOwnWorkFromHomeRequest(employeeActor, validInput, stub.database);
+    await decideWorkFromHomeRequest(supervisorActor, request.id, { action: "APPROVE" }, stub.database);
+
+    assert.deepEqual(await listWorkFromHomeRequestsForReview(managerActor, stub.database), []);
+    await assert.rejects(
+      () => decideWorkFromHomeRequest(managerActor, request.id, { action: "APPROVE" }, stub.database),
+      WorkFromHomeApprovalScopeError,
+    );
+    assert.equal(stub.requests[0]?.status, WorkFromHomeRequestStatus.PENDING);
+    assert.equal(stub.audits.length, 2);
   });
 
   it("rejects unrelated approvers, employee self-approval, and invalid stage transitions", async () => {

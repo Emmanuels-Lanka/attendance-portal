@@ -8,6 +8,7 @@ const settingDefaults = { companyName: "Emmanuel's Lanka Pvt Ltd", defaultTimeZo
 type EditableSettingKey = keyof typeof settingDefaults;
 type SettingActor = { id: string; role: Role };
 type SettingDatabase = Pick<PrismaClient, "$transaction">;
+type CompanyNameDatabase = Pick<PrismaClient, "appSetting">;
 
 export class SettingValidationError extends Error {
   constructor(message: string) {
@@ -25,6 +26,14 @@ export class SettingAuthorizationError extends Error {
 
 function editableKey(value: string): value is EditableSettingKey {
   return Object.hasOwn(settingDefaults, value);
+}
+
+export async function getCompanyName(database: CompanyNameDatabase = prisma) {
+  const setting = await database.appSetting.findUnique({
+    where: { key: "companyName" },
+    select: { value: true },
+  });
+  return setting?.value.trim() || settingDefaults.companyName;
 }
 
 export async function updateOrganizationSetting(

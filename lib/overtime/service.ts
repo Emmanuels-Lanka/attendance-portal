@@ -11,6 +11,11 @@ import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { isValid } from "date-fns";
 import { hasPermission } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
+import {
+  getActiveManagerDepartmentId,
+  lockActiveManagerDepartmentId,
+  lockEmployeeForApproval,
+} from "@/lib/organization/manager-scope";
 import { overtimeDecisionSchema, overtimeRequestInputSchema } from "./validation";
 
 type OvertimeActor = { id: string; role: Role; timeZone: string } | null;
@@ -237,9 +242,13 @@ export async function listOwnOvertimeRequests(
 
 export async function listOvertimeRequestsForReview(
   actor: OvertimeActor,
-  database: Pick<PrismaClient, "overtimeRequest"> = prisma,
+  database: Pick<PrismaClient, "employee" | "overtimeRequest"> = prisma,
 ) {
   assertApprover(actor);
+  const managerDepartmentId = actor.role === "DEPARTMENT_MANAGER"
+    ? await getActiveManagerDepartmentId(database, actor.id)
+    : null;
+  if (actor.role === "DEPARTMENT_MANAGER" && !managerDepartmentId) return [];
   const stage = actor.role === "SUPERVISOR"
     ? OvertimeApprovalStage.SUPERVISOR
     : OvertimeApprovalStage.MANAGER;
@@ -250,7 +259,10 @@ export async function listOvertimeRequestsForReview(
       currentApproverId: actor.id,
       employee: actor.role === "SUPERVISOR"
         ? { supervisor: { userId: actor.id, user: { role: "SUPERVISOR", isActive: true } } }
-        : { manager: { userId: actor.id, user: { role: "DEPARTMENT_MANAGER", isActive: true } } },
+        : {
+            departmentId: managerDepartmentId,
+            manager: { userId: actor.id, user: { role: "DEPARTMENT_MANAGER", isActive: true } },
+          },
     },
     select: reviewRequestSelect,
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
@@ -270,6 +282,16 @@ export async function decideOvertimeRequest(
     : OvertimeApprovalStage.MANAGER;
 
   return database.$transaction(async (transaction) => {
+    const managerDepartmentId = actor.role === "DEPARTMENT_MANAGER"
+      ? await lockActiveManagerDepartmentId(transaction, actor.id)
+      : null;
+    if (actor.role === "DEPARTMENT_MANAGER" && !managerDepartmentId) throw new OvertimeApprovalScopeError();
+    const requestReference = await transaction.overtimeRequest.findUnique({
+      where: { id: overtimeRequestId },
+      select: { employeeId: true },
+    });
+    if (!requestReference) throw new OvertimeRequestNotFoundError();
+    await lockEmployeeForApproval(transaction, requestReference.employeeId);
     const request = await transaction.overtimeRequest.findUnique({
       where: { id: overtimeRequestId },
       select: {
@@ -282,6 +304,7 @@ export async function decideOvertimeRequest(
         employee: {
           select: {
             userId: true,
+            departmentId: true,
             supervisor: { select: { userId: true, user: { select: { role: true, isActive: true } } } },
             manager: { select: { userId: true, user: { select: { role: true, isActive: true } } } },
           },
@@ -303,7 +326,8 @@ export async function decideOvertimeRequest(
         && request.employee.supervisor.user.isActive
       : request.employee.manager?.userId === actor.id
         && request.employee.manager.user?.role === "DEPARTMENT_MANAGER"
-        && request.employee.manager.user.isActive;
+        && request.employee.manager.user.isActive
+        && request.employee.departmentId === managerDepartmentId;
     if (!assigned) throw new OvertimeApprovalScopeError();
     if (actor.role === "SUPERVISOR" && decision.action === "APPROVE" && (
       !request.employee.manager?.userId
@@ -328,7 +352,10 @@ export async function decideOvertimeRequest(
         currentApproverId: actor.id,
         employee: actor.role === "SUPERVISOR"
           ? { supervisor: { userId: actor.id, user: { role: "SUPERVISOR", isActive: true } } }
-          : { manager: { userId: actor.id, user: { role: "DEPARTMENT_MANAGER", isActive: true } } },
+          : {
+              departmentId: managerDepartmentId,
+              manager: { userId: actor.id, user: { role: "DEPARTMENT_MANAGER", isActive: true } },
+            },
       },
       data: {
         status,

@@ -13,6 +13,7 @@ type TestSession = {
 function dashboardDatabase(activeSession: TestSession | null, sessions: TestSession[]) {
   const filters: Array<Record<string, unknown>> = [];
   const database = {
+    employee: { findUnique: async () => ({ shift: null, shiftAssignments: [] }) },
     workSession: {
       findFirst: async ({ where }: { where: Record<string, unknown> }) => {
         filters.push(where);
@@ -40,6 +41,7 @@ describe("employee attendance data access", () => {
   it("scopes dashboard and history queries to the authenticated employee context", async () => {
     const filters: Array<Record<string, unknown>> = [];
     const database = {
+      employee: { findUnique: async () => ({ shift: null, shiftAssignments: [] }) },
       workSession: {
         findFirst: async ({ where }: { where: Record<string, unknown> }) => {
           filters.push(where);

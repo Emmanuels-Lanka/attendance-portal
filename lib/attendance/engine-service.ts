@@ -10,6 +10,7 @@ import {
   type DailyAttendanceCorrectionValues,
 } from "./engine";
 import { getEmployeeLocalDayWindow } from "./timezone";
+import { isOptionalSriLankanSaturday, resolveShiftForDate } from "./shift-assignment";
 
 export type EngineDatabase = Pick<PrismaClient, "$transaction">;
 
@@ -60,15 +61,38 @@ async function calculateForEmployeeDay(
     where: { id: employeeId },
     select: {
       id: true,
-      user: { select: { timeZone: true } },
+      user: { select: { timeZone: true, countryCode: true } },
       shift: { select: shiftConfigurationSelect },
+      shiftAssignments: {
+        select: {
+          effectiveFrom: true,
+          effectiveTo: true,
+          shift: { select: shiftConfigurationSelect },
+        },
+      },
     },
   });
   if (!employee) throw new AttendanceEngineEmployeeError("Employee was not found.");
   if (!employee.user) throw new AttendanceEngineEmployeeError("Employee has no linked user timezone.");
-  if (!employee.shift) {
-    throw new AttendanceEngineConfigurationError("Assign the employee to a configured Shift before calculating attendance.");
-  }
+  const employeeShiftAssignments = employee.shiftAssignments ?? [];
+  const assignments = employeeShiftAssignments.length > 0
+    ? employeeShiftAssignments
+    : employee.shift
+      ? [{
+          effectiveFrom: new Date("0001-01-01T00:00:00.000Z"),
+          effectiveTo: null,
+          shift: employee.shift,
+        }]
+      : [];
+  const resolution = resolveShiftForDate(assignments, date);
+  const optionalSaturday = isOptionalSriLankanSaturday(employee.user.countryCode, date);
+  const optionalSaturdayWithoutAssignment = optionalSaturday && resolution.kind === "NON_WORKING_DAY";
+  const selectedShift = resolution.kind === "ASSIGNED"
+    || resolution.kind === "NON_WORKING_DAY"
+    || resolution.kind === "UNCONFIGURED_WORKING_DAYS"
+    ? resolution.shift
+    : null;
+  const applicableShift = optionalSaturdayWithoutAssignment ? null : selectedShift;
 
   const { startAt, endAt } = getEmployeeLocalDayWindow(
     fromZonedTime(`${date}T12:00:00.000`, employee.user.timeZone),
@@ -79,6 +103,19 @@ async function calculateForEmployeeDay(
     orderBy: [{ timestamp: "asc" }, { id: "asc" }],
     select: { id: true, timestamp: true, punchType: true },
   });
+  if (optionalSaturday && resolution.kind === "NON_WORKING_DAY" && punches.length > 0) {
+    throw new AttendanceEngineConfigurationError(
+      "Saturday punches exist but no Saturday-applicable Shift is assigned for this employee-local date.",
+    );
+  }
+  if (!applicableShift && !optionalSaturdayWithoutAssignment) {
+    const message = resolution.kind === "AMBIGUOUS"
+      ? "Multiple configured shifts apply to this employee and date."
+      : resolution.kind === "UNCONFIGURED_WORKING_DAYS"
+        ? "Configure working weekdays for the assigned Shift before calculating attendance."
+        : "Assign a configured Shift that applies to this employee-local date before calculating attendance.";
+    throw new AttendanceEngineConfigurationError(message);
+  }
   const dateValue = new Date(`${date}T00:00:00.000Z`);
   const holiday = "holiday" in transaction
     ? await transaction.holiday.findFirst({
@@ -90,13 +127,16 @@ async function calculateForEmployeeDay(
     employeeId,
     date,
     timeZone: employee.user.timeZone,
-    shift: {
-      ...employee.shift,
-      minimumWorkingHours: employee.shift.minimumWorkingHours?.toString() ?? null,
-    },
+    shift: applicableShift
+      ? {
+          ...applicableShift,
+          minimumWorkingHours: applicableShift.minimumWorkingHours?.toString() ?? null,
+        }
+      : null,
     punches,
     correction,
     holiday: holiday !== null,
+    optionalWorkday: optionalSaturday,
   });
 
   return {

@@ -45,6 +45,13 @@ function session(id: string, employee: Employee, mode: Session["mode"], start: s
 }
 
 function database(employees: Employee[], daySessions: Session[], openSessions: Session[]) {
+  const shift = {
+    id: "weekday-shift",
+    startTime: new Date("1970-01-01T08:00:00.000Z"),
+    endTime: new Date("1970-01-01T17:30:00.000Z"),
+    gracePeriodMinutes: 10,
+    workingDays: ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"],
+  };
   const user = {
     findMany: async ({ where, select }: { where: { role: Role; isActive: boolean; id?: string }; select: Record<string, boolean> }) => {
       assert.equal("passwordHash" in select, false);
@@ -54,7 +61,14 @@ function database(employees: Employee[], daySessions: Session[], openSessions: S
   const employeeRecord = {
     findMany: async ({ where }: { where: { userId: { in: string[] } } }) => employees
       .filter((item) => where.userId.in.includes(item.id))
-      .map((item) => ({ id: `record-${item.id}`, name: `HR ${item.name}`, employeeId: item.employeeCode, userId: item.id })),
+      .map((item) => ({
+        id: `record-${item.id}`,
+        name: `HR ${item.name}`,
+        employeeId: item.employeeCode,
+        userId: item.id,
+        shift: null,
+        shiftAssignments: [{ effectiveFrom: new Date("0001-01-01T00:00:00.000Z"), effectiveTo: null, shift }],
+      })),
   };
   const workSession = {
     findMany: async ({ where }: { where: SessionQueryWhere }) => {
@@ -82,7 +96,7 @@ describe("admin attendance exceptions", () => {
     const inactive = employee("inactive", "LK", "Asia/Colombo", Role.EMPLOYEE, false);
     const administrator = employee("admin", "LK", "Asia/Colombo", Role.ADMIN);
     const lateEarly = session("late-early", sriLanka, "OFFICE", "2026-06-15T08:31", "2026-06-15T17:00");
-    const onTimeWfh = session("on-time-wfh", sriLanka, "WFH", "2026-06-15T08:30", "2026-06-15T17:30");
+    const onTimeWfh = session("on-time-wfh", sriLanka, "WFH", "2026-06-15T08:10", "2026-06-15T17:30");
     const openOffice = session("open-office", sriLanka, "OFFICE", "2026-06-15T14:00", null);
     const bangladeshWfh = session("bd-wfh", bangladesh, "WFH", "2026-06-15T08:30", "2026-06-15T17:30");
     const officeSession = session("office-session", officeOnly, "OFFICE", "2026-06-15T08:30", "2026-06-15T17:30");
@@ -96,7 +110,7 @@ describe("admin attendance exceptions", () => {
     const result = await getAdminAttendanceExceptions(admin, { date: "2026-06-15" }, db);
 
     assert.deepEqual(result.metrics, {
-      lateArrivals: 1,
+      lateArrivals: 3,
       earlyDepartures: 1,
       activeSessions: 2,
       employeesWithoutAttendance: 1,
@@ -105,7 +119,7 @@ describe("admin attendance exceptions", () => {
     assert.deepEqual(sriLankaEntry?.categories, ["LATE_ARRIVAL", "EARLY_DEPARTURE", "ACTIVE_SESSION"]);
     assert.equal(sriLankaEntry?.day.sessions.length, 3);
     assert.deepEqual(sriLankaEntry?.day.sessions.map(({ session: item }) => item.mode), ["OFFICE", "WFH", "OFFICE"]);
-    assert.equal(sriLankaEntry?.day.totalWorkedMs, 17 * 60 * 60 * 1000 + 29 * 60 * 1000);
+    assert.equal(sriLankaEntry?.day.totalWorkedMs, 17 * 60 * 60 * 1000 + 49 * 60 * 1000);
     assert.equal(sriLankaEntry?.day.sessions[0].timing?.arrival, "LATE");
     assert.equal(sriLankaEntry?.day.sessions[1].timing?.arrival, "ON_TIME");
     assert.equal(sriLankaEntry?.day.sessions[2].status, "ACTIVE");
@@ -136,6 +150,26 @@ describe("admin attendance exceptions", () => {
 
     assert.deepEqual(noRecords.entries.map(({ employee: item }) => item.id), [noAttendance.id]);
     assert.deepEqual(officeIsNotMissing.entries, []);
+  });
+
+  it("does not create no-attendance exceptions on optional Sri Lankan Saturdays", async () => {
+    const sriLankanEmployee = employee("lk-saturday", "LK", "Asia/Colombo");
+    const bangladeshEmployee = employee("bd-saturday", "BD", "Asia/Dhaka");
+    const databaseStub = database([sriLankanEmployee, bangladeshEmployee], [], []);
+
+    const saturday = await getAdminAttendanceExceptions(admin, {
+      date: "2026-10-31",
+      category: "NO_ATTENDANCE",
+    }, databaseStub);
+    assert.deepEqual(saturday.entries.map(({ employee: item }) => item.id), [bangladeshEmployee.id]);
+    assert.equal(saturday.metrics.employeesWithoutAttendance, 1);
+
+    const monday = await getAdminAttendanceExceptions(admin, {
+      date: "2026-10-26",
+      category: "NO_ATTENDANCE",
+    }, databaseStub);
+    assert.deepEqual(monday.entries.map(({ employee: item }) => item.id), [sriLankanEmployee.id, bangladeshEmployee.id]);
+    assert.equal(monday.metrics.employeesWithoutAttendance, 2);
   });
 
   it("rejects invalid dates/categories and requires an administrator", async () => {

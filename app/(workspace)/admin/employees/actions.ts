@@ -17,7 +17,11 @@ import {
   writeEmployeeAuditEvent,
 } from "@/lib/employees/service";
 import { OrganizationNotFoundError } from "@/lib/organization/service";
-import { ShiftNotFoundError } from "@/lib/shifts/service";
+import {
+  ShiftAssignmentConflictError,
+  ShiftNotFoundError,
+  ShiftWorkingDaysConfigurationError,
+} from "@/lib/shifts/service";
 
 export type EmployeeActionState = { error: string } | null;
 
@@ -58,6 +62,10 @@ function employeeFormData(formData: FormData) {
     departmentId: formData.get("departmentId"),
     designationId: formData.get("designationId"),
     shiftId: formData.get("shiftId"),
+    shiftIds: formData.has("shiftAssignmentsSubmitted")
+      ? formData.getAll("shiftIds").filter((shiftId): shiftId is string => typeof shiftId === "string" && shiftId.length > 0)
+      : undefined,
+    shiftEffectiveFrom: formData.get("shiftEffectiveFrom"),
     supervisorId: formData.get("supervisorId"),
     managerId: formData.get("managerId"),
     email: formData.get("email"),
@@ -80,6 +88,13 @@ function employeeAuditSnapshot(employee: NonNullable<Awaited<ReturnType<typeof l
     departmentId: employee.departmentId,
     designationId: employee.designationId,
     shiftId: employee.shiftId,
+    shiftAssignments: employee.shiftAssignments
+      .map(({ shiftId, effectiveFrom, effectiveTo }) => ({
+        shiftId,
+        effectiveFrom: effectiveFrom.toISOString().slice(0, 10),
+        effectiveTo: effectiveTo?.toISOString().slice(0, 10) ?? null,
+      }))
+      .sort((left, right) => left.effectiveFrom.localeCompare(right.effectiveFrom) || left.shiftId.localeCompare(right.shiftId)),
     supervisorId: employee.supervisorId,
     managerId: employee.managerId,
     loginEmail: employee.user?.email,
@@ -101,6 +116,8 @@ function actionError(error: unknown) {
   if (error instanceof EmployeeDuplicateError) return error.message;
   if (error instanceof OrganizationNotFoundError) return error.message;
   if (error instanceof ShiftNotFoundError) return error.message;
+  if (error instanceof ShiftAssignmentConflictError) return error.message;
+  if (error instanceof ShiftWorkingDaysConfigurationError) return error.message;
   if (error instanceof EmployeeReportingAssignmentError) return error.message;
   if (error instanceof z.ZodError) return error.issues[0]?.message ?? "Check the employee details and try again.";
   console.error("Employee management action failed", error instanceof Error ? error.name : "Unknown error");
@@ -117,7 +134,7 @@ export async function createEmployeeAction(_state: EmployeeActionState, formData
         employeeId: created.id,
         actorId: admin.id,
         actionType: "EMPLOYEE_CREATED",
-        changedFields: ["name", "employeeId", "nic", "epfId", "etfId", "departmentId", "designationId", "shiftId", "supervisorId", "managerId", "loginEmail", "loginUsername", "role", "countryCode", "timeZone"],
+        changedFields: ["name", "employeeId", "nic", "epfId", "etfId", "departmentId", "designationId", "shiftId", "shiftAssignments", "supervisorId", "managerId", "loginEmail", "loginUsername", "role", "countryCode", "timeZone"],
       });
       return created;
     });

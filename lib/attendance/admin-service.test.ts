@@ -10,6 +10,14 @@ import {
 } from "./admin-service";
 import { classifyWorkSession } from "./schedule";
 
+const testShift = {
+  id: "shift-1",
+  startTime: new Date("1970-01-01T08:00:00.000Z"),
+  endTime: new Date("1970-01-01T17:30:00.000Z"),
+  gracePeriodMinutes: 10,
+  workingDays: ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"],
+};
+
 type TestSession = {
   id: string;
   mode: "OFFICE" | "WFH";
@@ -89,7 +97,14 @@ function createDatabase(sessions = [makeSession("one")], linkedUserIds?: string[
         if (linkedUserIds && !linkedUserIds.includes(userId)) return [];
         const user = employeeRows.find((row) => row.id === userId);
         return user
-          ? [{ id: `record-${user.id}`, name: `HR ${user.name}`, employeeId: `HR-${user.employeeCode}`, userId }]
+          ? [{
+              id: `record-${user.id}`,
+              name: `HR ${user.name}`,
+              employeeId: `HR-${user.employeeCode}`,
+              userId,
+              shift: null,
+              shiftAssignments: [{ effectiveFrom: new Date("0001-01-01T00:00:00.000Z"), effectiveTo: null, shift: testShift }],
+            }]
           : [];
       }),
     },
@@ -124,6 +139,11 @@ describe("admin attendance access and corrections", () => {
       id: "record-employee-office",
       name: "HR Employee office",
       employeeId: "HR-CODE-office",
+      shiftAssignments: [{
+        effectiveFrom: new Date("0001-01-01T00:00:00.000Z"),
+        effectiveTo: null,
+        shift: testShift,
+      }],
     });
     assert.equal(result.sessions[0].record.employee.id, "employee-office");
     assert.equal(result.employees[0].id, "employee-office");
@@ -189,7 +209,7 @@ describe("admin attendance access and corrections", () => {
     const stub = createDatabase([makeSession("colombo", "OFFICE", "Asia/Colombo")]);
     const corrected = await correctAdminAttendance(admin, "colombo", { startAt: "2026-06-15T08:15", reason: "Incorrect arrival time" }, stub.database);
     assert.equal(corrected.startAt.toISOString(), "2026-06-15T02:45:00.000Z");
-    assert.equal(classifyWorkSession(corrected, "Asia/Colombo").arrival, "EARLY_ARRIVAL");
+    assert.equal(classifyWorkSession(corrected, "Asia/Colombo", testShift).arrival, "LATE");
     assert.deepEqual(Object.keys(stub.calls.updateData ?? {}), ["startAt"]);
     assert.equal(stub.calls.auditData?.actionType, "ADMIN_ATTENDANCE_CORRECTED");
     assert.deepEqual(stub.calls.auditData?.previousValues, {
@@ -204,7 +224,7 @@ describe("admin attendance access and corrections", () => {
     const stub = createDatabase([makeSession("dhaka", "WFH", "Asia/Dhaka")]);
     const corrected = await correctAdminAttendance(admin, "dhaka", { endAt: "2026-06-15T17:29", reason: "Incorrect departure time" }, stub.database);
     assert.equal(corrected.endAt?.toISOString(), "2026-06-15T11:29:00.000Z");
-    assert.equal(classifyWorkSession(corrected, "Asia/Dhaka").departure, "EARLY_DEPARTURE");
+    assert.equal(classifyWorkSession(corrected, "Asia/Dhaka", testShift).departure, "EARLY_DEPARTURE");
     assert.deepEqual(Object.keys(stub.calls.updateData ?? {}), ["endAt"]);
   });
 
@@ -221,7 +241,7 @@ describe("admin attendance access and corrections", () => {
     const stub = createDatabase([makeSession("new-york", "OFFICE", "America/New_York")]);
     const corrected = await correctAdminAttendance(admin, "new-york", { startAt: "2026-03-08T08:31", reason: "Correct DST local time" }, stub.database);
     assert.equal(corrected.startAt.toISOString(), "2026-03-08T12:31:00.000Z");
-    assert.equal(classifyWorkSession(corrected, "America/New_York").arrival, "LATE");
+    assert.equal(classifyWorkSession(corrected, "America/New_York", { ...testShift, workingDays: ["SUNDAY"] }).arrival, "LATE");
   });
 
   it("keeps multiple same-day sessions separate in the admin result", async () => {

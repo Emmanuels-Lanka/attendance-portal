@@ -40,6 +40,7 @@ export default async function EditEmployeePage({ params }: { params: Promise<{ e
         departmentId: employee.departmentId,
         designationId: employee.designationId,
         shiftId: employee.shiftId,
+        shiftIds: employee.shiftAssignments.filter(({ effectiveTo }) => effectiveTo === null).map(({ shiftId }) => shiftId),
         supervisorId: employee.supervisorId,
         managerId: employee.managerId,
         email: employee.user.email,

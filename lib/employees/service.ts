@@ -8,7 +8,10 @@ import { hasPermission } from "@/lib/auth/permissions";
 import { createEmployeeSchema, updateEmployeeSchema, type AdminEmployeeProfilePatch } from "@/lib/employees/validation";
 import { employeeProfileRequiredFields } from "@/lib/employees/profile-requirements";
 import { validateEmployeeOrganizationAssignments } from "@/lib/organization/service";
-import { validateEmployeeShiftAssignment } from "@/lib/shifts/service";
+import {
+  ShiftAssignmentConflictError,
+  validateEmployeeShiftAssignments,
+} from "@/lib/shifts/service";
 
 export const publicEmployeeSelect = {
   id: true,
@@ -45,6 +48,15 @@ export const adminEmployeeSelect = {
   department: { select: { id: true, name: true } },
   designation: { select: { id: true, name: true } },
   shift: { select: { id: true, name: true } },
+  shiftAssignments: {
+    select: {
+      id: true,
+      shiftId: true,
+      effectiveFrom: true,
+      effectiveTo: true,
+      shift: { select: { id: true, name: true, workingDays: true } },
+    },
+  },
   supervisor: { select: { id: true, name: true, employeeId: true } },
   manager: { select: { id: true, name: true, employeeId: true } },
   user: { select: { id: true, email: true, username: true, role: true, isActive: true, countryCode: true, timeZone: true } },
@@ -334,9 +346,11 @@ export async function createEmployee(admin: EmployeeAdmin, input: unknown, datab
   assertEmployeeManager(admin);
   const parsed = createEmployeeSchema.parse(input);
   assertCanAssignRole(admin, parsed.role);
-  const { password, nic, epfId, etfId, departmentId, designationId, shiftId, supervisorId, managerId, ...employeeFields } = parsed;
+  const { password, nic, epfId, etfId, departmentId, designationId, shiftId, shiftIds, shiftEffectiveFrom, supervisorId, managerId, ...employeeFields } = parsed;
+  const assignedShiftIds = shiftIds ?? (shiftId ? [shiftId] : []);
+  const primaryShiftId = assignedShiftIds[0] ?? null;
   await validateEmployeeOrganizationAssignments({ departmentId, designationId }, database);
-  await validateEmployeeShiftAssignment(shiftId, database);
+  await validateEmployeeShiftAssignments(assignedShiftIds, database);
   await validateEmployeeReportingAssignments({ supervisorId, managerId, departmentId }, undefined, database);
   const passwordHash = await hashPassword(password);
 
@@ -353,7 +367,15 @@ export async function createEmployee(admin: EmployeeAdmin, input: unknown, datab
           ...(etfId !== undefined ? { etfId } : {}),
           departmentId: departmentId ?? null,
           designationId: designationId ?? null,
-          shiftId: shiftId ?? null,
+          shiftId: primaryShiftId,
+          ...(assignedShiftIds.length > 0 ? {
+            shiftAssignments: {
+              create: assignedShiftIds.map((assignedShiftId) => ({
+                shiftId: assignedShiftId,
+                effectiveFrom: shiftEffectiveFrom,
+              })),
+            },
+          } : {}),
           supervisorId: supervisorId ?? null,
           managerId: managerId ?? null,
           profileOnboardingRequired: employeeFields.role !== "ADMIN",
@@ -369,10 +391,52 @@ export async function updateEmployee(admin: EmployeeAdmin, employeeId: string, i
   const parsed = updateEmployeeSchema.parse(input);
   assertCanAssignRole(admin, parsed.role);
   await assertCanManageExistingAccount(admin, employeeId, database);
-  const { password, nic, epfId, etfId, departmentId, designationId, shiftId, supervisorId, managerId, profile: profilePatch, ...employeeFields } = parsed;
+  const { password, nic, epfId, etfId, departmentId, designationId, shiftId, shiftIds, shiftEffectiveFrom, supervisorId, managerId, profile: profilePatch, ...employeeFields } = parsed;
+  const assignedShiftIds = shiftIds !== undefined ? shiftIds : shiftId !== undefined ? (shiftId ? [shiftId] : []) : undefined;
+  const primaryShiftId = assignedShiftIds?.[0] ?? null;
   await validateEmployeeOrganizationAssignments({ departmentId, designationId }, database);
-  await validateEmployeeShiftAssignment(shiftId, database);
+  if (assignedShiftIds !== undefined) await validateEmployeeShiftAssignments(assignedShiftIds, database);
   await validateEmployeeReportingAssignments({ supervisorId, managerId, departmentId }, employeeId, database);
+  const currentEmployee = assignedShiftIds !== undefined
+    ? await database.employee.findUnique({
+        where: { userId: employeeId },
+        select: {
+          shiftId: true,
+          shiftAssignments: {
+            select: { shiftId: true, effectiveFrom: true, effectiveTo: true, shift: { select: { workingDays: true } } },
+          },
+        },
+      })
+    : null;
+  const activeShiftAssignments = currentEmployee?.shiftAssignments.filter(({ effectiveTo }) => effectiveTo === null) ?? [];
+  const currentShiftIds = activeShiftAssignments.length
+    ? activeShiftAssignments.map(({ shiftId: assignedId }) => assignedId)
+    : currentEmployee?.shiftId ? [currentEmployee.shiftId] : [];
+  const assignmentsChanged = assignedShiftIds !== undefined
+    && [...assignedShiftIds].sort().join("\0") !== [...currentShiftIds].sort().join("\0");
+  if (assignmentsChanged && currentEmployee) {
+    const effectiveDate = shiftEffectiveFrom.toISOString().slice(0, 10);
+    if (activeShiftAssignments.some(({ effectiveFrom }) =>
+      effectiveDate <= effectiveFrom.toISOString().slice(0, 10),
+    )) {
+      throw new ShiftAssignmentConflictError();
+    }
+    const relevantEndedAssignments = currentEmployee.shiftAssignments.filter(({ effectiveTo }) =>
+      effectiveTo !== null && effectiveTo.toISOString().slice(0, 10) >= effectiveDate,
+    );
+    const currentDays = new Set(relevantEndedAssignments.flatMap(({ shift }) => shift.workingDays));
+    const requestedShifts = assignedShiftIds?.length
+      ? await database.shift.findMany({
+          where: { id: { in: assignedShiftIds } },
+          select: { id: true, workingDays: true },
+        })
+      : [];
+    if (requestedShifts.some(({ workingDays }) =>
+      workingDays.some((weekday) => currentDays.has(weekday)),
+    )) {
+      throw new ShiftAssignmentConflictError();
+    }
+  }
   const passwordHash = password ? await hashPassword(password) : undefined;
   const profileData = definedProfileFields(profilePatch);
   const profileNeedsCompletion = employeeProfileRequiredFields.some((field) => profileData[field] === null);
@@ -384,7 +448,7 @@ export async function updateEmployee(admin: EmployeeAdmin, employeeId: string, i
     ...(etfId !== undefined ? { etfId } : {}),
     ...(departmentId !== undefined ? { departmentId } : {}),
     ...(designationId !== undefined ? { designationId } : {}),
-    ...(shiftId !== undefined ? { shiftId } : {}),
+    ...(assignedShiftIds !== undefined ? { shiftId: assignmentsChanged ? primaryShiftId : currentEmployee?.shiftId ?? primaryShiftId } : {}),
     ...(supervisorId !== undefined ? { supervisorId } : {}),
     ...(managerId !== undefined ? { managerId } : {}),
   };
@@ -394,16 +458,36 @@ export async function updateEmployee(admin: EmployeeAdmin, employeeId: string, i
     ...(Object.keys(profileData).length > 0
       ? { profile: { upsert: { create: profileData, update: profileData } } }
       : {}),
+    ...(assignmentsChanged ? {
+      shiftAssignments: {
+        updateMany: {
+          where: { effectiveTo: null },
+          data: { effectiveTo: new Date(shiftEffectiveFrom.getTime() - 86_400_000) },
+        },
+        create: assignedShiftIds!.map((assignedShiftId) => ({
+          shiftId: assignedShiftId,
+          effectiveFrom: shiftEffectiveFrom,
+        })),
+      },
+    } : {}),
   };
   const employeeCreate = {
     ...employeeScalars,
     departmentId: departmentId ?? null,
     designationId: designationId ?? null,
-    shiftId: shiftId ?? null,
+    shiftId: primaryShiftId,
     supervisorId: supervisorId ?? null,
     managerId: managerId ?? null,
     profileOnboardingRequired: false,
     ...(Object.keys(profileData).length > 0 ? { profile: { create: profileData } } : {}),
+    ...(assignedShiftIds !== undefined && assignedShiftIds.length > 0 ? {
+      shiftAssignments: {
+        create: assignedShiftIds.map((assignedShiftId) => ({
+          shiftId: assignedShiftId,
+          effectiveFrom: shiftEffectiveFrom,
+        })),
+      },
+    } : {}),
   };
 
   return withDuplicateTranslation(() => database.user.update({

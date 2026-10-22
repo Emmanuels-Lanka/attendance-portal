@@ -143,7 +143,12 @@ export async function listAdminAttendance(
 
   const dailySummaries = employeesWithRecords.flatMap((employee) => {
     const employeeSessions = sessionsByEmployee.get(employee.id) ?? [];
-    return groupSessionsByEmployeeLocalDay(employeeSessions, employee.timeZone).days.map((day) => ({ employee, day }));
+    return groupSessionsByEmployeeLocalDay(
+      employeeSessions,
+      employee.timeZone,
+      employee.employeeRecord?.shiftAssignments ?? [],
+      employee.countryCode,
+    ).days.map((day) => ({ employee, day }));
   }).sort((left, right) => right.day.date.localeCompare(left.day.date) || left.employee.name.localeCompare(right.employee.name));
 
   return { employees: employeesWithRecords, sessions: sessionsWithEmployeeRecords, dailySummaries, filters };

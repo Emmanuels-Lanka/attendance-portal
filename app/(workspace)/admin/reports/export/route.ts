@@ -3,15 +3,18 @@ import { createMonthlyAttendancePdf } from "@/lib/attendance/monthly-pdf";
 import { getMonthlyAttendanceSummaryReport } from "@/lib/attendance/reports";
 import { createMonthlyReportDownloadResponse } from "@/lib/attendance/report-export";
 import { requirePageAdmin } from "@/lib/auth/session";
+import { getCompanyName } from "@/lib/attendance/settings";
 
 export async function GET(request: NextRequest) {
   const admin = await requirePageAdmin();
+  const companyName = await getCompanyName();
   const month = request.nextUrl.searchParams.get("month") ?? new Date().toISOString().slice(0, 7);
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return new NextResponse("Invalid report month.", { status: 400 });
   const { employees, summary } = await getMonthlyAttendanceSummaryReport(admin, month);
   const pdf = await createMonthlyAttendancePdf({
     month,
     title: "Company attendance",
+    companyName,
     employees: employees.map(({ employee, report }) => ({
       name: employee.name,
       employeeCode: employee.employeeCode,

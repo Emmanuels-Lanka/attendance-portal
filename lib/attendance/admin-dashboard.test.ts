@@ -39,6 +39,14 @@ function session(id: string, employee: Employee, mode: Session["mode"], start: s
   };
 }
 
+const testShift = {
+  id: "weekday-shift",
+  startTime: new Date("1970-01-01T08:00:00.000Z"),
+  endTime: new Date("1970-01-01T17:30:00.000Z"),
+  gracePeriodMinutes: 10,
+  workingDays: ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"],
+};
+
 function createDatabase(employees: Employee[], daySessions: Session[], openSessions: Session[]) {
   const queries: Record<string, unknown>[] = [];
   const database = {
@@ -63,6 +71,8 @@ function createDatabase(employees: Employee[], daySessions: Session[], openSessi
         name: `HR ${userId}`,
         employeeId: `HR-${userId}`,
         userId,
+        shift: null,
+        shiftAssignments: [{ effectiveFrom: new Date("0001-01-01T00:00:00.000Z"), effectiveTo: null, shift: testShift }],
       })),
     },
     workSession: {
@@ -99,7 +109,7 @@ describe("admin attendance summary dashboard", () => {
       totalEmployees: 3,
       withAttendance: 2,
       withoutAttendance: 1,
-      lateArrivals: 1,
+      lateArrivals: 2,
       earlyDepartures: 1,
       completed: 2,
       activeNow: 1,
@@ -113,6 +123,11 @@ describe("admin attendance summary dashboard", () => {
       id: `record-${sriLanka.id}`,
       name: `HR ${sriLanka.id}`,
       employeeId: `HR-${sriLanka.id}`,
+      shiftAssignments: [{
+        effectiveFrom: new Date("0001-01-01T00:00:00.000Z"),
+        effectiveTo: null,
+        shift: testShift,
+      }],
     });
     assert.equal(linkedEmployee?.id, sriLanka.id);
   });
@@ -131,6 +146,19 @@ describe("admin attendance summary dashboard", () => {
 
     const june16 = await getAdminAttendanceSummary(admin, { date: "2026-06-16" }, stub.database);
     assert.deepEqual(june16.employees.map(({ employee, day }) => [employee.id, day.sessions.length]), [["lk-date", 0], ["bd-date", 1]]);
+  });
+
+  it("does not count optional Sri Lankan Saturdays as employees without attendance", async () => {
+    const sriLankanSaturday = makeEmployee("lk-saturday", "LK", "Asia/Colombo");
+    const bangladeshSaturday = makeEmployee("bd-saturday", "BD", "Asia/Dhaka");
+    const sriLankanMonday = makeEmployee("lk-monday", "LK", "Asia/Colombo");
+    const stub = createDatabase([sriLankanSaturday, bangladeshSaturday, sriLankanMonday], [], []);
+
+    const saturday = await getAdminAttendanceSummary(admin, { date: "2026-10-31" }, stub.database);
+    assert.equal(saturday.metrics.withoutAttendance, 1);
+
+    const monday = await getAdminAttendanceSummary(admin, { date: "2026-10-26" }, stub.database);
+    assert.equal(monday.metrics.withoutAttendance, 3);
   });
 
   it("allows HR dashboard summaries while excluding privileged account attendance", async () => {

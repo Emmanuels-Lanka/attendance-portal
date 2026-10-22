@@ -1,9 +1,9 @@
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { hasPermission } from "@/lib/auth/permissions";
-import { AttendanceEngineConfigurationError, calculateDailyAttendance } from "@/lib/attendance/engine";
-import { countScheduledWorkdays } from "@/lib/leave/workdays";
+import { AttendanceEngineConfigurationError, calculateDailyAttendance, type AttendanceEngineShift } from "@/lib/attendance/engine";
 import { prisma } from "@/lib/prisma";
 import type { Prisma, PrismaClient, Role } from "@prisma/client";
+import { isOptionalSriLankanSaturday, resolveShiftForDate, type EffectiveShiftAssignment } from "./shift-assignment";
 
 export type MonthlySession = {
   id: string;
@@ -271,6 +271,25 @@ function monthlyDateLabels(month: string) {
   };
 }
 
+function countAssignedWorkdays(
+  startDate: string,
+  endDate: string,
+  assignments: readonly EffectiveShiftAssignment[],
+  excludedDates: ReadonlySet<string> = new Set(),
+  countryCode = "",
+) {
+  let count = 0;
+  for (let timestamp = Date.parse(`${startDate}T00:00:00.000Z`); timestamp <= Date.parse(`${endDate}T00:00:00.000Z`); timestamp += 86_400_000) {
+    const date = new Date(timestamp).toISOString().slice(0, 10);
+    if (
+      !excludedDates.has(date)
+      && !isOptionalSriLankanSaturday(countryCode, date)
+      && resolveShiftForDate(assignments, date).kind === "ASSIGNED"
+    ) count += 1;
+  }
+  return count;
+}
+
 export function buildEmployeeMonthlyReport(
   employee: { timeZone: string },
   month: string,
@@ -366,6 +385,7 @@ export async function getEmployeeMonthlyReport(
     where: { userId: employeeId },
     select: {
       id: true,
+      user: { select: { countryCode: true } },
       shift: {
         select: {
           id: true,
@@ -379,6 +399,27 @@ export async function getEmployeeMonthlyReport(
           overtimeEligible: true,
           roundingRules: true,
           workingDays: true,
+        },
+      },
+      shiftAssignments: {
+        select: {
+          effectiveFrom: true,
+          effectiveTo: true,
+          shift: {
+            select: {
+              id: true,
+              startTime: true,
+              endTime: true,
+              gracePeriodMinutes: true,
+              lateThresholdMinutes: true,
+              earlyDepartureThresholdMinutes: true,
+              breakDurationMinutes: true,
+              minimumWorkingHours: true,
+              overtimeEligible: true,
+              roundingRules: true,
+              workingDays: true,
+            },
+          },
         },
       },
     },
@@ -460,7 +501,7 @@ export async function getEmployeeMonthlyReport(
     lateMinutes: row.lateMinutes,
     earlyMinutes: row.earlyMinutes,
   }));
-  const persistedDates = new Set(dailySummaries.map(({ date }) => date));
+  const sessionDates = new Set(sessions.map(({ startAt }) => formatInTimeZone(startAt, employee.timeZone, "yyyy-MM-dd")));
   const punchesByDate = new Map<string, typeof rawPunches>();
   for (const punch of rawPunches) {
     const date = formatInTimeZone(punch.timestamp, employee.timeZone, "yyyy-MM-dd");
@@ -468,31 +509,73 @@ export async function getEmployeeMonthlyReport(
     dayPunches.push(punch);
     punchesByDate.set(date, dayPunches);
   }
-  const shift = employeeRecord?.shift;
-  if (shift) {
-    const weekdayNames = ["SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"] as const;
+  const countryCode = employeeRecord?.user?.countryCode ?? "";
+  const hasSaturdayActivity = (date: string) =>
+    punchesByDate.has(date) || sessionDates.has(date);
+  const filteredDailySummaries = dailySummaries.filter(({ date }) =>
+    !isOptionalSriLankanSaturday(countryCode, date) || hasSaturdayActivity(date),
+  );
+  const persistedDates = new Set(filteredDailySummaries.map(({ date }) => date));
+  const shiftAssignments: EffectiveShiftAssignment<AttendanceEngineShift>[] = employeeRecord
+    ? employeeRecord.shiftAssignments?.length
+      ? employeeRecord.shiftAssignments.map(({ effectiveFrom, effectiveTo, shift: assignedShift }) => ({
+          effectiveFrom,
+          effectiveTo,
+          shift: {
+            ...assignedShift,
+            minimumWorkingHours: assignedShift.minimumWorkingHours?.toString() ?? null,
+          },
+        }))
+      : employeeRecord.shift
+        ? [{
+            effectiveFrom: new Date("0001-01-01T00:00:00.000Z"),
+            effectiveTo: null,
+            shift: {
+              ...employeeRecord.shift,
+              minimumWorkingHours: employeeRecord.shift.minimumWorkingHours?.toString() ?? null,
+            },
+          }]
+        : []
+    : [];
+  if (employeeRecord) {
     for (let timestamp = dateStart.getTime(); timestamp < dateEnd.getTime(); timestamp += 86_400_000) {
       const date = new Date(timestamp).toISOString().slice(0, 10);
       if (persistedDates.has(date)) continue;
-      const weekday = weekdayNames[new Date(timestamp).getUTCDay()];
       const dayPunches = punchesByDate.get(date) ?? [];
       const isHoliday = holidayDates.has(date);
-      const isConfiguredWeekend = shift.workingDays.length > 0 && !shift.workingDays.includes(weekday);
+      const optionalSaturday = isOptionalSriLankanSaturday(countryCode, date);
+      if (optionalSaturday && !hasSaturdayActivity(date)) continue;
+      const resolution = resolveShiftForDate(shiftAssignments, date);
+      const selectedShift = resolution.kind === "ASSIGNED"
+        || (resolution.kind === "NON_WORKING_DAY" && !(optionalSaturday && hasSaturdayActivity(date)))
+        ? resolution.shift
+        : null;
+      const isConfiguredWeekend = resolution.kind === "NON_WORKING_DAY";
       if (dayPunches.length === 0 && !isHoliday && !isConfiguredWeekend) continue;
+      if (!selectedShift) {
+        filteredDailySummaries.push({
+          date,
+          status: isHoliday ? "HOLIDAY" : "UNDETERMINED",
+          workingHours: null,
+          lateMinutes: null,
+          earlyMinutes: null,
+        });
+        continue;
+      }
 
       try {
+        if (!employeeRecord) throw new AttendanceEngineConfigurationError("Employee shift assignments are unavailable.");
         const calculation = calculateDailyAttendance({
           employeeId: employeeRecord.id,
           date,
           timeZone: employee.timeZone,
           shift: {
-            ...shift,
-            minimumWorkingHours: shift.minimumWorkingHours?.toString() ?? null,
+            ...selectedShift,
           },
           punches: dayPunches,
           holiday: isHoliday,
         });
-        dailySummaries.push({
+        filteredDailySummaries.push({
           date,
           status: calculation.status,
           workingHours: dayPunches.length > 0 ? calculation.workingHours : null,
@@ -501,26 +584,25 @@ export async function getEmployeeMonthlyReport(
         });
       } catch (error) {
         if (!(error instanceof AttendanceEngineConfigurationError)) throw error;
-        dailySummaries.push({ date, status: "UNDETERMINED", workingHours: null, lateMinutes: null, earlyMinutes: null });
+        filteredDailySummaries.push({ date, status: "UNDETERMINED", workingHours: null, lateMinutes: null, earlyMinutes: null });
       }
     }
   }
-  const workingDays = employeeRecord?.shift?.workingDays ?? [];
-  const totalWorkingDays = workingDays.length > 0
-    ? countScheduledWorkdays(monthDateStart, monthDateEnd, workingDays, holidayDates)
+  const totalWorkingDays = shiftAssignments.length > 0
+    ? countAssignedWorkdays(monthDateStart, monthDateEnd, shiftAssignments, holidayDates, countryCode)
     : null;
   const approvedLeaveRanges = mergeMonthlyDateRanges(approvedLeaves.map(({ startDate, endDate }) => ({
     startDate: startDate.toISOString().slice(0, 10),
     endDate: endDate.toISOString().slice(0, 10),
   })), monthDateStart, monthDateEnd);
   const attendanceDates = new Set([
-    ...dailySummaries.filter(({ status }) => status != null).map(({ date }) => date),
+    ...filteredDailySummaries.filter(({ status }) => status != null).map(({ date }) => date),
     ...punchesByDate.keys(),
     ...sessions.map(({ startAt }) => formatInTimeZone(startAt, employee.timeZone, "yyyy-MM-dd")),
   ]);
   const leaveExclusionDates = new Set([...holidayDates, ...attendanceDates]);
-  const approvedLeaveDays = workingDays.length > 0
-    ? approvedLeaveRanges.reduce((sum, range) => sum + countScheduledWorkdays(range.startDate, range.endDate, workingDays, leaveExclusionDates), 0)
+  const approvedLeaveDays = shiftAssignments.length > 0
+    ? approvedLeaveRanges.reduce((sum, range) => sum + countAssignedWorkdays(range.startDate, range.endDate, shiftAssignments, leaveExclusionDates, countryCode), 0)
     : null;
   const overtimeSummary = buildMonthlyOvertimeSummary(
     month,
@@ -544,7 +626,7 @@ export async function getEmployeeMonthlyReport(
       startAt: session.startAt,
       endAt: session.endAt,
     })),
-    dailySummaries,
+    filteredDailySummaries,
     {
       totalWorkingDays,
       approvedLeaveDays,
@@ -602,7 +684,7 @@ export async function getAdminMonthlyReport(month: string, employeeId?: string) 
 }
 
 type MonthlySummaryActor = { id: string; role: Role };
-type MonthlySummaryScopeDatabase = Pick<PrismaClient, "user" | "employee">;
+type MonthlySummaryScopeDatabase = Pick<PrismaClient, "user" | "employee" | "department">;
 
 export class MonthlySummaryAccessError extends Error {
   constructor() {
@@ -616,10 +698,13 @@ export async function listMonthlySummaryEmployees(
   month: string,
   selectedEmployeeId = "",
   database: MonthlySummaryScopeDatabase = prisma,
+  selectedDepartmentId = "",
 ) {
   buildMonthWindow(month, "UTC");
   const selectedId = selectedEmployeeId.trim();
+  const selectedDepartment = selectedDepartmentId.trim();
   if (selectedId.length > 100) throw new RangeError("Employee selection is invalid.");
+  if (selectedDepartment.length > 100) throw new RangeError("Department selection is invalid.");
 
   const canReadOrganization = hasPermission(actor.role, "reports:read");
   const canReadDepartment = hasPermission(actor.role, "reports:department:read");
@@ -632,8 +717,11 @@ export async function listMonthlySummaryEmployees(
       select: { departmentId: true },
     });
     if (!manager?.departmentId) {
-      if (selectedId) throw new MonthlySummaryAccessError();
+      if (selectedId || selectedDepartment) throw new MonthlySummaryAccessError();
       return [];
+    }
+    if (selectedDepartment && selectedDepartment !== manager.departmentId) {
+      throw new MonthlySummaryAccessError();
     }
     const departmentEmployees = await database.employee.findMany({
       where: { departmentId: manager.departmentId },
@@ -648,6 +736,7 @@ export async function listMonthlySummaryEmployees(
     ...(departmentUserIds !== null
       ? { id: { in: selectedId ? [selectedId] : departmentUserIds } }
       : selectedId ? { id: selectedId } : {}),
+    ...(selectedDepartment ? { employee: { is: { departmentId: selectedDepartment } } } : {}),
   };
   const employees = await database.user.findMany({
     where,
@@ -679,11 +768,22 @@ export async function getMonthlyAttendanceSummaryReport(
   month: string,
   selectedEmployeeId = "",
   database: MonthlySummaryScopeDatabase = prisma,
+  selectedDepartmentId = "",
 ) {
   const availableEmployees = await listMonthlySummaryEmployees(actor, month, "", database);
   const selectedId = selectedEmployeeId.trim();
-  if (selectedId && !availableEmployees.some(({ id }) => id === selectedId)) throw new MonthlySummaryAccessError();
-  const employees = selectedId ? availableEmployees.filter(({ id }) => id === selectedId) : availableEmployees;
+  const selectedDepartment = selectedDepartmentId.trim();
+  const departmentEmployees = selectedDepartment
+    ? await listMonthlySummaryEmployees(actor, month, "", database, selectedDepartment)
+    : availableEmployees;
+  if (selectedId && !departmentEmployees.some(({ id }) => id === selectedId)) throw new MonthlySummaryAccessError();
+  const employees = selectedId ? departmentEmployees.filter(({ id }) => id === selectedId) : departmentEmployees;
+  const availableDepartments = hasPermission(actor.role, "reports:read")
+    ? await database.department.findMany({
+        select: { id: true, name: true },
+        orderBy: [{ name: "asc" }, { id: "asc" }],
+      })
+    : [];
   const rows = await Promise.all(employees.map(async (employee) => ({
     employee,
     report: await getEmployeeMonthlyReport(employee, month),
@@ -717,7 +817,8 @@ export async function getMonthlyAttendanceSummaryReport(
   return {
     month,
     employees: rows,
-    availableEmployees,
+    availableEmployees: departmentEmployees,
+    availableDepartments,
     summary: {
       employeeCount: rows.length,
       totalSessions: sum((report) => report.summary.totalSessions),

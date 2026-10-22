@@ -9,7 +9,6 @@ import { listDailyAttendanceCorrections } from "@/lib/attendance/correction-serv
 import { formatWorkedDuration } from "@/lib/attendance/history";
 import { getEmployeeMonthlyReport, getMonthlyAttendanceSummaryReport } from "@/lib/attendance/reports";
 import { getEmployeeAttendanceDashboard } from "@/lib/attendance/service";
-import { classifyWorkSession } from "@/lib/attendance/schedule";
 import { requirePageUser } from "@/lib/auth/session";
 import { listManagerLeaveRequests, listSupervisorLeaveRequests } from "@/lib/leave/approval-service";
 import { listOvertimeRequestsForReview } from "@/lib/overtime/service";
@@ -254,14 +253,12 @@ export default async function DashboardPage() {
     date,
     activeSession,
     previousDayActiveSession,
+    activeSessionTiming,
+    previousDayActiveSessionTiming,
     day,
     completedSessionToday,
     invalidSessions,
   } = await getEmployeeAttendanceDashboard(user);
-  const activeSessionTiming = activeSession ? classifyWorkSession(activeSession, user.timeZone) : null;
-  const previousDayActiveSessionTiming = previousDayActiveSession
-    ? classifyWorkSession(previousDayActiveSession, user.timeZone)
-    : null;
   const monthlyReport = await getEmployeeMonthlyReport(user, currentMonth);
   const thisMonthMetrics = [
     { label: "Present", value: monthlyReport.summary.presentDays ?? "Not calculated" },

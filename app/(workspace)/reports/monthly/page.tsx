@@ -6,7 +6,7 @@ import { hasPermission } from "@/lib/auth/permissions";
 import { requirePageUser } from "@/lib/auth/session";
 import { redirect } from "next/navigation";
 
-type SearchParams = { month?: string | string[]; employeeId?: string | string[] };
+type SearchParams = { month?: string | string[]; employeeId?: string | string[]; departmentId?: string | string[] };
 
 function single(value: string | string[] | undefined) {
   return typeof value === "string" ? value : "";
@@ -24,8 +24,13 @@ export default async function MonthlyAttendanceSummaryPage({ searchParams }: { s
   const validMonth = /^\d{4}-(0[1-9]|1[0-2])$/.test(requestedMonth);
   const month = validMonth ? requestedMonth : currentMonth;
   const selectedEmployeeId = single(params.employeeId).trim();
-  const result = await getMonthlyAttendanceSummaryReport(user, month, selectedEmployeeId);
-  const exportParams = new URLSearchParams({ month, ...(selectedEmployeeId ? { employeeId: selectedEmployeeId } : {}) }).toString();
+  const selectedDepartmentId = single(params.departmentId).trim();
+  const result = await getMonthlyAttendanceSummaryReport(user, month, selectedEmployeeId, undefined, selectedDepartmentId);
+  const exportParams = new URLSearchParams({
+    month,
+    ...(selectedEmployeeId ? { employeeId: selectedEmployeeId } : {}),
+    ...(selectedDepartmentId ? { departmentId: selectedDepartmentId } : {}),
+  }).toString();
   const overtimeByDepartment = new Map<string, {
     departmentId: string | null;
     departmentName: string;
@@ -105,10 +110,16 @@ export default async function MonthlyAttendanceSummaryPage({ searchParams }: { s
           <h1 className="mt-1 text-2xl font-semibold sm:text-[28px]">Monthly attendance summary</h1>
           <p className="mt-2 text-sm text-[var(--muted)]">{canReadOrganization ? "Organization summary" : "Department summary"} for {month}; totals count employee-days.</p>
         </div>
-        <form method="get" className="grid w-full gap-2 sm:w-auto sm:grid-cols-[minmax(150px,auto)_minmax(200px,1fr)_auto] sm:items-end">
+        <form method="get" className={`grid w-full gap-2 sm:w-auto sm:items-end ${canReadOrganization ? "sm:grid-cols-[minmax(150px,auto)_minmax(180px,1fr)_minmax(200px,1fr)_auto]" : "sm:grid-cols-[minmax(150px,auto)_minmax(200px,1fr)_auto]"}`}>
           <label htmlFor="monthly-summary-month" className="text-xs font-semibold text-[var(--muted)]">Month
             <input id="monthly-summary-month" type="month" name="month" defaultValue={month} className="mt-1 h-10 w-full rounded-md border border-[var(--line)] bg-white px-3 text-sm text-[var(--ink)]" />
           </label>
+          {canReadOrganization && <label htmlFor="monthly-summary-department" className="text-xs font-semibold text-[var(--muted)]">Department
+            <select id="monthly-summary-department" name="departmentId" defaultValue={selectedDepartmentId} className="mt-1 h-10 w-full rounded-md border border-[var(--line)] bg-white px-3 text-sm text-[var(--ink)]">
+              <option value="">All departments</option>
+              {result.availableDepartments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}
+            </select>
+          </label>}
           <label htmlFor="monthly-summary-employee" className="text-xs font-semibold text-[var(--muted)]">Employee
             <select id="monthly-summary-employee" name="employeeId" defaultValue={selectedEmployeeId} className="mt-1 h-10 w-full rounded-md border border-[var(--line)] bg-white px-3 text-sm text-[var(--ink)]">
               <option value="">All authorized employees</option>

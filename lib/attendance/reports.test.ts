@@ -205,27 +205,33 @@ describe("employee-local monthly report windows", () => {
     })), [{ date: "2026-06-03", sessions: [], approvedWorkFromHome: true, totalWorkedMs: 0 }]);
   });
 
-  it("uses linked Employee records, shift weekdays, holidays, leave, and saved corrections", async () => {
+  it("uses effective shift assignments, holidays, leave, and saved corrections", async () => {
     const calls: Record<string, unknown> = {};
     const database = {
       employee: {
-        findUnique: async ({ where }: { where: { userId: string } }) => {
+        findUnique: async ({ where, select }: { where: { userId: string }; select: Record<string, unknown> }) => {
           calls.employeeWhere = where;
+          calls.employeeSelect = select;
           return {
             id: "employee-record-1",
-            shift: {
-              id: "shift-1",
-              startTime: new Date("1970-01-01T08:30:00.000Z"),
-              endTime: new Date("1970-01-01T17:30:00.000Z"),
-              gracePeriodMinutes: 10,
-              lateThresholdMinutes: 0,
-              earlyDepartureThresholdMinutes: 0,
-              breakDurationMinutes: 0,
-              minimumWorkingHours: "8",
-              overtimeEligible: false,
-              roundingRules: null,
-              workingDays: ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"],
-            },
+            shift: null,
+            shiftAssignments: [{
+              effectiveFrom: new Date("0001-01-01T00:00:00.000Z"),
+              effectiveTo: null,
+              shift: {
+                id: "shift-1",
+                startTime: new Date("1970-01-01T08:30:00.000Z"),
+                endTime: new Date("1970-01-01T17:30:00.000Z"),
+                gracePeriodMinutes: 10,
+                lateThresholdMinutes: 0,
+                earlyDepartureThresholdMinutes: 0,
+                breakDurationMinutes: 0,
+                minimumWorkingHours: "8",
+                overtimeEligible: false,
+                roundingRules: null,
+                workingDays: ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"],
+              },
+            }],
           };
         },
       },
@@ -300,6 +306,7 @@ describe("employee-local monthly report windows", () => {
     }, "2026-06", database);
 
     assert.deepEqual(calls.employeeWhere, { userId: "user-1" });
+    assert.ok("shiftAssignments" in (calls.employeeSelect as Record<string, unknown>));
     assert.deepEqual(calls.sessionWhere, { record: { employeeId: "user-1" }, startAt: { gte: new Date("2026-05-31T18:30:00.000Z"), lte: new Date("2026-06-30T18:29:59.999Z") } });
     assert.deepEqual(calls.dailyWhere, { employeeId: "employee-record-1", date: { gte: new Date("2026-06-01T00:00:00.000Z"), lt: new Date("2026-07-01T00:00:00.000Z") } });
     assert.deepEqual(calls.rawWhere, { employeeId: "employee-record-1", timestamp: { gte: new Date("2026-05-31T18:30:00.000Z"), lte: new Date("2026-06-30T18:29:59.999Z") } });
@@ -329,6 +336,99 @@ describe("employee-local monthly report windows", () => {
     assert.equal(report.summary.approvedExpectedOvertimeHours, 2.25);
     assert.equal(report.summary.pendingExpectedOvertimeHours, 0.5);
     assert.equal(report.summary.rejectedExpectedOvertimeHours, 0.75);
+  });
+
+  it("excludes unworked Sri Lankan Saturdays from monthly workday and absence totals", async () => {
+    const shift = {
+      id: "weekday",
+      startTime: new Date("1970-01-01T08:00:00.000Z"),
+      endTime: new Date("1970-01-01T17:30:00.000Z"),
+      gracePeriodMinutes: 10,
+      lateThresholdMinutes: 30,
+      earlyDepartureThresholdMinutes: 10,
+      breakDurationMinutes: 60,
+      minimumWorkingHours: "9",
+      overtimeEligible: false,
+      roundingRules: null,
+      workingDays: ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"],
+    };
+    const saturdayShift = {
+      ...shift,
+      id: "saturday",
+      startTime: new Date("1970-01-01T08:30:00.000Z"),
+      endTime: new Date("1970-01-01T13:30:00.000Z"),
+      workingDays: ["SATURDAY"],
+      minimumWorkingHours: "4",
+    };
+
+    async function reportWith(assignSaturdayShift: boolean, punches: Array<{ id: string; timestamp: Date; punchType: "IN" | "OUT" }> = []) {
+      const database = {
+        employee: {
+          findUnique: async () => ({
+            id: "employee-record-1",
+            user: { countryCode: "LK" },
+            shift: null,
+            shiftAssignments: [
+              {
+                effectiveFrom: new Date("0001-01-01T00:00:00.000Z"),
+                effectiveTo: null,
+                shift,
+              },
+              ...(assignSaturdayShift ? [{
+                effectiveFrom: new Date("0001-01-01T00:00:00.000Z"),
+                effectiveTo: null,
+                shift: saturdayShift,
+              }] : []),
+            ],
+          }),
+        },
+        workSession: { findMany: async () => [] },
+        attendanceDaily: {
+          findMany: async () => punches.length === 0 ? [{
+            date: new Date("2026-10-31T00:00:00.000Z"),
+            status: "ABSENT",
+            workingHours: null,
+            lateMinutes: null,
+            earlyMinutes: null,
+            overtimeHours: null,
+          }] : [],
+        },
+        attendanceRaw: { findMany: async () => punches },
+        holiday: { findMany: async () => [] },
+        leaveRequest: { findMany: async () => [] },
+        overtimeRequest: { findMany: async () => [] },
+        workFromHomeRequest: { findMany: async () => [] },
+      } as never;
+      return getEmployeeMonthlyReport(
+        { id: "user-1", name: "Employee", timeZone: "Asia/Colombo" },
+        "2026-10",
+        database,
+      );
+    }
+
+    const withoutWeekendShift = await reportWith(false);
+    const withWeekendShift = await reportWith(true);
+    for (const report of [withoutWeekendShift, withWeekendShift]) {
+      assert.equal(report.summary.totalWorkingDays, 22);
+      assert.equal(report.summary.absentDays, 0);
+      assert.equal(report.summary.lateDays, 0);
+      assert.equal(report.summary.missingPunchDays, 0);
+      assert.equal(report.summary.undeterminedDays, 0);
+    }
+
+    const saturdayPunches = [
+      { id: "saturday-in", timestamp: new Date("2026-10-31T03:10:00.001Z"), punchType: "IN" },
+      { id: "saturday-out", timestamp: new Date("2026-10-31T08:00:00.000Z"), punchType: "OUT" },
+    ] as const;
+    const actualSaturday = await reportWith(true, [...saturdayPunches]);
+    assert.equal(actualSaturday.summary.totalWorkingDays, 22);
+    assert.equal(actualSaturday.summary.lateDays, 1);
+    assert.equal(actualSaturday.summary.absentDays, 0);
+
+    const unresolvedSaturday = await reportWith(false, [...saturdayPunches]);
+    assert.equal(unresolvedSaturday.summary.totalWorkingDays, 22);
+    assert.equal(unresolvedSaturday.summary.lateDays, 0);
+    assert.equal(unresolvedSaturday.summary.undeterminedDays, 1);
   });
 
 });

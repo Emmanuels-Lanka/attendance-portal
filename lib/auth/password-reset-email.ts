@@ -1,6 +1,7 @@
 import "server-only";
 
 import nodemailer from "nodemailer";
+import { getCompanyName } from "@/lib/attendance/settings";
 
 type PasswordResetEmail = { email: string; name: string; token: string };
 
@@ -39,7 +40,9 @@ export async function sendPasswordResetEmail({ email, name, token }: PasswordRes
   if (Boolean(user) !== Boolean(password)) throw new Error("SMTP_USER and SMTP_PASSWORD must both be configured or both omitted.");
 
   const resetUrl = createPasswordResetUrl(token);
+  const companyName = await getCompanyName();
   const safeName = escapeHtml(name);
+  const safeCompanyName = escapeHtml(companyName);
   const transport = nodemailer.createTransport({
     host,
     port,
@@ -56,8 +59,8 @@ export async function sendPasswordResetEmail({ email, name, token }: PasswordRes
       from,
       to: email,
       subject: "Reset your EML – Attendance Management System password",
-      text: `Hello ${name},\n\nUse this link to reset your password. It expires in 30 minutes and can only be used once:\n${resetUrl}\n\nIf you did not request a password reset, you can ignore this email.`,
-      html: `<p>Hello ${safeName},</p><p>Use the link below to reset your password. It expires in 30 minutes and can only be used once.</p><p><a href="${resetUrl}">Reset password</a></p><p>If you did not request a password reset, you can ignore this email.</p>`,
+      text: `Hello ${name},\n\nUse this link to reset your password. It expires in 30 minutes and can only be used once:\n${resetUrl}\n\nIf you did not request a password reset, you can ignore this email.\n\n${companyName}`,
+      html: `<p>Hello ${safeName},</p><p>Use the link below to reset your password. It expires in 30 minutes and can only be used once.</p><p><a href="${resetUrl}">Reset password</a></p><p>If you did not request a password reset, you can ignore this email.</p><p>${safeCompanyName}</p>`,
     });
   } finally {
     transport.close();

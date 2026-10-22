@@ -18,10 +18,17 @@ function createDatabase(managerDepartmentId: string | null = "department-a") {
         .map((employee) => ({ userId: employee.id })),
     },
     user: {
-      findMany: async ({ where }: { where: { role: string; id?: string | { in: string[] } } }) => {
+      findMany: async ({ where }: {
+        where: {
+          role: string;
+          id?: string | { in: string[] };
+          employee?: { is?: { departmentId?: string } };
+        };
+      }) => {
         calls.push({ where });
         return employeeRows
           .filter((employee) => employee.role === where.role)
+          .filter((employee) => !where.employee?.is?.departmentId || employee.departmentId === where.employee.is.departmentId)
           .filter((employee) => typeof where.id === "string" ? employee.id === where.id
             : where.id && "in" in where.id ? where.id.in.includes(employee.id) : true)
           .map(({ id, name, timeZone, employeeId, departmentId }) => ({
@@ -53,6 +60,33 @@ describe("monthly summary report access", () => {
 
     await assert.rejects(
       listMonthlySummaryEmployees({ id: "manager-a", role: Role.DEPARTMENT_MANAGER }, "2026-02", "employee-b", stub.database),
+      MonthlySummaryAccessError,
+    );
+  });
+
+  it("filters organization-wide monthly summaries by department and blocks cross-department Manager filters", async () => {
+    const hrDatabase = createDatabase();
+    const hrEmployees = await listMonthlySummaryEmployees(
+      { id: "hr", role: Role.HR_ADMINISTRATOR },
+      "2026-02",
+      "",
+      hrDatabase.database,
+      "department-b",
+    );
+    assert.deepEqual(hrEmployees.map(({ id }) => id), ["employee-b"]);
+    assert.deepEqual(hrDatabase.calls[0].where, {
+      role: "EMPLOYEE",
+      employee: { is: { departmentId: "department-b" } },
+    });
+
+    await assert.rejects(
+      listMonthlySummaryEmployees(
+        { id: "manager-a", role: Role.DEPARTMENT_MANAGER },
+        "2026-02",
+        "",
+        createDatabase("department-a").database,
+        "department-b",
+      ),
       MonthlySummaryAccessError,
     );
   });

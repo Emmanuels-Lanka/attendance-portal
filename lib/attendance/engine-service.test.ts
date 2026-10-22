@@ -44,7 +44,7 @@ function createHarness(
       employee: {
         findUnique: async () => ({
           id: "employee-1",
-          user: { timeZone: "Asia/Colombo" },
+          user: { timeZone: "Asia/Colombo", countryCode: "LK" },
           shift: { ...configuredShift, ...shiftOverrides },
         }),
       },
@@ -99,7 +99,7 @@ describe("attendance engine persistence boundary", () => {
         employee: {
           findUnique: async () => ({
             id: "employee-1",
-            user: { timeZone: "Asia/Colombo" },
+            user: { timeZone: "Asia/Colombo", countryCode: "LK" },
             shift: {
               id: "shift-1",
               startTime: new Date("1970-01-01T08:30:00.000Z"),
@@ -111,6 +111,7 @@ describe("attendance engine persistence boundary", () => {
               minimumWorkingHours: "8",
               overtimeEligible: false,
               roundingRules: {},
+              workingDays: ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"],
             },
           }),
         },
@@ -154,7 +155,7 @@ describe("attendance engine persistence boundary", () => {
         employee: {
           findUnique: async () => ({
             id: "employee-1",
-            user: { timeZone: "Asia/Colombo" },
+            user: { timeZone: "Asia/Colombo", countryCode: "LK" },
             shift: {
               id: "shift-1",
               startTime: new Date("1970-01-01T08:30:00.000Z"),
@@ -166,6 +167,7 @@ describe("attendance engine persistence boundary", () => {
               minimumWorkingHours: "8",
               overtimeEligible: false,
               roundingRules: {},
+              workingDays: ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"],
             },
           }),
         },
@@ -323,6 +325,72 @@ describe("attendance engine persistence boundary", () => {
     const unknown = await calculateAndPersistDailyAttendance("employee-1", "2026-06-14", unsetWorkingDays.database);
     assert.equal(unknown.calculation.status, "UNDETERMINED");
     assert.equal(unknown.attendanceDaily.status, "UNDETERMINED");
+  });
+
+  it("does not treat an optional Sri Lankan Saturday as a missed workday", async () => {
+    const weekdayOnly = createHarness([], {
+      workingDays: ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"],
+    });
+    const result = await calculateAndPersistDailyAttendance("employee-1", "2026-06-20", weekdayOnly.database);
+    assert.equal(result.calculation.status, "WEEKEND");
+    assert.equal(result.calculation.shiftId, null);
+    assert.deepEqual(result.calculation.punchIssues, []);
+    assert.equal(result.attendanceDaily.status, "WEEKEND");
+    assert.equal(result.attendanceDaily.shiftId, null);
+  });
+
+  it("does not use a weekday shift for actual Sri Lankan Saturday punches", async () => {
+    const weekdayOnly = createHarness([
+      { id: "in", timestamp: new Date("2026-06-20T03:10:01.000Z"), punchType: "IN" },
+      { id: "out", timestamp: new Date("2026-06-20T08:00:00.000Z"), punchType: "OUT" },
+    ], {
+      workingDays: ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"],
+    });
+    await assert.rejects(
+      calculateAndPersistDailyAttendance("employee-1", "2026-06-20", weekdayOnly.database),
+      /no Saturday-applicable Shift is assigned/,
+    );
+    assert.equal(weekdayOnly.creates, 0);
+  });
+
+  it("uses the configured Saturday shift and its exact grace boundary for actual work", async () => {
+    const exactBoundary = createHarness([
+      { id: "in", timestamp: new Date("2026-06-20T03:10:00.000Z"), punchType: "IN" },
+      { id: "out", timestamp: new Date("2026-06-20T08:00:00.000Z"), punchType: "OUT" },
+    ], {
+      startTime: new Date("1970-01-01T08:30:00.000Z"),
+      endTime: new Date("1970-01-01T13:30:00.000Z"),
+      gracePeriodMinutes: 10,
+      workingDays: ["SATURDAY"],
+      minimumWorkingHours: "4",
+    });
+    const onTime = await calculateAndPersistDailyAttendance("employee-1", "2026-06-20", exactBoundary.database);
+    assert.equal(onTime.calculation.status, "PRESENT");
+    assert.equal(onTime.calculation.lateMinutes, 0);
+
+    const saturdayShift = createHarness([
+      { id: "in", timestamp: new Date("2026-06-20T03:10:00.001Z"), punchType: "IN" },
+      { id: "out", timestamp: new Date("2026-06-20T08:00:00.000Z"), punchType: "OUT" },
+    ], {
+      startTime: new Date("1970-01-01T08:30:00.000Z"),
+      endTime: new Date("1970-01-01T13:30:00.000Z"),
+      gracePeriodMinutes: 10,
+      workingDays: ["SATURDAY"],
+      minimumWorkingHours: "4",
+    });
+    const result = await calculateAndPersistDailyAttendance("employee-1", "2026-06-20", saturdayShift.database);
+    assert.equal(result.calculation.status, "LATE");
+    assert.equal(result.calculation.lateMinutes, 1);
+    assert.equal(result.calculation.shiftId, "shift-1");
+  });
+
+  it("uses employee-local Saturdays at timezone and month-end boundaries", async () => {
+    const localSaturday = createHarness([], {
+      workingDays: ["SATURDAY"],
+    });
+    const result = await calculateAndPersistDailyAttendance("employee-1", "2026-10-31", localSaturday.database);
+    assert.equal(result.calculation.status, "WEEKEND");
+    assert.deepEqual(result.calculation.punchIssues, []);
   });
 
   it("recalculates the same employee and date by updating one daily row", async () => {

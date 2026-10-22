@@ -23,6 +23,20 @@ export class ShiftNotFoundError extends Error {
   }
 }
 
+export class ShiftAssignmentConflictError extends Error {
+  constructor() {
+    super("Assigned shifts cannot have overlapping working days.");
+    this.name = "ShiftAssignmentConflictError";
+  }
+}
+
+export class ShiftWorkingDaysConfigurationError extends Error {
+  constructor() {
+    super("Configure at least one working weekday for every assigned Shift.");
+    this.name = "ShiftWorkingDaysConfigurationError";
+  }
+}
+
 export class ShiftInUseError extends Error {
   constructor() {
     super("This shift cannot be deleted while employees or attendance records reference it.");
@@ -198,6 +212,28 @@ export async function validateEmployeeShiftAssignment(
 ) {
   if (shiftId && !(await database.shift.findUnique({ where: { id: shiftId }, select: { id: true } }))) {
     throw new ShiftNotFoundError();
+  }
+}
+
+export async function validateEmployeeShiftAssignments(
+  shiftIds: readonly string[],
+  database: Pick<PrismaClient, "shift"> = prisma,
+) {
+  if (shiftIds.length === 0) return;
+  const shifts = await database.shift.findMany({
+    where: { id: { in: [...shiftIds] } },
+    select: { id: true, workingDays: true },
+  });
+  if (shifts.length !== shiftIds.length) throw new ShiftNotFoundError();
+
+  const assignedWeekdays = new Set<string>();
+  for (const shift of shifts) {
+    const workingDays = shift.workingDays;
+    if (workingDays.length === 0) throw new ShiftWorkingDaysConfigurationError();
+    if (workingDays.some((weekday) => assignedWeekdays.has(weekday))) {
+      throw new ShiftAssignmentConflictError();
+    }
+    workingDays.forEach((weekday) => assignedWeekdays.add(weekday));
   }
 }
 

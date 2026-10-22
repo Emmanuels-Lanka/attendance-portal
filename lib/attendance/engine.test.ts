@@ -14,18 +14,20 @@ const shift: AttendanceEngineShift = {
   endTime: new Date("1970-01-01T17:30:00.000Z"),
   breakDurationMinutes: 0,
   gracePeriodMinutes: 10,
-  lateThresholdMinutes: 0,
+  lateThresholdMinutes: 30,
   earlyDepartureThresholdMinutes: 0,
   minimumWorkingHours: "8",
   overtimeEligible: false,
   roundingRules: {},
+  workingDays: ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"],
 };
 
 function punch(id: string, punchType: RawAttendancePunch["punchType"], localTime: string, date = "2026-06-15"): RawAttendancePunch {
+  const time = localTime.length === 8 ? localTime : `${localTime}:00`;
   return {
     id,
     punchType,
-    timestamp: new Date(`${date}T${localTime}:00.000+05:30`),
+    timestamp: new Date(`${date}T${time}.000+05:30`),
   };
 }
 
@@ -125,6 +127,28 @@ describe("deterministic attendance engine foundation", () => {
     assert.equal(exactlyAtGrace.lateMinutes, 0);
     assert.equal(afterGrace.lateMinutes, 1);
     assert.equal(afterGrace.status, "LATE");
+  });
+
+  it("marks one second beyond the grace endpoint late even when the late threshold is 30 minutes", () => {
+    const configuredShift = {
+      ...shift,
+      startTime: new Date("1970-01-01T08:00:00.000Z"),
+      lateThresholdMinutes: 30,
+      workingDays: ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"],
+    };
+    const exactlyAtGrace = calculate(
+      [punch("in-on-time", "IN", "08:10"), punch("out-on-time", "OUT", "17:30")],
+      configuredShift,
+    );
+    const oneSecondLate = calculate(
+      [punch("in-late", "IN", "08:10:01"), punch("out-late", "OUT", "17:30")],
+      configuredShift,
+    );
+
+    assert.equal(exactlyAtGrace.status, "PRESENT");
+    assert.equal(exactlyAtGrace.lateMinutes, 0);
+    assert.equal(oneSecondLate.status, "LATE");
+    assert.equal(oneSecondLate.lateMinutes, 1);
   });
 
   it("calculates late duration from the configured shift start and grace", () => {

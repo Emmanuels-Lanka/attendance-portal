@@ -234,10 +234,15 @@ export function createCsvReport(headers: readonly string[], rows: readonly Repor
   return Buffer.from(`\uFEFF${content}\r\n`, "utf8");
 }
 
-export async function createXlsxReport(sheetName: string, headers: readonly string[], rows: readonly ReportExportCell[][]) {
+export async function createXlsxReport(
+  sheetName: string,
+  headers: readonly string[],
+  rows: readonly ReportExportCell[][],
+  companyName = "Emmanuel's Lanka Pvt Ltd",
+) {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = "EML – Attendance Management System";
-  workbook.company = "Emmanuel's Lanka Pvt Ltd";
+  workbook.company = companyName;
   const worksheet = workbook.addWorksheet(sheetName);
   worksheet.addRow([...headers]);
   worksheet.getRow(1).font = { bold: true };

@@ -98,6 +98,7 @@ describe("monthly attendance report exports", () => {
     }
   });
 
+
   it("creates CSV headers, employee rows, totals, safe formula text, and quoted fields", () => {
     const rows = buildMonthlyAttendanceExportRows("2026-06", employees, totals);
     const csv = createCsvReport(monthlyAttendanceExportHeaders, rows).toString("utf8");
@@ -113,14 +114,14 @@ describe("monthly attendance report exports", () => {
 
   it("creates an XLSX workbook ExcelJS can reopen with headers, dates, scope, and totals", async () => {
     const rows = buildMonthlyAttendanceExportRows("2026-06", employees, totals);
-    const buffer = await createXlsxReport("Attendance", monthlyAttendanceExportHeaders, rows);
+    const buffer = await createXlsxReport("Attendance", monthlyAttendanceExportHeaders, rows, "Example Company");
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
     const worksheet = workbook.getWorksheet("Attendance");
 
     assert.ok(buffer.subarray(0, 2).equals(Buffer.from("PK")));
     assert.equal(workbook.creator, "EML – Attendance Management System");
-    assert.equal(workbook.company, "Emmanuel's Lanka Pvt Ltd");
+    assert.equal(workbook.company, "Example Company");
     assert.equal(worksheet?.getCell(1, 1).value, "Month");
     assert.equal(worksheet?.getCell(1, 17).value, "Potential scoped holiday dates not applied");
     assert.equal(worksheet?.getCell(2, 17).value, 1);

@@ -4,53 +4,15 @@ import Link from "next/link";
 import { AdminAttendanceCorrectionForm } from "@/components/admin-attendance-correction-form";
 import { AttendancePunch } from "@/components/attendance-punch";
 import { formatWorkedDuration } from "@/lib/attendance/history";
+import { sessionView } from "@/lib/attendance/admin-session-view";
 import { getAdminAttendanceSummary } from "@/lib/attendance/admin-dashboard";
 import { getAdminAttendanceExceptions, type AttendanceExceptionCategory } from "@/lib/attendance/admin-exceptions";
-import { getAttendanceDataQualityReasons, type AttendanceReviewReason } from "@/lib/attendance/data-quality";
+import type { AttendanceReviewReason } from "@/lib/attendance/data-quality";
 import { adminAttendanceFilterSchema, type AdminAttendanceFilters } from "@/lib/attendance/admin-validation";
 import { listAdminAttendance } from "@/lib/attendance/admin-service";
 import { requireAdmin } from "@/lib/auth/session";
-import { classifyAttendancePunch } from "@/lib/attendance/schedule";
 
 type SearchParams = Record<string, string | string[] | undefined>;
-
-function isValidDate(value: Date) {
-  return Number.isFinite(value.getTime());
-}
-
-function localDateTimeInput(value: Date, timeZone: string) {
-  return isValidDate(value) ? formatInTimeZone(value, timeZone, "yyyy-MM-dd'T'HH:mm") : "";
-}
-
-function sessionView(session: Awaited<ReturnType<typeof listAdminAttendance>>["sessions"][number]) {
-  const employee = session.record.employee;
-  const startValid = isValidDate(session.startAt);
-  const endValid = session.endAt === null || isValidDate(session.endAt);
-  const reversed = session.endAt !== null && endValid && startValid && session.endAt < session.startAt;
-  const invalid = !startValid || !endValid || reversed;
-  let arrival: string | null = null;
-  let departure: string | null = null;
-
-  if (startValid) {
-    arrival = classifyAttendancePunch(session.mode === "WFH" ? "WFH_IN" : "IN", session.startAt, employee.timeZone);
-    if (session.endAt && endValid && !reversed) {
-      departure = classifyAttendancePunch(session.mode === "WFH" ? "WFH_OUT" : "OUT", session.endAt, employee.timeZone);
-    }
-  }
-
-  return {
-    employee,
-    localDate: startValid ? formatInTimeZone(session.startAt, employee.timeZone, "yyyy-MM-dd") : "Unavailable",
-    arrival,
-    departure,
-    invalid,
-    durationMs: !invalid && session.endAt ? session.endAt.getTime() - session.startAt.getTime() : null,
-    status: invalid ? "Invalid data" : session.endAt ? "Completed" : "Active",
-    reviewReasons: getAttendanceDataQualityReasons(session),
-    correctionStart: localDateTimeInput(session.startAt, employee.timeZone),
-    correctionEnd: session.endAt && endValid ? localDateTimeInput(session.endAt, employee.timeZone) : "",
-  };
-}
 
 function sessionModeClass(mode: "OFFICE" | "WFH") {
   return mode === "WFH" ? "bg-slate-100 text-[var(--blue)]" : "bg-zinc-100 text-zinc-700";

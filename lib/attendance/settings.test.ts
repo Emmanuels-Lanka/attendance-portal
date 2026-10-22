@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Role } from "@prisma/client";
-import { SettingAuthorizationError, SettingValidationError, updateOrganizationSetting } from "./settings";
+import { getCompanyName, SettingAuthorizationError, SettingValidationError, updateOrganizationSetting } from "./settings";
 
 function createDatabase(initialValue = "Asia/Colombo") {
   const settings = new Map<string, { key: string; value: string; category: string; isAdminOnly: boolean; updatedById: string }>([
@@ -10,6 +10,9 @@ function createDatabase(initialValue = "Asia/Colombo") {
   const auditEntries: Array<{ actionType: string; settingKey: string | null; previousValues: unknown; newValues: unknown }> = [];
   let transactionCount = 0;
   const database = {
+    appSetting: {
+      findUnique: async ({ where }: { where: { key: string } }) => settings.get(where.key) ?? null,
+    },
     $transaction: async (operation: (tx: never) => Promise<unknown>) => {
       transactionCount += 1;
       const tx = {
@@ -38,6 +41,27 @@ function createDatabase(initialValue = "Asia/Colombo") {
 const admin = { id: "admin-1", role: Role.ADMIN };
 
 describe("organization setting controls", () => {
+  it("uses the saved company name and falls back to the documented default", async () => {
+    const stub = createDatabase();
+    assert.equal(await getCompanyName(stub.database), "Emmanuel's Lanka Pvt Ltd");
+    stub.settings.set("companyName", {
+      key: "companyName",
+      value: "Example Company",
+      category: "GENERAL",
+      isAdminOnly: true,
+      updatedById: "admin-1",
+    });
+    assert.equal(await getCompanyName(stub.database), "Example Company");
+    stub.settings.set("companyName", {
+      key: "companyName",
+      value: "  ",
+      category: "GENERAL",
+      isAdminOnly: true,
+      updatedById: "admin-1",
+    });
+    assert.equal(await getCompanyName(stub.database), "Emmanuel's Lanka Pvt Ltd");
+  });
+
   it("rejects invalid timezones and unsupported setting keys before writing", async () => {
     const stub = createDatabase();
     await assert.rejects(updateOrganizationSetting(admin, { key: "defaultTimeZone", value: "Mars/Olympus" }, stub.database), SettingValidationError);

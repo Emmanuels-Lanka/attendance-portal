@@ -93,11 +93,13 @@ export async function createMonthlyAttendancePdf({
   employees,
   summary,
   title,
+  companyName = "Emmanuel's Lanka Pvt Ltd",
 }: {
   month: string;
   employees: PdfEmployee[];
   summary: PdfSummary;
   title: string;
+  companyName?: string;
 }) {
   const logo = await readFile(resolveProjectAssetPath("public", "eml-company-logo.png"));
   const fontDir = resolveProjectAssetPath("public", "fonts");
@@ -252,7 +254,7 @@ export async function createMonthlyAttendancePdf({
   const pageRange = pdf.bufferedPageRange();
   for (let index = 0; index < pageRange.count; index += 1) {
     pdf.switchToPage(pageRange.start + index);
-    pdf.font("AppHelvetica").fontSize(8).fillColor("#666666").text(`EML – Attendance Management System | Emmanuel's Lanka Pvt Ltd | ${month} | Page ${index + 1} of ${pageRange.count}`, pdf.page.margins.left, pdf.page.height - 32, { width: contentWidth, align: "right" });
+    pdf.font("AppHelvetica").fontSize(8).fillColor("#666666").text(`EML – Attendance Management System | ${companyName} | ${month} | Page ${index + 1} of ${pageRange.count}`, pdf.page.margins.left, pdf.page.height - 32, { width: contentWidth, align: "right" });
   }
   pdf.end();
   return finished;

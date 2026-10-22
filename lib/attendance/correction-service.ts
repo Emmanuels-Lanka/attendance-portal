@@ -166,6 +166,27 @@ function originalAttendanceSnapshot(
   };
 }
 
+async function notifyActiveHrReviewers(
+  transaction: Prisma.TransactionClient,
+  date: Date,
+) {
+  const reviewers = await transaction.user.findMany({
+    where: { role: "HR_ADMINISTRATOR", isActive: true },
+    select: { id: true },
+  });
+  for (const reviewer of reviewers) {
+    await transaction.notification.create({
+      data: {
+        userId: reviewer.id,
+        title: "Attendance correction pending",
+        message: `An attendance correction for ${date.toISOString().slice(0, 10)} is awaiting your review.`,
+        type: "ATTENDANCE_CORRECTION_PENDING",
+      },
+      select: { id: true },
+    });
+  }
+}
+
 export async function submitDailyAttendanceCorrection(
   actor: AttendanceCorrectionActor,
   dailyAttendanceId: string,
@@ -259,6 +280,20 @@ export async function submitDailyAttendanceCorrection(
       },
       select: { id: true },
     });
+
+    if (actor.role === "EMPLOYEE") {
+      await transaction.notification.create({
+        data: {
+          userId: attendance.employee.supervisor.userId,
+          title: "Attendance correction pending",
+          message: `An attendance correction for ${attendance.date.toISOString().slice(0, 10)} is awaiting your review.`,
+          type: "ATTENDANCE_CORRECTION_PENDING",
+        },
+        select: { id: true },
+      });
+    } else {
+      await notifyActiveHrReviewers(transaction, attendance.date);
+    }
 
     return correctionRequest;
   });
@@ -502,13 +537,18 @@ export async function decideDailyAttendanceCorrection(
       select: { id: true },
     });
 
-    if (finalApproval) {
+    if (nextStage === AttendanceCorrectionApprovalStage.HR) {
+      await notifyActiveHrReviewers(transaction, correction.dailyAttendance.date);
+    } else {
+      const outcome = status === AttendanceCorrectionStatus.APPROVED ? "approved" : "rejected";
       await transaction.notification.create({
         data: {
           userId: correction.employeeId,
-          title: "Attendance correction approved",
-          message: "Your attendance correction was approved.",
-          type: "ATTENDANCE_CORRECTION_APPROVED",
+          title: `Attendance correction ${outcome}`,
+          message: `Your attendance correction was ${outcome}.`,
+          type: status === AttendanceCorrectionStatus.APPROVED
+            ? "ATTENDANCE_CORRECTION_APPROVED"
+            : "ATTENDANCE_CORRECTION_REJECTED",
         },
         select: { id: true },
       });

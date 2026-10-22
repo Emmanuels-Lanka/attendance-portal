@@ -1,5 +1,6 @@
 import { formatInTimeZone } from "date-fns-tz";
-import { classifyAttendancePunch, classifyWorkSession, type WorkSessionTiming } from "./schedule";
+import { classifyAttendancePunch, type WorkSessionTiming } from "./schedule";
+import { isOptionalSriLankanSaturday, resolveShiftForDate, type EffectiveShiftAssignment } from "./shift-assignment";
 
 export type AttendanceSession = {
   id: string;
@@ -26,6 +27,31 @@ export type AttendanceHistory = {
   invalidSessions: number;
 };
 
+export function classifySessionForShiftAssignments(
+  session: AttendanceSession,
+  timeZone: string,
+  shiftAssignments: readonly EffectiveShiftAssignment[],
+  countryCode = "",
+): WorkSessionTiming {
+  const classifyPunch = (punch: "IN" | "OUT" | "WFH_IN" | "WFH_OUT", at: Date) => {
+    const localDate = formatInTimeZone(at, timeZone, "yyyy-MM-dd");
+    const resolution = resolveShiftForDate(shiftAssignments, localDate);
+    if (resolution.kind === "NON_WORKING_DAY") {
+      return isOptionalSriLankanSaturday(countryCode, localDate)
+        ? "UNDETERMINED" as const
+        : "NON_WORKING_DAY" as const;
+    }
+    if (resolution.kind !== "ASSIGNED") return "UNDETERMINED" as const;
+    return classifyAttendancePunch(punch, at, timeZone, resolution.shift);
+  };
+  return {
+    arrival: classifyPunch(session.mode === "WFH" ? "WFH_IN" : "IN", session.startAt),
+    departure: session.endAt && isValidInstant(session.endAt)
+      ? classifyPunch(session.mode === "WFH" ? "WFH_OUT" : "OUT", session.endAt)
+      : null,
+  };
+}
+
 export function formatWorkedDuration(durationMs: number | null) {
   if (durationMs === null) return "Unavailable";
   if (durationMs > 0 && durationMs < 60_000) return `${Math.ceil(durationMs / 1_000)}s`;
@@ -39,7 +65,12 @@ function isValidInstant(value: Date) {
   return Number.isFinite(value.getTime());
 }
 
-export function groupSessionsByEmployeeLocalDay(sessions: AttendanceSession[], timeZone: string): AttendanceHistory {
+export function groupSessionsByEmployeeLocalDay(
+  sessions: AttendanceSession[],
+  timeZone: string,
+  shiftAssignments: readonly EffectiveShiftAssignment[] = [],
+  countryCode = "",
+): AttendanceHistory {
   const byDate = new Map<string, AttendanceDay>();
   let invalidSessions = 0;
 
@@ -50,6 +81,7 @@ export function groupSessionsByEmployeeLocalDay(sessions: AttendanceSession[], t
     }
 
     const date = formatInTimeZone(session.startAt, timeZone, "yyyy-MM-dd");
+    const classify = () => classifySessionForShiftAssignments(session, timeZone, shiftAssignments, countryCode);
     let day = byDate.get(date);
     if (!day) {
       day = { date, sessions: [], totalWorkedMs: 0 };
@@ -57,15 +89,14 @@ export function groupSessionsByEmployeeLocalDay(sessions: AttendanceSession[], t
     }
 
     if (!session.endAt) {
-      day.sessions.push({ session, timing: classifyWorkSession(session, timeZone), durationMs: null, status: "ACTIVE" });
+      day.sessions.push({ session, timing: classify(), durationMs: null, status: "ACTIVE" });
       continue;
     }
 
     if (!isValidInstant(session.endAt) || session.endAt < session.startAt) {
-      const checkIn = session.mode === "WFH" ? "WFH_IN" : "IN";
       day.sessions.push({
         session,
-        timing: { arrival: classifyAttendancePunch(checkIn, session.startAt, timeZone), departure: null },
+        timing: { arrival: classifySessionForShiftAssignments(session, timeZone, shiftAssignments, countryCode).arrival, departure: null },
         durationMs: null,
         status: "INVALID",
       });
@@ -74,7 +105,7 @@ export function groupSessionsByEmployeeLocalDay(sessions: AttendanceSession[], t
 
     const durationMs = session.endAt.getTime() - session.startAt.getTime();
     day.totalWorkedMs += durationMs;
-    day.sessions.push({ session, timing: classifyWorkSession(session, timeZone), durationMs, status: "COMPLETED" });
+    day.sessions.push({ session, timing: classify(), durationMs, status: "COMPLETED" });
   }
 
   return {

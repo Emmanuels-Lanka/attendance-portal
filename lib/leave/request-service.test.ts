@@ -35,6 +35,8 @@ function createRequestDatabaseStub(options: {
   supervisor?: "assigned" | "missing" | "inactive";
   manager?: "assigned" | "missing" | "inactive";
   forceDecisionRace?: boolean;
+  employeeDepartmentId?: string | null;
+  managerDepartmentId?: string | null;
 } = {}) {
   const supervisorStatus = options.supervisor ?? "assigned";
   const managerStatus = options.manager ?? "missing";
@@ -46,6 +48,7 @@ function createRequestDatabaseStub(options: {
     ["employee-user-1", {
       id: "employee-1",
       userId: "employee-user-1",
+      departmentId: options.employeeDepartmentId === undefined ? "department-1" : options.employeeDepartmentId,
       name: "Employee One",
       employeeId: "E-001",
       supervisor: supervisorStatus === "missing" ? null : {
@@ -57,6 +60,7 @@ function createRequestDatabaseStub(options: {
     ["employee-user-2", {
       id: "employee-2",
       userId: "employee-user-2",
+      departmentId: "department-1",
       name: "Employee Two",
       employeeId: "E-002",
       supervisor: {
@@ -78,8 +82,15 @@ function createRequestDatabaseStub(options: {
   let nextId = 1;
   const tx = {
     employee: {
-      findUnique: async ({ where }: { where: { userId: string } }) => employees.get(where.userId) ?? null,
+      findUnique: async ({ where }: { where: { userId: string } }) => where.userId === "manager-user-1"
+        ? {
+            id: "manager-employee-1",
+            departmentId: options.managerDepartmentId === undefined ? "department-1" : options.managerDepartmentId,
+            user: { role: Role.DEPARTMENT_MANAGER, isActive: true },
+          }
+        : employees.get(where.userId) ?? null,
     },
+    $queryRaw: async () => [],
     leaveType: {
       findUnique: async ({ where }: { where: { id: string } }) => leaveTypes.has(where.id) ? { id: where.id } : null,
     },
@@ -125,6 +136,7 @@ function createRequestDatabaseStub(options: {
           ...request,
           employee: employee ? {
             userId: employee.userId,
+            departmentId: employee.departmentId,
             supervisor: employee.supervisor,
             manager: employee.manager,
           } : null,
@@ -132,7 +144,13 @@ function createRequestDatabaseStub(options: {
         };
       },
       findMany: async ({ where, skip, take }: {
-        where: { employeeId?: string; currentApproverId?: string; status?: LeaveRequestStatus; currentApprovalStage?: string };
+        where: {
+          employeeId?: string;
+          currentApproverId?: string;
+          status?: LeaveRequestStatus;
+          currentApprovalStage?: string;
+          employee?: { departmentId?: string };
+        };
         skip?: number;
         take?: number;
       }) => {
@@ -142,6 +160,7 @@ function createRequestDatabaseStub(options: {
             ? employee?.manager?.userId === where.currentApproverId
               && employee.manager.user?.role === Role.DEPARTMENT_MANAGER
               && employee.manager.user.isActive
+              && where.employee?.departmentId === employee.departmentId
             : employee?.supervisor?.userId === where.currentApproverId
               && employee.supervisor.user?.role === Role.SUPERVISOR
               && employee.supervisor.user.isActive);
@@ -161,6 +180,7 @@ function createRequestDatabaseStub(options: {
               name: employee.name,
               employeeId: employee.employeeId,
               userId: employee.userId,
+              departmentId: employee.departmentId,
               supervisor: employee.supervisor,
               manager: employee.manager,
             } : null,
@@ -168,7 +188,16 @@ function createRequestDatabaseStub(options: {
           };
         });
       },
-      updateMany: async ({ where, data }: { where: { id: string; status: LeaveRequestStatus; currentApprovalStage: string; currentApproverId: string }; data: Record<string, unknown> }) => {
+      updateMany: async ({ where, data }: {
+        where: {
+          id: string;
+          status: LeaveRequestStatus;
+          currentApprovalStage: string;
+          currentApproverId: string;
+          employee?: { departmentId?: string };
+        };
+        data: Record<string, unknown>;
+      }) => {
         if (options.forceDecisionRace) {
           const concurrentlyDecided = requests.find((candidate) => candidate.id === where.id);
           if (concurrentlyDecided) Object.assign(concurrentlyDecided, {
@@ -191,6 +220,7 @@ function createRequestDatabaseStub(options: {
           ? employee.manager?.userId === where.currentApproverId
             && employee.manager.user?.role === Role.DEPARTMENT_MANAGER
             && employee.manager.user.isActive
+            && where.employee?.departmentId === employee.departmentId
           : employee.supervisor?.userId === where.currentApproverId
             && employee.supervisor.user?.role === Role.SUPERVISOR
             && employee.supervisor.user.isActive);
@@ -477,7 +507,7 @@ describe("Supervisor Leave approval workflow", () => {
     assert.equal(stub.audits.at(-1)?.actionType, "LEAVE_REQUEST_SUPERVISOR_APPROVED");
     await assert.rejects(
       decideManagerLeaveRequest({ id: "other-manager", role: Role.DEPARTMENT_MANAGER }, request.id, { action: "APPROVE" }, stub.database),
-      LeaveApprovalStageError,
+      LeaveApprovalScopeError,
     );
 
     const managerResult = await decideManagerLeaveRequest(
@@ -496,6 +526,37 @@ describe("Supervisor Leave approval workflow", () => {
       decideManagerLeaveRequest({ id: "manager-user-1", role: Role.DEPARTMENT_MANAGER }, request.id, { action: "REJECT" }, stub.database),
       LeaveApprovalStageError,
     );
+  });
+
+  it("does not expose or allow Manager approval for an assigned employee outside the Manager's department", async () => {
+    const stub = createRequestDatabaseStub({
+      manager: "assigned",
+      employeeDepartmentId: "department-1",
+      managerDepartmentId: "department-2",
+    });
+    const request = await submitOwnLeaveRequest(employeeActor, requestInput, stub.database);
+    await decideSupervisorLeaveRequest(
+      { id: "supervisor-user-1", role: Role.SUPERVISOR },
+      request.id,
+      { action: "APPROVE" },
+      stub.database,
+    );
+
+    assert.deepEqual(
+      await listManagerLeaveRequests({ id: "manager-user-1", role: Role.DEPARTMENT_MANAGER }, stub.database),
+      [],
+    );
+    await assert.rejects(
+      decideManagerLeaveRequest(
+        { id: "manager-user-1", role: Role.DEPARTMENT_MANAGER },
+        request.id,
+        { action: "APPROVE" },
+        stub.database,
+      ),
+      LeaveApprovalScopeError,
+    );
+    assert.equal(stub.requests[0]?.status, LeaveRequestStatus.PENDING);
+    assert.equal(stub.audits.length, 2);
   });
 
   it("rejects Manager review unless the request is at that Manager's assigned stage", async () => {

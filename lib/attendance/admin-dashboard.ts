@@ -9,6 +9,7 @@ import { adminAttendanceFilterSchema } from "@/lib/attendance/admin-validation";
 import { formatWorkedDuration, groupSessionsByEmployeeLocalDay } from "@/lib/attendance/history";
 import { getEmployeeLocalDayWindow } from "@/lib/attendance/timezone";
 import { resolveAttendanceEmployees } from "@/lib/attendance/employee-link";
+import { isOptionalSriLankanSaturday } from "./shift-assignment";
 
 type AdminActor = { id?: string; role: Role } | null;
 type SummaryDatabase = Pick<PrismaClient, "user" | "employee" | "workSession">;
@@ -112,7 +113,12 @@ export async function getAdminAttendanceSummary(
   }
   const activeEmployeeIds = new Set(openSessions.map((session) => session.record.employeeId));
   const summaries = employeesWithRecords.map((employee) => {
-    const grouped = groupSessionsByEmployeeLocalDay(sessionsByEmployee.get(employee.id) ?? [], employee.timeZone);
+    const grouped = groupSessionsByEmployeeLocalDay(
+      sessionsByEmployee.get(employee.id) ?? [],
+      employee.timeZone,
+      employee.employeeRecord?.shiftAssignments ?? [],
+      employee.countryCode,
+    );
     const day = grouped.days.find((entry) => entry.date === date) ?? { date, sessions: [], totalWorkedMs: 0 };
     return {
       employee,
@@ -123,13 +129,16 @@ export async function getAdminAttendanceSummary(
   });
 
   const withAttendance = summaries.filter(({ day }) => day.sessions.length > 0);
+  const withoutAttendance = summaries.filter(({ employee, day }) =>
+    day.sessions.length === 0 && !isOptionalSriLankanSaturday(employee.countryCode, date),
+  );
   return {
     date,
     employees: summaries,
     metrics: {
       totalEmployees: summaries.length,
       withAttendance: withAttendance.length,
-      withoutAttendance: summaries.length - withAttendance.length,
+      withoutAttendance: withoutAttendance.length,
       lateArrivals: summaries.filter(({ day }) => day.sessions.some(({ timing }) => timing?.arrival === "LATE")).length,
       earlyDepartures: summaries.filter(({ day }) => day.sessions.some(({ timing }) => timing?.departure === "EARLY_DEPARTURE")).length,
       completed: summaries.filter(({ day }) => day.sessions.some(({ status }) => status === "COMPLETED")).length,
