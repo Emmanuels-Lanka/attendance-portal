@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { Prisma, PrismaClient, Role } from "@prisma/client";
+import type { Prisma, PrismaClient, Role, WorkMode } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { writeAttendanceLocationViewAudit } from "@/lib/attendance/location-audit";
 import {
@@ -24,6 +24,7 @@ export class OwnAttendanceLocationAuthorizationError extends Error {
 export type OwnAttendanceLocationRecord = {
   id: string;
   punchType: "IN" | "OUT";
+  workMode: WorkMode | null;
   timestamp: Date;
   location: AttendanceLocationDetails | null;
 };
@@ -59,7 +60,7 @@ export async function listOwnAttendanceLocations(
 
     const punches = await tx.attendanceRaw.findMany({
       where: { employeeId: employee.id },
-      select: { id: true, timestamp: true, punchType: true, location: true },
+      select: { id: true, timestamp: true, punchType: true, workMode: true, location: true },
       orderBy: [{ timestamp: "desc" }, { id: "asc" }],
       take: ownLocationLimit + 1,
     });
@@ -67,6 +68,7 @@ export async function listOwnAttendanceLocations(
     const records = limitedPunches.map((punch) => ({
       id: punch.id,
       punchType: punch.punchType,
+      workMode: punch.workMode,
       timestamp: punch.timestamp,
       location: parseAttendanceLocationDetails(punch.location),
     }));

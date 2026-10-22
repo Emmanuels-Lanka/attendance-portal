@@ -30,12 +30,14 @@ function makeDatabase(options: { employeeRecordId?: string | null; punches?: unk
               id: "punch-out",
               timestamp: new Date("2026-10-20T11:30:00.000Z"),
               punchType: "OUT",
+              workMode: "OFFICE",
               location: { latitude: 6.9272, longitude: 79.8613, accuracy: 12.5 },
             },
             {
               id: "punch-in",
               timestamp: new Date("2026-10-20T02:30:00.000Z"),
               punchType: "IN",
+              workMode: null,
               location: null,
             },
           ];
@@ -69,7 +71,7 @@ describe("employee-owned attendance locations", () => {
     });
     assert.deepEqual(stub.calls.punches, {
       where: { employeeId: "employee-record-self" },
-      select: { id: true, timestamp: true, punchType: true, location: true },
+      select: { id: true, timestamp: true, punchType: true, workMode: true, location: true },
       orderBy: [{ timestamp: "desc" }, { id: "asc" }],
       take: 501,
     });
@@ -78,12 +80,14 @@ describe("employee-owned attendance locations", () => {
         id: "punch-out",
         timestamp: new Date("2026-10-20T11:30:00.000Z"),
         punchType: "OUT",
+        workMode: "OFFICE",
         location: { latitude: 6.9272, longitude: 79.8613, accuracy: 12.5 },
       },
       {
         id: "punch-in",
         timestamp: new Date("2026-10-20T02:30:00.000Z"),
         punchType: "IN",
+        workMode: null,
         location: null,
       },
     ]);
@@ -126,7 +130,7 @@ describe("employee-owned attendance locations", () => {
     });
     assert.deepEqual(stub.calls.punches, {
       where: { employeeId: "employee-record-self" },
-      select: { id: true, timestamp: true, punchType: true, location: true },
+      select: { id: true, timestamp: true, punchType: true, workMode: true, location: true },
       orderBy: [{ timestamp: "desc" }, { id: "asc" }],
       take: 501,
     });
@@ -140,6 +144,59 @@ describe("employee-owned attendance locations", () => {
       select: { id: true },
     });
     assert.equal(stub.getAuditAttempts(), 1);
+  });
+
+  it("returns work modes for WFH and ordinary punches without inferring null modes", async () => {
+    const stub = makeDatabase({
+      punches: [
+        {
+          id: "wfh-in",
+          timestamp: new Date("2026-10-20T02:30:00.000Z"),
+          punchType: "IN",
+          workMode: "WFH",
+          location: null,
+        },
+        {
+          id: "wfh-out",
+          timestamp: new Date("2026-10-20T11:30:00.000Z"),
+          punchType: "OUT",
+          workMode: "WFH",
+          location: null,
+        },
+        {
+          id: "office-in",
+          timestamp: new Date("2026-10-19T02:30:00.000Z"),
+          punchType: "IN",
+          workMode: "OFFICE",
+          location: null,
+        },
+        {
+          id: "office-out",
+          timestamp: new Date("2026-10-19T11:30:00.000Z"),
+          punchType: "OUT",
+          workMode: "OFFICE",
+          location: null,
+        },
+      ],
+    });
+    const result = await listOwnAttendanceLocations({
+      id: "authenticated-user",
+      role: Role.EMPLOYEE,
+      timeZone: "Asia/Colombo",
+    }, stub.database);
+
+    assert.deepEqual(stub.calls.punches, {
+      where: { employeeId: "employee-record-self" },
+      select: { id: true, timestamp: true, punchType: true, workMode: true, location: true },
+      orderBy: [{ timestamp: "desc" }, { id: "asc" }],
+      take: 501,
+    });
+    assert.deepEqual(result.records.map(({ id, punchType, workMode }) => ({ id, punchType, workMode })), [
+      { id: "wfh-in", punchType: "IN", workMode: "WFH" },
+      { id: "wfh-out", punchType: "OUT", workMode: "WFH" },
+      { id: "office-in", punchType: "IN", workMode: "OFFICE" },
+      { id: "office-out", punchType: "OUT", workMode: "OFFICE" },
+    ]);
   });
 
   it("returns an unavailable empty result when the employee account has no linked record", async () => {

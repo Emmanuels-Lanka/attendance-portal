@@ -5,6 +5,7 @@ import {
   AttendanceLocationAccuracy,
   AttendanceLocationPunchLabel,
 } from "../../components/attendance-location-values";
+import { attendanceLocationPunchLabel } from "./location-presentation";
 
 function textContent(value: ReactNode): string {
   if (typeof value === "string" || typeof value === "number") return String(value);
@@ -30,6 +31,19 @@ describe("admin attendance location display", () => {
       "WFH-OUT",
       "IN",
     ]);
+  });
+
+  describe("employee My Punch Locations labels", () => {
+    it("shows direction and WFH mode while preserving the null-mode fallback", () => {
+      assert.deepEqual([
+        attendanceLocationPunchLabel("IN", "OFFICE"),
+        attendanceLocationPunchLabel("OUT", "OFFICE"),
+        attendanceLocationPunchLabel("IN", "WFH"),
+        attendanceLocationPunchLabel("OUT", "WFH"),
+        attendanceLocationPunchLabel("IN", null),
+        attendanceLocationPunchLabel("OUT", null),
+      ], ["IN", "OUT", "WFH-IN", "WFH-OUT", "IN", "OUT"]);
+    });
   });
 
   it("keeps exact reported accuracy and warns only above the documented threshold", () => {

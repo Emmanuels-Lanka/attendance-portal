@@ -4,6 +4,7 @@ import { LocalDateTime } from "@/components/local-date-time";
 import { AttendancePunch } from "@/components/attendance-punch";
 import { AttendanceMapLink } from "@/components/attendance-map-link";
 import { formatWorkedDuration } from "@/lib/attendance/history";
+import { attendanceLocationPunchLabel } from "@/lib/attendance/location-presentation";
 import { listOwnAttendanceLocations } from "@/lib/attendance/own-location-service";
 import { getEmployeeAttendanceHistory } from "@/lib/attendance/service";
 import { listApprovedWorkFromHomeForAttendance } from "@/lib/wfh/service";
@@ -74,7 +75,7 @@ export default async function AttendanceHistoryPage() {
                       <tr key={punch.id}>
                         <td className="px-4 py-3">
                           <span className={`rounded-sm px-2 py-1 text-xs font-semibold ${punch.punchType === "IN" ? "bg-emerald-50 text-emerald-800" : "bg-amber-50 text-amber-800"}`}>
-                            {punch.punchType}
+                            {attendanceLocationPunchLabel(punch.punchType, punch.workMode)}
                           </span>
                         </td>
                         <td className="px-4 py-3 tabular-nums">
