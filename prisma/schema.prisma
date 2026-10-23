@@ -67,6 +67,8 @@ model AttendanceRaw {
   location   Json?
   createdAt  DateTime            @default(now()) @db.Timestamptz(3)
   employee   Employee            @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  reconciliationTasks AttendanceDailyCalculationTask[]
+  reconciliationEvents AttendanceDailyCalculationTaskEvent[]
 
   @@index([employeeId, timestamp])
   @@map("attendance_raw")
@@ -276,6 +278,7 @@ model Employee {
   managedEmployees   Employee[] @relation("EmployeeManager")
   attendanceRaw      AttendanceRaw[]
   attendanceDaily    AttendanceDaily[]
+  attendanceDailyCalculationTasks AttendanceDailyCalculationTask[]
   overtimeRequests   OvertimeRequest[]
   workFromHomeRequests WorkFromHomeRequest[]
 
@@ -284,6 +287,45 @@ model Employee {
   @@index([shiftId])
   @@index([supervisorId])
   @@index([managerId])
+}
+
+model AttendanceDailyCalculationTask {
+  id                String                                    @id @default(cuid())
+  employeeId        String
+  attendanceDate    DateTime                                  @db.Date
+  timeZone          String
+  lastPunchId       String
+  requestedVersion Int                                       @default(1)
+  completedVersion  Int                                       @default(0)
+  claimedVersion    Int?
+  status            AttendanceDailyCalculationTaskStatus     @default(PENDING)
+  attempts          Int                                       @default(0)
+  availableAt       DateTime                                  @default(now()) @db.Timestamptz(3)
+  leaseToken        String?
+  leaseExpiresAt    DateTime?                                 @db.Timestamptz(3)
+  lastErrorCategory String?
+  createdAt         DateTime                                  @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime                                  @updatedAt @db.Timestamptz(3)
+  employee          Employee                                  @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  lastPunch         AttendanceRaw                             @relation(fields: [lastPunchId], references: [id], onDelete: Restrict)
+  punchEvents       AttendanceDailyCalculationTaskEvent[]
+
+  @@unique([employeeId, attendanceDate], map: "attendance_daily_calculation_tasks_employeeId_attendanceDat_key")
+  @@index([status, availableAt, createdAt], map: "attendance_daily_calculation_tasks_status_availableAt_creat_idx")
+  @@index([status, leaseExpiresAt])
+  @@map("attendance_daily_calculation_tasks")
+}
+
+model AttendanceDailyCalculationTaskEvent {
+  taskId    String
+  punchId   String
+  createdAt DateTime                      @default(now()) @db.Timestamptz(3)
+  task      AttendanceDailyCalculationTask @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  punch     AttendanceRaw                 @relation(fields: [punchId], references: [id], onDelete: Restrict)
+
+  @@id([taskId, punchId])
+  @@index([punchId])
+  @@map("attendance_daily_calculation_task_events")
 }
 
 model Department {
@@ -506,6 +548,15 @@ enum AttendanceCorrectionStatus {
 enum AttendanceCorrectionApprovalStage {
   SUPERVISOR
   HR
+}
+
+enum AttendanceDailyCalculationTaskStatus {
+  PENDING
+  PROCESSING
+  RETRY_WAIT
+  COMPLETED
+  PROTECTED
+  DEAD_LETTER
 }
 
 enum LeaveRequestStatus {

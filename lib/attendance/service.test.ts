@@ -27,6 +27,7 @@ function createDatabase(
   initialSessions: StoredSession[] = [],
   timeZone = "Asia/Colombo",
   hasEmployeeRecord = true,
+  failReconciliationEnqueue = false,
 ) {
   const sessions = [...initialSessions];
   const rawPunches: Array<{
@@ -39,18 +40,41 @@ function createDatabase(
     deviceId: null;
     location: AttendanceLocation;
   }> = [];
+  const reconciliationTasks = new Map<string, {
+    id: string;
+    employeeId: string;
+    attendanceDate: Date;
+    timeZone: string;
+    lastPunchId: string;
+    requestedVersion: number;
+  }>();
+  const reconciliationEvents = new Set<string>();
+  type DatabaseSnapshot = {
+    sessions: StoredSession[];
+    punches: typeof rawPunches;
+    tasks: typeof reconciliationTasks;
+    events: Set<string>;
+  };
   let nextId = 1;
   let nextRawId = 1;
   let lockTail: Promise<void> = Promise.resolve();
+  const snapshotState: { value: DatabaseSnapshot | null } = { value: null };
 
   const database = {
     $transaction: async (operation: (transaction: never) => Promise<unknown>) => {
       let releaseLock = () => {};
+      let mutationCount = 0;
       const transaction = {
         $queryRaw: async () => {
           const previousLock = lockTail;
           lockTail = new Promise<void>((resolve) => { releaseLock = resolve; });
           await previousLock;
+          snapshotState.value = {
+            sessions: structuredClone(sessions),
+            punches: structuredClone(rawPunches),
+            tasks: new Map(reconciliationTasks),
+            events: new Set(reconciliationEvents),
+          };
           return [];
         },
         workSession: {
@@ -68,6 +92,7 @@ function createDatabase(
             const session = sessions.find((item) => item.id === where.id);
             if (!session) throw new Error("Missing session.");
             session.endAt = data.endAt;
+            mutationCount += 1;
             return session;
           },
         },
@@ -81,6 +106,7 @@ function createDatabase(
               endAt: null,
             };
             sessions.push(session);
+            mutationCount += 1;
             return { sessions: [session] };
           },
         },
@@ -92,7 +118,54 @@ function createDatabase(
               location: attendanceLocationSchema.parse(data.location),
             };
             rawPunches.push(punch);
+            mutationCount += 1;
             return punch;
+          },
+        },
+        attendanceDailyCalculationTask: {
+          findUnique: async ({ where }: { where: { employeeId_attendanceDate: { employeeId: string; attendanceDate: Date } } }) =>
+            reconciliationTasks.get(`${where.employeeId_attendanceDate.employeeId}:${where.employeeId_attendanceDate.attendanceDate.toISOString()}`) ?? null,
+          create: async ({ data }: {
+            data: { employeeId: string; attendanceDate: Date; timeZone: string; lastPunchId: string };
+          }) => {
+            if (failReconciliationEnqueue) throw new Error("Outbox unavailable.");
+            const key = `${data.employeeId}:${data.attendanceDate.toISOString()}`;
+            const task = { ...data, id: `task-${reconciliationTasks.size + 1}`, requestedVersion: 1 };
+            reconciliationTasks.set(key, task);
+            mutationCount += 1;
+            return task;
+          },
+          update: async ({ where, data }: {
+            where: { id: string };
+            data: { requestedVersion: { increment: number }; timeZone: string; lastPunchId: string };
+          }) => {
+            const entry = [...reconciliationTasks.entries()].find(([, task]) => task.id === where.id);
+            if (!entry) throw new Error("Task is missing.");
+            const [key, current] = entry;
+            const task = {
+              ...current,
+              requestedVersion: current.requestedVersion + data.requestedVersion.increment,
+              timeZone: data.timeZone,
+              lastPunchId: data.lastPunchId,
+            };
+            reconciliationTasks.set(key, task);
+            mutationCount += 1;
+            return task;
+          },
+        },
+        attendanceDailyCalculationTaskEvent: {
+          createMany: async ({ data }: { data: Array<{ taskId: string; punchId: string }> }) => {
+            if (failReconciliationEnqueue) throw new Error("Outbox unavailable.");
+            let count = 0;
+            for (const event of data) {
+              const key = `${event.taskId}:${event.punchId}`;
+              if (!reconciliationEvents.has(key)) {
+                reconciliationEvents.add(key);
+                count += 1;
+              }
+            }
+            mutationCount += count;
+            return { count };
           },
         },
         employee: {
@@ -105,13 +178,24 @@ function createDatabase(
 
       try {
         return await operation(transaction as never);
+      } catch (error) {
+        const snapshots = snapshotState.value;
+        if (snapshots && mutationCount > 0) {
+          sessions.splice(0, sessions.length, ...snapshots.sessions);
+          rawPunches.splice(0, rawPunches.length, ...snapshots.punches);
+          reconciliationTasks.clear();
+          for (const [key, value] of snapshots.tasks) reconciliationTasks.set(key, value);
+          reconciliationEvents.clear();
+          for (const event of snapshots.events) reconciliationEvents.add(event);
+        }
+        throw error;
       } finally {
         releaseLock();
       }
     },
   };
 
-  return { database: database as never, sessions, rawPunches };
+  return { database: database as never, sessions, rawPunches, reconciliationTasks };
 }
 
 function activeSession(id: string): StoredSession {
@@ -133,6 +217,8 @@ describe("employee attendance transitions", () => {
     assert.equal(stub.sessions.filter(({ endAt }) => endAt === null).length, 1);
     assert.equal(stub.rawPunches.length, 1);
     assert.equal(stub.rawPunches[0].punchType, "IN");
+    assert.equal(stub.reconciliationTasks.size, 1);
+    assert.equal([...stub.reconciliationTasks.values()][0].requestedVersion, 1);
   });
 
   it("serializes concurrent OUT actions so only one request closes the session", async () => {
@@ -148,6 +234,7 @@ describe("employee attendance transitions", () => {
     assert.equal(stub.sessions.filter(({ endAt }) => endAt === null).length, 0);
     assert.equal(stub.rawPunches.length, 1);
     assert.equal(stub.rawPunches[0].punchType, "OUT");
+    assert.equal(stub.reconciliationTasks.size, 2);
   });
 
   it("persists accepted IN and OUT evidence with the exact session timestamps and capture metadata", async () => {
@@ -195,6 +282,18 @@ describe("employee attendance transitions", () => {
     assert.equal(stub.sessions.length, 1);
     assert.equal(stub.sessions[0].startAt.toISOString(), stub.rawPunches[0].timestamp.toISOString());
     assert.equal(stub.sessions[0].endAt?.toISOString(), stub.rawPunches[1].timestamp.toISOString());
+    assert.equal(stub.reconciliationTasks.size, 1);
+    assert.equal([...stub.reconciliationTasks.values()][0].requestedVersion, 2);
+  });
+
+  it("rolls back the punch when durable outbox insertion fails in the punch transaction", async () => {
+    const stub = createDatabase([], "Asia/Colombo", true, true);
+
+    await assert.rejects(applyAttendanceAction("employee-1", "IN", stub.database), /Outbox unavailable/);
+
+    assert.equal(stub.sessions.length, 0);
+    assert.equal(stub.rawPunches.length, 0);
+    assert.equal(stub.reconciliationTasks.size, 0);
   });
 
   it("persists WFH_IN and WFH_OUT as directional punches with separate WFH mode", async () => {
@@ -218,6 +317,7 @@ describe("employee attendance transitions", () => {
     assert.equal(started.id, stub.sessions[0].id);
     assert.equal(stub.rawPunches[0].employeeId, "employee-record-1");
     assert.equal(stub.rawPunches[0].punchType, "IN");
+    assert.equal(stub.reconciliationTasks.size, 1);
   });
 
   it("does not create raw evidence for rejected actions or users without a linked Employee", async () => {

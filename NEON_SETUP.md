@@ -33,7 +33,7 @@ In Vercel Project Settings, open Environment Variables and add the following for
 
 Add corresponding values separately for Preview and Development only when those environments are intended to connect to a Neon branch. Prefer separate Neon branches and separate secrets per environment. Do not configure the one-time `ADMIN_*` seed values for builds; seed the initial admin from a controlled private environment after the schema is ready. Redeploy after changing Vercel environment values so the deployment receives them.
 
-This project uses standard Next.js build settings. `npm run build` generates Prisma Client and builds Next.js; it does not apply migrations or seed data. No `vercel.json` is required.
+This project uses standard Next.js build settings. `npm run build` generates Prisma Client and builds Next.js; it does not apply migrations or seed data. The checked-in `vercel.json` configures the production daily attendance calculation cron; follow the [deployment guide](./DEPLOYMENT.md#daily-attendance-calculation) to configure its `CRON_SECRET` and verify the schedule.
 
 ## Fresh Neon Migration Procedure
 
