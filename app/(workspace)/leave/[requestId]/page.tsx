@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { ChevronLeft } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/session";
 import { getOwnLeaveRequest, LeaveRequestNotFoundError } from "@/lib/leave/request-service";
+import { redirect } from "next/navigation";
 
 type RequestStatus = "PENDING" | "APPROVED" | "REJECTED" | "RETURNED" | "CANCELLED";
 
@@ -24,6 +25,7 @@ function dateTime(date: Date, timeZone: string) {
 
 export default async function LeaveRequestDetailPage({ params }: { params: Promise<{ requestId: string }> }) {
   const actor = await requirePageUser();
+  if (actor.role === "ADMIN") redirect("/admin");
   const { requestId } = await params;
   let request;
   try {

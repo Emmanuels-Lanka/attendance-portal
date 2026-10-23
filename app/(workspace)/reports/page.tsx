@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { formatInTimeZone } from "date-fns-tz";
 
 import { formatWorkedDuration } from "@/lib/attendance/history";
@@ -11,6 +12,7 @@ export default async function ReportsPage({
   searchParams?: Promise<{ month?: string | string[]; [key: string]: string | string[] | undefined }>;
 }) {
   const user = await requirePageUser();
+  if (user.role === "ADMIN") redirect("/admin/reports");
   const params = (await searchParams) ?? {};
   const currentMonth = formatInTimeZone(new Date(), user.timeZone, "yyyy-MM");
   const requestedMonth = typeof params.month === "string" ? params.month : "";

@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import Image from "next/image";
 import { useEffect, useState } from "react";
 import { Bell, BriefcaseBusiness, CalendarDays, ChartNoAxesColumn, ClipboardList, Clock3, House, LayoutDashboard, Menu, Settings, Shield, Users, X, type LucideIcon } from "lucide-react";
+import { adminNavigationItems } from "@/lib/auth/admin-navigation";
 
 type NavigationLink = { href: string; label: string; icon: LucideIcon };
 
@@ -24,18 +25,32 @@ const employeeLinksWithSettings: NavigationLink[] = [
   settingsLink,
 ];
 
+const adminLinkIcons: Record<(typeof adminNavigationItems)[number]["href"], LucideIcon> = {
+  "/admin": LayoutDashboard,
+  "/admin/employees": Users,
+  "/admin/departments": BriefcaseBusiness,
+  "/admin/designations": BriefcaseBusiness,
+  "/admin/shifts": Clock3,
+  "/holidays": CalendarDays,
+  "/admin/attendance": CalendarDays,
+  "/admin/attendance/daily": CalendarDays,
+  "/approvals/attendance-corrections": ClipboardList,
+  "/admin/reports": ChartNoAxesColumn,
+  "/admin/leave-types": BriefcaseBusiness,
+  "/admin/leave-balances": BriefcaseBusiness,
+  "/admin/audit": ClipboardList,
+  "/admin/settings": Shield,
+  "/notifications": Bell,
+  "/settings": Settings,
+};
+
+export function getAdminLinks(): NavigationLink[] {
+  return adminNavigationItems.map(({ href, label }) => ({ href, label, icon: adminLinkIcons[href] }));
+}
+
 function getLinks(isAdmin: boolean, canReadAuditHistory: boolean, canManageEmployees: boolean, canReadTeamAttendance: boolean, canManageShifts: boolean, canManageLeave: boolean, canReadLeaveBalance: boolean, canReviewCorrections: boolean, canSubmitAttendanceCorrections: boolean, canReviewLeave: boolean, canReadReports: boolean, canReadDepartmentReports: boolean, canSubmitOvertime: boolean, canReviewOvertime: boolean, canSubmitWorkFromHome: boolean, canReviewWorkFromHome: boolean) {
-  const links = isAdmin ? [
-    ...employeeLinks.filter(({ href }) => href !== "/leave"),
-    { href: "/admin", label: "Admin", icon: Shield },
-    { href: "/admin/employees", label: "Employees", icon: Users },
-    { href: "/admin/shifts", label: "Shifts", icon: Clock3 },
-    { href: "/admin/attendance/daily", label: "Daily attendance", icon: CalendarDays },
-    { href: "/admin/leave-types", label: "Leave Types", icon: BriefcaseBusiness },
-    { href: "/admin/leave-balances", label: "Leave balances", icon: BriefcaseBusiness },
-    { href: "/admin/audit", label: "Audit history", icon: ClipboardList },
-    settingsLink,
-  ] : [...employeeLinksWithSettings];
+  if (isAdmin) return getAdminLinks();
+  const links = [...employeeLinksWithSettings];
   if (!isAdmin && canManageEmployees) {
     links.splice(links.length - 1, 0, { href: "/admin/employees", label: "Employees", icon: Users });
   }
@@ -89,7 +104,9 @@ function getLinks(isAdmin: boolean, canReadAuditHistory: boolean, canManageEmplo
 
 function NavigationItems({ links, pathname, onNavigate }: { links: NavigationLink[]; pathname: string; onNavigate?: () => void }) {
   return links.map(({ href, label, icon: Icon }) => {
-    const active = href === "/admin" || href === "/admin/employees" || href === "/admin/leave-types" || href === "/admin/leave-balances" || href === "/admin/shifts" || href === "/admin/attendance/daily" || href === "/leave" || href === "/overtime" || href === "/wfh" || href === "/reports/monthly" || href.startsWith("/approvals/") ? pathname.startsWith(href) : pathname === href;
+    const active = href === "/admin" || href === "/admin/attendance" ? pathname === href : href.startsWith("/admin/") || href.startsWith("/approvals/") || href === "/leave" || href === "/overtime" || href === "/wfh" || href === "/reports/monthly"
+      ? pathname.startsWith(href)
+      : pathname === href;
     return (
       <Link key={href} href={href} onClick={onNavigate} aria-current={active ? "page" : undefined} className={`flex min-h-11 items-center gap-3 rounded-sm px-3 py-2.5 text-sm font-medium transition ${active ? "bg-white/10 text-white" : "text-slate-200/80 hover:bg-white/10 hover:text-white"}`}>
         <Icon size={19} strokeWidth={1.8} aria-hidden="true" />

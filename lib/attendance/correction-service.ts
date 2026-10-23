@@ -567,7 +567,11 @@ export async function submitDailyAttendanceCorrection(
   input: unknown,
   database: AttendanceCorrectionDatabase = prisma,
 ) {
-  if (!actor || !hasPermission(actor.role, "attendance:correction:submit")) {
+  if (
+    !actor
+    || (actor.role !== "EMPLOYEE" && actor.role !== "SUPERVISOR" && actor.role !== "HR_ADMINISTRATOR")
+    || !hasPermission(actor.role, "attendance:correction:submit")
+  ) {
     throw new DailyAttendanceCorrectionAccessError();
   }
   const parsed = dailyAttendanceCorrectionInputSchema.parse(input);

@@ -381,6 +381,34 @@ describe("admin attendance access and corrections", () => {
     assert.equal(supervisorOwnSession.calls.updateData, undefined);
   });
 
+  it("prevents the Super Administrator from directly correcting their own attendance", async () => {
+    const ownSession = makeSession("admin-self");
+    ownSession.record.employee.id = admin.id;
+    const stub = createDatabase([ownSession]);
+
+    await assert.rejects(
+      correctAdminAttendance(
+        admin,
+        "admin-self",
+        { mode: "WFH", reason: "Self correction attempt." },
+        stub.database,
+      ),
+      /Submit a correction request/,
+    );
+    assert.equal(stub.calls.updateData, undefined);
+    assert.equal(stub.calls.auditData, undefined);
+  });
+
+  it("requires a reason for direct administrative attendance corrections", async () => {
+    const stub = createDatabase();
+
+    await assert.rejects(
+      correctAdminAttendance(admin, "one", { mode: "WFH" }, stub.database),
+    );
+    assert.equal(stub.calls.updateData, undefined);
+    assert.equal(stub.calls.auditData, undefined);
+  });
+
   it("lists Supervisors only attendance sessions belonging to assigned employees", async () => {
     const stub = createDatabase([
       makeSession("assigned", "OFFICE", "Asia/Colombo", "supervisor-user"),

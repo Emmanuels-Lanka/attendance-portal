@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { ArrowRight, BriefcaseBusiness, CalendarDays, Clock3, SlidersHorizontal, Users, ChartNoAxesColumn } from "lucide-react";
+import { ArrowRight, BriefcaseBusiness, CalendarDays, Clock3, SlidersHorizontal, Users, ChartNoAxesColumn, ClipboardList } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/session";
 
 const sections = [
@@ -11,7 +11,9 @@ const sections = [
   { href: "/admin/leave-types", label: "Leave Types", description: "Manage configurable Leave Types", icon: BriefcaseBusiness },
   { href: "/admin/leave-balances", label: "Leave balances", description: "Review employee leave credits and calculated balances", icon: BriefcaseBusiness },
   { href: "/admin/attendance", label: "Attendance", description: "Organization attendance records", icon: CalendarDays },
+  { href: "/approvals/attendance-corrections", label: "Correction approvals", description: "Review organization-wide attendance correction requests", icon: ClipboardList },
   { href: "/admin/reports", label: "Reports", description: "Organization reporting foundation", icon: ChartNoAxesColumn },
+  { href: "/admin/audit", label: "Audit history", description: "Review administrative and attendance changes", icon: ClipboardList },
   { href: "/admin/settings", label: "Settings", description: "Policy configuration foundation", icon: SlidersHorizontal },
 ];
 

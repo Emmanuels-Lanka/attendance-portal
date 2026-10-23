@@ -54,7 +54,7 @@ export class LeaveRequestSupervisorNotFoundError extends Error {
 }
 
 function assertPermission(actor: LeaveRequestActor | null, permission: "leave:submit" | "leave:request:self:read"): asserts actor is LeaveRequestActor {
-  if (!actor || !hasPermission(actor.role, permission)) throw new LeaveRequestAccessError();
+  if (!actor || actor.role === "ADMIN" || !hasPermission(actor.role, permission)) throw new LeaveRequestAccessError();
   if (permission === "leave:submit" && actor.role !== "EMPLOYEE") throw new LeaveRequestAccessError();
 }
 

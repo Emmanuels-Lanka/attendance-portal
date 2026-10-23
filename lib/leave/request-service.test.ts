@@ -330,6 +330,14 @@ describe("Leave request submission and self-service history", () => {
       LeaveRequestAccessError,
     );
     await assert.rejects(
+      listOwnLeaveRequests({ id: "admin-user", role: Role.ADMIN }, {}, stub.database),
+      LeaveRequestAccessError,
+    );
+    await assert.rejects(
+      getOwnLeaveRequest({ id: "admin-user", role: Role.ADMIN }, "leave-request-1", stub.database),
+      LeaveRequestAccessError,
+    );
+    await assert.rejects(
       submitOwnLeaveRequest({ id: "unlinked-user", role: Role.EMPLOYEE }, requestInput, stub.database),
       LeaveRequestEmployeeNotFoundError,
     );

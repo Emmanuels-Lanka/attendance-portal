@@ -23,6 +23,7 @@ import {
   listOwnDailyAttendanceForCorrection,
   listDailyAttendanceCorrections,
   listOwnAttendanceSessionsForCorrection,
+  submitAttendanceDateCorrection,
   submitAttendanceSessionModeCorrection,
   submitDailyAttendanceCorrection,
 } from "./correction-service";
@@ -448,6 +449,12 @@ describe("employee correction attendance selection", () => {
 
   it("rejects users without the employee correction permission before querying", async () => {
     let queried = false;
+    const writeDatabase = {
+      $transaction: async () => {
+        queried = true;
+        throw new Error("Unexpected transaction for an unauthorized requester.");
+      },
+    } as never;
     const database: NonNullable<Parameters<typeof listOwnDailyAttendanceForCorrection>[1]> = {
       attendanceDaily: {
         findMany: async () => {
@@ -463,6 +470,29 @@ describe("employee correction attendance selection", () => {
     );
     await assert.rejects(
       listOwnDailyAttendanceForCorrection({ id: "admin-user", role: Role.ADMIN }, database),
+      DailyAttendanceCorrectionAccessError,
+    );
+    await assert.rejects(
+      submitDailyAttendanceCorrection(adminActor, "daily-1", {
+        requestedValues: { lastOut: "2026-10-05T12:00:00.000Z" },
+        reason: "Correct missed punch",
+      }, writeDatabase),
+      DailyAttendanceCorrectionAccessError,
+    );
+    await assert.rejects(
+      submitAttendanceDateCorrection(adminActor, {
+        attendanceDate: "2026-10-05",
+        requestedValues: { lastOut: "2026-10-05T12:00:00.000Z" },
+        requestedMode: "OFFICE",
+        reason: "Correct missed punch",
+      }, writeDatabase),
+      DailyAttendanceCorrectionAccessError,
+    );
+    await assert.rejects(
+      submitAttendanceSessionModeCorrection(adminActor, "session-1", {
+        requestedMode: "WFH",
+        reason: "Correct session mode",
+      }, writeDatabase),
       DailyAttendanceCorrectionAccessError,
     );
     assert.equal(queried, false);
@@ -1116,6 +1146,22 @@ describe("attendance correction approvals", () => {
       message: "Your attendance correction was approved.",
       type: "ATTENDANCE_CORRECTION_APPROVED",
     }]);
+  });
+
+  it("allows the Super Administrator to list the organization-wide correction review queue", async () => {
+    const stub = createDatabase();
+    await employeeCorrection(stub);
+
+    const items = await listDailyAttendanceCorrections(adminActor, stub.database);
+
+    assert.equal(items.length, 1);
+    assert.equal(items[0]?.id, "correction-1");
+    assert.deepEqual(stub.correctionQueries[0], {
+      status: AttendanceCorrectionStatus.PENDING,
+      currentApprovalStage: {
+        in: [AttendanceCorrectionApprovalStage.SUPERVISOR, AttendanceCorrectionApprovalStage.HR],
+      },
+    });
   });
 
   it("lets HR approve the final correction and applies only requested daily values", async () => {

@@ -4,9 +4,11 @@ import { LeaveRequestForm } from "@/components/leave-request-form";
 import { requirePageUser } from "@/lib/auth/session";
 import { listEmployeeDocuments } from "@/lib/documents/service";
 import { prisma } from "@/lib/prisma";
+import { redirect } from "next/navigation";
 
 export default async function NewLeaveRequestPage() {
   const actor = await requirePageUser();
+  if (actor.role === "ADMIN") redirect("/admin");
   const [leaveTypes, documents] = await Promise.all([
     prisma.leaveType.findMany({ select: { id: true, name: true }, orderBy: [{ name: "asc" }, { id: "asc" }] }),
     listEmployeeDocuments(actor),

@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { AuthenticationError, requireUser } from "@/lib/auth/session";
+import { canAccessPersonalAttendance } from "@/lib/auth/permissions";
 import { applyAttendanceAction, AttendanceStateError } from "@/lib/attendance/service";
 import { attendanceActionSchema } from "@/lib/attendance/validation";
 
@@ -10,6 +11,9 @@ export type AttendanceActionResult = { ok: true; message: string } | { ok: false
 export async function performAttendanceAction(input: unknown): Promise<AttendanceActionResult> {
   try {
     const user = await requireUser();
+    if (!canAccessPersonalAttendance(user.role)) {
+      return { ok: false, error: "Super Administrators cannot record personal attendance." };
+    }
     const parsed = attendanceActionSchema.safeParse(input);
     if (!parsed.success) {
       return { ok: false, error: "A valid location is required before recording attendance." };

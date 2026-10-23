@@ -9,9 +9,12 @@ import { listOwnAttendanceLocations } from "@/lib/attendance/own-location-servic
 import { getEmployeeAttendanceHistory } from "@/lib/attendance/service";
 import { listApprovedWorkFromHomeForAttendance } from "@/lib/wfh/service";
 import { requirePageUser } from "@/lib/auth/session";
+import { redirect } from "next/navigation";
+import { canAccessPersonalAttendance } from "@/lib/auth/permissions";
 
 export default async function AttendanceHistoryPage() {
   const user = await requirePageUser();
+  if (!canAccessPersonalAttendance(user.role)) redirect("/admin/attendance");
   const { days, invalidSessions } = await getEmployeeAttendanceHistory(user);
   const approvedWorkFromHome = await listApprovedWorkFromHomeForAttendance(user);
   let ownLocationHistory: Awaited<ReturnType<typeof listOwnAttendanceLocations>> | null = null;

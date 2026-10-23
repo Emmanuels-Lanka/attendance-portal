@@ -15,6 +15,7 @@ import { getCompanyName } from "@/lib/attendance/settings";
 
 export async function GET(request: NextRequest) {
   const user = await requirePageUser();
+  if (user.role === "ADMIN") return new NextResponse("Personal attendance reports are not available to Super Administrators.", { status: 403 });
   const companyName = await getCompanyName();
   const month = request.nextUrl.searchParams.get("month") ?? formatInTimeZone(new Date(), user.timeZone, "yyyy-MM");
   const format = request.nextUrl.searchParams.get("format") ?? "pdf";

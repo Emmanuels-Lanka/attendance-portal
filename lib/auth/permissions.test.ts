@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Role } from "@prisma/client";
-import { canReadScopedAttendance, canSubmitOwnAttendanceCorrection, hasPermission } from "./permissions";
+import { canAccessPersonalAttendance, canReadScopedAttendance, canSubmitOwnAttendanceCorrection, hasPermission } from "./permissions";
 
 describe("role permissions", () => {
   it("preserves ADMIN as the full-access compatibility role", () => {
@@ -72,5 +72,13 @@ describe("role permissions", () => {
     assert.equal(canSubmitOwnAttendanceCorrection(Role.EMPLOYEE), true);
     assert.equal(canSubmitOwnAttendanceCorrection(Role.SUPERVISOR), false);
     assert.equal(canSubmitOwnAttendanceCorrection(Role.ADMIN), false);
+  });
+
+  it("keeps personal attendance available to non-admin roles only", () => {
+    assert.equal(canAccessPersonalAttendance(Role.ADMIN), false);
+    assert.equal(canAccessPersonalAttendance(Role.EMPLOYEE), true);
+    assert.equal(canAccessPersonalAttendance(Role.HR_ADMINISTRATOR), true);
+    assert.equal(canAccessPersonalAttendance(Role.DEPARTMENT_MANAGER), true);
+    assert.equal(canAccessPersonalAttendance(Role.SUPERVISOR), true);
   });
 });

@@ -90,6 +90,10 @@ export function canSubmitOwnAttendanceCorrection(role: Role) {
     && hasPermission(role, "attendance:correction:submit");
 }
 
+export function canAccessPersonalAttendance(role: Role) {
+  return role !== "ADMIN";
+}
+
 export function canReadScopedAttendance(role: Role) {
   return role !== "ADMIN" && (hasPermission(role, "attendance:department:read")
     || (hasPermission(role, "attendance:assigned:read") && hasPermission(role, "attendance:monitor")));

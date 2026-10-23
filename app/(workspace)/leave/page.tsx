@@ -3,11 +3,13 @@ import { Plus } from "lucide-react";
 import { LeaveRequestHistory } from "@/components/leave-request-history";
 import { requirePageUser } from "@/lib/auth/session";
 import { listOwnLeaveRequests } from "@/lib/leave/request-service";
+import { redirect } from "next/navigation";
 
 type SearchParams = { success?: string; page?: string };
 
 export default async function LeaveRequestsPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
   const actor = await requirePageUser();
+  if (actor.role === "ADMIN") redirect("/admin");
   const params = await searchParams;
   const page = Number(params.page) || 1;
   const result = await listOwnLeaveRequests(actor, { page });

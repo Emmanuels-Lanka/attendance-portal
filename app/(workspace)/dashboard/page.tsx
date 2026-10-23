@@ -1,9 +1,11 @@
 import { ArrowUpRight } from "lucide-react";
 import { formatInTimeZone } from "date-fns-tz";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { AttendanceToday } from "@/components/attendance-today";
 import { HrSelfAttendance } from "@/components/hr-self-attendance";
 import { hasPermission } from "@/lib/auth/permissions";
+import { getDashboardHomePath } from "@/lib/auth/admin-navigation";
 import { getAdminAttendanceSummary } from "@/lib/attendance/admin-dashboard";
 import { listCalculatedDailyAttendance } from "@/lib/attendance/daily-read";
 import { listDailyAttendanceCorrections } from "@/lib/attendance/correction-service";
@@ -79,6 +81,8 @@ function ManagerDashboard({
 
 export default async function DashboardPage() {
   const user = await requirePageUser();
+  const homePath = getDashboardHomePath(user.role);
+  if (homePath !== "/dashboard") redirect(homePath);
   const currentMonth = formatInTimeZone(new Date(), user.timeZone, "yyyy-MM");
 
   if (user.role === "HR_ADMINISTRATOR") {
