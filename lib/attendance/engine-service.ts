@@ -55,6 +55,7 @@ type EngineTransaction = Prisma.TransactionClient;
 const approvedCorrectionValuesSchema = z.object({
   firstIn: z.string().datetime({ offset: true }).nullable().optional(),
   lastOut: z.string().datetime({ offset: true }).nullable().optional(),
+  requestedMode: z.enum(["OFFICE", "WFH"]).optional(),
 }).strict();
 
 async function loadApprovedCorrectionValues(
@@ -220,7 +221,7 @@ export async function calculateAndPersistDailyAttendance(
 export async function applyApprovedAttendanceCorrection(
   transaction: EngineTransaction,
   input: {
-    dailyAttendanceId: string;
+    dailyAttendanceId: string | null;
     employeeId: string;
     date: string;
     expectedFirstIn: Date | null;
@@ -229,21 +230,37 @@ export async function applyApprovedAttendanceCorrection(
   },
 ) {
   await transaction.$queryRaw`SELECT "id" FROM "Employee" WHERE "id" = ${input.employeeId} FOR UPDATE`;
-  const current = await transaction.attendanceDaily.findUnique({
-    where: { id: input.dailyAttendanceId },
-    select: { id: true, employeeId: true, date: true, firstIn: true, lastOut: true },
-  });
+  const dateValue = new Date(`${input.date}T00:00:00.000Z`);
+  const current = input.dailyAttendanceId
+    ? await transaction.attendanceDaily.findUnique({
+        where: { id: input.dailyAttendanceId },
+        select: { id: true, employeeId: true, date: true, firstIn: true, lastOut: true },
+      })
+    : null;
   if (
-    !current
-    || current.employeeId !== input.employeeId
-    || current.date.toISOString().slice(0, 10) !== input.date
-    || current.firstIn?.getTime() !== input.expectedFirstIn?.getTime()
-    || current.lastOut?.getTime() !== input.expectedLastOut?.getTime()
+    (input.dailyAttendanceId !== null && !current)
+    || (current !== null && (
+      current.employeeId !== input.employeeId
+      || current.date.toISOString().slice(0, 10) !== input.date
+      || current.firstIn?.getTime() !== input.expectedFirstIn?.getTime()
+      || current.lastOut?.getTime() !== input.expectedLastOut?.getTime()
+    ))
   ) {
     throw new AttendanceCorrectionEngineConflictError();
   }
 
-  const approvedCorrection = await loadApprovedCorrectionValues(transaction, input.dailyAttendanceId);
+  const existingRows = input.dailyAttendanceId === null
+    ? await transaction.attendanceDaily.findMany({
+        where: { employeeId: input.employeeId, date: dateValue },
+        select: { id: true },
+        take: 2,
+      })
+    : [];
+  if (existingRows.length > 0) throw new AttendanceCorrectionEngineConflictError();
+
+  const approvedCorrection = current
+    ? await loadApprovedCorrectionValues(transaction, current.id)
+    : {};
   const calculated = await calculateForEmployeeDay(
     transaction,
     input.employeeId,
@@ -259,15 +276,23 @@ export async function applyApprovedAttendanceCorrection(
     throw new AttendanceCorrectionEngineConflictError();
   }
 
-  const updated = await transaction.attendanceDaily.updateMany({
-    where: {
-      id: input.dailyAttendanceId,
-      employeeId: input.employeeId,
-      firstIn: current.firstIn,
-      lastOut: current.lastOut,
-    },
-    data: calculated.data,
-  });
-  if (updated.count !== 1) throw new AttendanceCorrectionEngineConflictError();
-  return calculated.calculation;
+  const attendanceDaily = current
+    ? await transaction.attendanceDaily.updateMany({
+        where: {
+          id: current.id,
+          employeeId: input.employeeId,
+          firstIn: current.firstIn,
+          lastOut: current.lastOut,
+        },
+        data: calculated.data,
+      }).then(async (updated) => {
+        if (updated.count !== 1) throw new AttendanceCorrectionEngineConflictError();
+        return transaction.attendanceDaily.findUnique({
+          where: { id: current.id },
+          select: { id: true },
+        });
+      })
+    : await transaction.attendanceDaily.create({ data: calculated.data, select: { id: true } });
+  if (!attendanceDaily) throw new AttendanceCorrectionEngineConflictError();
+  return { calculation: calculated.calculation, attendanceDaily };
 }

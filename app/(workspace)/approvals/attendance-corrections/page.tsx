@@ -50,7 +50,9 @@ export default async function AttendanceCorrectionApprovalsPage() {
                   <p className="mt-1 text-xs text-[var(--muted)]">
                     {correction.dailyAttendance?.employee.employeeId ?? correction.employee.employeeCode ?? "No employee ID"}
                     {" · "}
-                    {correction.dailyAttendance
+                    {correction.attendanceDate
+                      ? formatInTimeZone(correction.attendanceDate, "UTC", "yyyy-MM-dd")
+                      : correction.dailyAttendance
                       ? formatInTimeZone(correction.dailyAttendance.date, "UTC", "yyyy-MM-dd")
                       : correction.session
                         ? formatInTimeZone(correction.session.startAt, "UTC", "yyyy-MM-dd")
@@ -76,8 +78,8 @@ export default async function AttendanceCorrectionApprovalsPage() {
                   <pre className="mt-1 overflow-auto whitespace-pre-wrap break-words rounded-md bg-zinc-50 p-3 text-xs">{readableValues(correction.requestedValues)}</pre>
                 </div>
               </div>
-              {!correction.dailyAttendance && !correction.session && <p role="alert" className="mt-3 text-sm text-[var(--danger)]">The attendance session or calculated record is unavailable; this request cannot be decided.</p>}
-              {(correction.dailyAttendance || correction.session) && <div className="mt-4 border-t border-[var(--line)] pt-4"><AttendanceCorrectionReviewForm correctionRequestId={correction.id} /></div>}
+              {!correction.attendanceDate && !correction.dailyAttendance && !correction.session && <p role="alert" className="mt-3 text-sm text-[var(--danger)]">The attendance session or calculated record is unavailable; this request cannot be decided.</p>}
+              {(correction.attendanceDate || correction.dailyAttendance || correction.session) && <div className="mt-4 border-t border-[var(--line)] pt-4"><AttendanceCorrectionReviewForm correctionRequestId={correction.id} /></div>}
             </li>
           ))}
         </ol>

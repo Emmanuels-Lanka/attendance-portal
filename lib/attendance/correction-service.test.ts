@@ -939,6 +939,7 @@ describe("attendance correction approvals", () => {
       currentApprovalStage: AttendanceCorrectionApprovalStage.SUPERVISOR,
       OR: [
         { dailyAttendance: { employee: { supervisor: { userId: supervisorActor.id } } } },
+        { employee: { employee: { supervisor: { userId: supervisorActor.id } } } },
         {
           session: {
             record: {

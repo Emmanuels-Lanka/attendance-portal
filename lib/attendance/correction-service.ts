@@ -8,8 +8,10 @@ import {
   type Role,
 } from "@prisma/client";
 import { z } from "zod";
-import { hasPermission } from "@/lib/auth/permissions";
+import { fromZonedTime } from "date-fns-tz";
+import { canSubmitOwnAttendanceCorrection, hasPermission } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
+import { getEmployeeLocalDayWindow } from "@/lib/attendance/timezone";
 import {
   applyApprovedAttendanceCorrection,
   AttendanceCorrectionEngineConflictError,
@@ -36,15 +38,44 @@ type OwnCorrectionAttendanceReadDatabase = {
 type OwnCorrectionHistoryDatabase = Pick<PrismaClient, "attendanceCorrectionRequest">;
 type OwnCorrectionSessionReadDatabase = Pick<PrismaClient, "workSession">;
 
-const dailyCorrectionValuesSchema = z.object({
+const attendanceTimestampValuesSchema = z.object({
   firstIn: z.string().datetime({ offset: true }).nullable().optional(),
   lastOut: z.string().datetime({ offset: true }).nullable().optional(),
-}).strict().refine((values) => Object.keys(values).length > 0, "Provide at least one supported attendance time.");
+}).strict();
+const dailyCorrectionValuesSchema = attendanceTimestampValuesSchema
+  .refine((values) => Object.keys(values).length > 0, "Provide at least one supported attendance time.");
+const attendanceDateCorrectionValuesSchema = attendanceTimestampValuesSchema.extend({
+  requestedMode: z.enum(["OFFICE", "WFH"]),
+}).strict();
+const attendanceDateCorrectionSnapshotSchema = z.object({
+  attendanceDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  timeZone: z.string().min(1),
+  attendanceRecordId: z.string().nullable(),
+  dailyAttendance: z.object({
+    id: z.string(),
+    firstIn: z.string().nullable(),
+    lastOut: z.string().nullable(),
+  }).nullable(),
+  session: z.object({
+    id: z.string(),
+    recordId: z.string(),
+    mode: z.enum(["OFFICE", "WFH"]),
+    startAt: z.string(),
+    endAt: z.string().nullable(),
+  }).nullable(),
+});
 
 export const dailyAttendanceCorrectionInputSchema = z.object({
   requestedValues: dailyCorrectionValuesSchema,
   reason: z.string().trim().min(1, "A correction reason is required.").max(500),
 });
+
+export const attendanceDateCorrectionInputSchema = z.object({
+  attendanceDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  requestedValues: attendanceTimestampValuesSchema,
+  requestedMode: z.enum(["OFFICE", "WFH"]),
+  reason: z.string().trim().min(1, "A correction reason is required.").max(500),
+}).strict();
 
 export const attendanceSessionModeCorrectionInputSchema = z.object({
   requestedMode: z.enum(["OFFICE", "WFH"]),
@@ -129,15 +160,269 @@ export class DailyAttendanceCorrectionSubjectUserNotFoundError extends Error {
   }
 }
 
+export class DailyAttendanceCorrectionSubjectEmployeeNotFoundError extends Error {
+  constructor() {
+    super("A linked Employee record is required to request attendance correction.");
+    this.name = "DailyAttendanceCorrectionSubjectEmployeeNotFoundError";
+  }
+}
+
+export class DailyAttendanceCorrectionInvalidValuesError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DailyAttendanceCorrectionInvalidValuesError";
+  }
+}
+
+function canRequestOwnAttendanceCorrection(actor: AttendanceCorrectionActor): actor is Exclude<AttendanceCorrectionActor, null> {
+  return Boolean(
+    actor
+    && canSubmitOwnAttendanceCorrection(actor.role),
+  );
+}
+
+export async function submitAttendanceDateCorrection(
+  actor: AttendanceCorrectionActor,
+  input: unknown,
+  database: AttendanceCorrectionDatabase = prisma,
+) {
+  if (!canRequestOwnAttendanceCorrection(actor)) {
+    throw new DailyAttendanceCorrectionAccessError();
+  }
+  const parsed = attendanceDateCorrectionInputSchema.parse(input);
+  const dateValue = new Date(`${parsed.attendanceDate}T00:00:00.000Z`);
+  if (!Number.isFinite(dateValue.getTime()) || dateValue.toISOString().slice(0, 10) !== parsed.attendanceDate) {
+    throw new DailyAttendanceCorrectionInvalidValuesError("Choose a valid attendance date.");
+  }
+
+  return database.$transaction(async (transaction) => {
+    const requester = await transaction.user.findUnique({
+      where: { id: actor.id },
+      select: { id: true, role: true, isActive: true, timeZone: true },
+    });
+    if (!requester || !requester.isActive) throw new DailyAttendanceCorrectionRequesterNotFoundError();
+    if (
+      requester.role !== actor.role
+      || (requester.role !== "EMPLOYEE" && requester.role !== "HR_ADMINISTRATOR")
+    ) {
+      throw new DailyAttendanceCorrectionAccessError();
+    }
+
+    await transaction.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${actor.id} FOR UPDATE`;
+    const employee = await transaction.employee.findUnique({
+      where: { userId: actor.id },
+      select: {
+        id: true,
+        supervisor: {
+          select: {
+            userId: true,
+            user: { select: { role: true, isActive: true } },
+          },
+        },
+      },
+    });
+    if (!employee) throw new DailyAttendanceCorrectionSubjectEmployeeNotFoundError();
+    await transaction.$queryRaw`SELECT "id" FROM "Employee" WHERE "id" = ${employee.id} FOR UPDATE`;
+    if (
+      !employee.supervisor?.userId
+      || employee.supervisor.user?.role !== "SUPERVISOR"
+      || !employee.supervisor.user.isActive
+    ) {
+      throw new DailyAttendanceCorrectionReviewerNotFoundError();
+    }
+
+    const { startAt, endAt } = getEmployeeLocalDayWindow(
+      fromZonedTime(`${parsed.attendanceDate}T12:00:00.000`, requester.timeZone),
+      requester.timeZone,
+    );
+    for (const timestamp of [parsed.requestedValues.firstIn, parsed.requestedValues.lastOut]) {
+      if (timestamp === undefined || timestamp === null) continue;
+      const instant = new Date(timestamp);
+      if (!Number.isFinite(instant.getTime()) || instant < startAt || instant >= endAt) {
+        throw new DailyAttendanceCorrectionInvalidValuesError(
+          "Corrected times must fall within the selected employee-local attendance date.",
+        );
+      }
+    }
+    if (parsed.requestedValues.firstIn === null || parsed.requestedValues.lastOut === null) {
+      throw new DailyAttendanceCorrectionInvalidValuesError(
+        "A correction request must provide actual timestamps; use the existing daily correction form to remove a time.",
+      );
+    }
+    if (
+      parsed.requestedValues.firstIn
+      && parsed.requestedValues.lastOut
+      && new Date(parsed.requestedValues.firstIn) >= new Date(parsed.requestedValues.lastOut)
+    ) {
+      throw new DailyAttendanceCorrectionInvalidValuesError("The attendance start time must be before the end time.");
+    }
+
+    const dailyAttendance = await transaction.attendanceDaily.findFirst({
+      where: { employeeId: employee.id, date: dateValue },
+      select: { id: true, firstIn: true, lastOut: true, status: true },
+    });
+    const sessions = await transaction.workSession.findMany({
+      where: {
+        record: { employeeId: actor.id },
+        OR: [
+          { startAt: { gte: startAt, lt: endAt } },
+          { endAt: { gte: startAt, lt: endAt } },
+        ],
+      },
+      select: { id: true, mode: true, startAt: true, endAt: true, recordId: true },
+      orderBy: [{ startAt: "asc" }, { id: "asc" }],
+      take: 2,
+    });
+    const rawPunches = await transaction.attendanceRaw.findMany({
+      where: { employeeId: employee.id, timestamp: { gte: startAt, lt: endAt } },
+      select: { timestamp: true, punchType: true, workMode: true },
+      orderBy: [{ timestamp: "asc" }, { id: "asc" }],
+    });
+    const attendanceRecords = await transaction.attendanceRecord.findMany({
+      where: { employeeId: actor.id, workDate: dateValue },
+      select: { id: true, sessions: { select: { id: true } } },
+      take: 2,
+    });
+    if (sessions.length > 1 || attendanceRecords.length > 1) {
+      throw new DailyAttendanceCorrectionInvalidValuesError(
+        "Multiple attendance records exist for this date; an administrator must resolve them before correction.",
+      );
+    }
+    const session = sessions[0] ?? null;
+    const attendanceRecord = attendanceRecords[0] ?? null;
+    if (
+      (!session && attendanceRecord?.sessions.length)
+      || (session && attendanceRecord
+        && (attendanceRecord.id !== session.recordId
+          || !attendanceRecord.sessions.some(({ id }) => id === session.id)))
+    ) {
+      throw new DailyAttendanceCorrectionInvalidValuesError(
+        "An attendance record for this date contains conflicting sessions; an administrator must resolve it before correction.",
+      );
+    }
+    const effectiveStart = parsed.requestedValues.firstIn
+      ? new Date(parsed.requestedValues.firstIn)
+      : session?.startAt
+        ?? dailyAttendance?.firstIn
+        ?? rawPunches.find((punch) => punch.punchType === "IN")?.timestamp
+        ?? null;
+    const effectiveEnd = parsed.requestedValues.lastOut
+      ? new Date(parsed.requestedValues.lastOut)
+      : session?.endAt
+        ?? dailyAttendance?.lastOut
+        ?? [...rawPunches].reverse().find((punch) => punch.punchType === "OUT")?.timestamp
+        ?? null;
+    if (!session && !effectiveStart) {
+      throw new DailyAttendanceCorrectionInvalidValuesError(
+        "A corrected start time or existing IN punch is required when no attendance session exists.",
+      );
+    }
+    if (effectiveStart && effectiveEnd && effectiveStart >= effectiveEnd) {
+      throw new DailyAttendanceCorrectionInvalidValuesError("The attendance start time must be before the end time.");
+    }
+    if (
+      session
+      && parsed.requestedMode === session.mode
+      && parsed.requestedValues.firstIn === undefined
+      && parsed.requestedValues.lastOut === undefined
+    ) {
+      throw new DailyAttendanceCorrectionInvalidValuesError("Provide a changed timestamp or work mode.");
+    }
+
+    const pendingRequest = await transaction.attendanceCorrectionRequest.findFirst({
+      where: {
+        employeeId: actor.id,
+        status: AttendanceCorrectionStatus.PENDING,
+        OR: [
+          { attendanceDate: dateValue },
+          ...(dailyAttendance ? [{ dailyAttendanceId: dailyAttendance.id }] : []),
+          ...(session ? [{ sessionId: session.id }] : []),
+        ],
+      },
+      select: { id: true },
+    });
+    if (pendingRequest) throw new DailyAttendanceCorrectionPendingRequestExistsError();
+
+    const originalValues: Prisma.InputJsonObject = {
+      attendanceDate: parsed.attendanceDate,
+      timeZone: requester.timeZone,
+      attendanceRecordId: attendanceRecord?.id ?? null,
+      dailyAttendance: dailyAttendance
+        ? {
+            id: dailyAttendance.id,
+            firstIn: dailyAttendance.firstIn?.toISOString() ?? null,
+            lastOut: dailyAttendance.lastOut?.toISOString() ?? null,
+            status: dailyAttendance.status,
+          }
+        : null,
+      session: session
+        ? {
+            id: session.id,
+            recordId: session.recordId,
+            mode: session.mode,
+            startAt: session.startAt.toISOString(),
+            endAt: session.endAt?.toISOString() ?? null,
+          }
+        : null,
+    };
+    const requestedValues: Prisma.InputJsonObject = {
+      ...(parsed.requestedValues.firstIn !== undefined
+        ? { firstIn: parsed.requestedValues.firstIn }
+        : {}),
+      ...(parsed.requestedValues.lastOut !== undefined
+        ? { lastOut: parsed.requestedValues.lastOut }
+        : {}),
+      requestedMode: parsed.requestedMode,
+    };
+    const correctionRequest = await transaction.attendanceCorrectionRequest.create({
+      data: {
+        employeeId: actor.id,
+        requesterId: requester.id,
+        attendanceDate: dateValue,
+        dailyAttendanceId: dailyAttendance?.id ?? null,
+        sessionId: session?.id ?? null,
+        reason: parsed.reason,
+        status: AttendanceCorrectionStatus.PENDING,
+        currentApprovalStage: AttendanceCorrectionApprovalStage.SUPERVISOR,
+        originalMode: session?.mode ?? null,
+        requestedMode: parsed.requestedMode,
+        originalStartAt: session?.startAt ?? null,
+        originalEndAt: session?.endAt ?? null,
+        originalValues,
+        requestedValues,
+      },
+    });
+    await transaction.attendanceAuditLog.create({
+      data: {
+        employeeId: actor.id,
+        ...(session ? { sessionId: session.id } : {}),
+        actorId: requester.id,
+        correctionRequestId: correctionRequest.id,
+        actionType: "ATTENDANCE_CORRECTION_REQUESTED",
+        previousValues: originalValues,
+        newValues: requestedValues,
+        reason: parsed.reason,
+      },
+      select: { id: true },
+    });
+    await transaction.notification.create({
+      data: {
+        userId: employee.supervisor.userId,
+        title: "Attendance correction pending",
+        message: `An attendance correction for ${parsed.attendanceDate} is awaiting your review.`,
+        type: "ATTENDANCE_CORRECTION_PENDING",
+      },
+      select: { id: true },
+    });
+    return correctionRequest;
+  });
+}
+
 export async function listOwnDailyAttendanceForCorrection(
   actor: AttendanceCorrectionActor,
   database: OwnCorrectionAttendanceReadDatabase = prisma,
 ) {
-  if (
-    !actor
-    || actor.role !== "EMPLOYEE"
-    || !hasPermission(actor.role, "attendance:correction:submit")
-  ) {
+  if (!canRequestOwnAttendanceCorrection(actor)) {
     throw new DailyAttendanceCorrectionAccessError();
   }
 
@@ -163,11 +448,7 @@ export async function listOwnAttendanceCorrectionHistory(
   actor: AttendanceCorrectionActor,
   database: OwnCorrectionHistoryDatabase = prisma,
 ) {
-  if (
-    !actor
-    || actor.role !== "EMPLOYEE"
-    || !hasPermission(actor.role, "attendance:correction:submit")
-  ) {
+  if (!canRequestOwnAttendanceCorrection(actor)) {
     throw new DailyAttendanceCorrectionAccessError();
   }
 
@@ -175,6 +456,7 @@ export async function listOwnAttendanceCorrectionHistory(
     where: { employeeId: actor.id },
     select: {
       id: true,
+      attendanceDate: true,
       dailyAttendanceId: true,
       status: true,
       reason: true,
@@ -199,11 +481,7 @@ export async function listOwnAttendanceSessionsForCorrection(
   actor: AttendanceCorrectionActor,
   database: OwnCorrectionSessionReadDatabase = prisma,
 ) {
-  if (
-    !actor
-    || actor.role !== "EMPLOYEE"
-    || !hasPermission(actor.role, "attendance:correction:submit")
-  ) {
+  if (!canRequestOwnAttendanceCorrection(actor)) {
     throw new DailyAttendanceCorrectionAccessError();
   }
 
@@ -255,9 +533,14 @@ function originalAttendanceSnapshot(
 async function notifyActiveHrReviewers(
   transaction: Prisma.TransactionClient,
   date: Date,
+  excludedUserId?: string,
 ) {
   const reviewers = await transaction.user.findMany({
-    where: { role: "HR_ADMINISTRATOR", isActive: true },
+    where: {
+      role: "HR_ADMINISTRATOR",
+      isActive: true,
+      ...(excludedUserId ? { id: { not: excludedUserId } } : {}),
+    },
     select: { id: true },
   });
   for (const reviewer of reviewers) {
@@ -290,7 +573,10 @@ export async function submitDailyAttendanceCorrection(
       select: { id: true, role: true },
     });
     if (!requester) throw new DailyAttendanceCorrectionRequesterNotFoundError();
-    if (requester.role !== actor.role || (actor.role !== "EMPLOYEE" && actor.role !== "SUPERVISOR")) {
+    if (
+      requester.role !== actor.role
+      || (actor.role !== "EMPLOYEE" && actor.role !== "SUPERVISOR" && actor.role !== "HR_ADMINISTRATOR")
+    ) {
       throw new DailyAttendanceCorrectionAccessError();
     }
 
@@ -335,7 +621,10 @@ export async function submitDailyAttendanceCorrection(
     });
     if (!attendance) throw new DailyAttendanceCorrectionTargetNotFoundError();
     if (!attendance.employee.userId) throw new DailyAttendanceCorrectionSubjectUserNotFoundError();
-    if (actor.role === "EMPLOYEE" && attendance.employee.userId !== actor.id) {
+    if (
+      (actor.role === "EMPLOYEE" || actor.role === "HR_ADMINISTRATOR")
+      && attendance.employee.userId !== actor.id
+    ) {
       throw new DailyAttendanceCorrectionAccessError();
     }
     if (
@@ -387,7 +676,7 @@ export async function submitDailyAttendanceCorrection(
       select: { id: true },
     });
 
-    if (actor.role === "EMPLOYEE") {
+    if (actor.role === "EMPLOYEE" || actor.role === "HR_ADMINISTRATOR") {
       await transaction.notification.create({
         data: {
           userId: attendance.employee.supervisor.userId,
@@ -413,7 +702,7 @@ export async function submitAttendanceSessionModeCorrection(
 ) {
   if (
     !actor
-    || actor.role !== "EMPLOYEE"
+    || (actor.role !== "EMPLOYEE" && actor.role !== "HR_ADMINISTRATOR")
     || !hasPermission(actor.role, "attendance:correction:submit")
   ) {
     throw new DailyAttendanceCorrectionAccessError();
@@ -476,6 +765,7 @@ export async function submitAttendanceSessionModeCorrection(
       }]);
     }
 
+    await transaction.$queryRaw`SELECT "id" FROM "Employee" WHERE "id" = ${employee.id} FOR UPDATE`;
     const pendingRequest = await transaction.attendanceCorrectionRequest.findFirst({
       where: { sessionId: session.id, status: AttendanceCorrectionStatus.PENDING },
       select: { id: true },
@@ -542,6 +832,7 @@ const correctionReviewSelect = {
   originalValues: true,
   requestedValues: true,
   requestedAt: true,
+  attendanceDate: true,
   sessionId: true,
   originalMode: true,
   requestedMode: true,
@@ -550,6 +841,7 @@ const correctionReviewSelect = {
   session: {
     select: {
       id: true,
+      recordId: true,
       mode: true,
       startAt: true,
       endAt: true,
@@ -578,7 +870,14 @@ const correctionReviewSelect = {
       },
     },
   },
-  employee: { select: { id: true, name: true, employeeCode: true } },
+  employee: {
+    select: {
+      id: true,
+      name: true,
+      employeeCode: true,
+      employee: { select: { supervisor: { select: { userId: true } } } },
+    },
+  },
 } satisfies Prisma.AttendanceCorrectionRequestSelect;
 
 function assertCorrectionReviewer(actor: AttendanceCorrectionActor): asserts actor is Exclude<AttendanceCorrectionActor, null> {
@@ -591,6 +890,249 @@ function assertCorrectionReviewer(actor: AttendanceCorrectionActor): asserts act
   }
 }
 
+async function loadAttendanceDateState(
+          transaction: Prisma.TransactionClient,
+          employeeUserId: string,
+          employeeRecordId: string,
+          date: string,
+          timeZone: string,
+        ) {
+          const { startAt, endAt } = getEmployeeLocalDayWindow(
+            fromZonedTime(`${date}T12:00:00.000`, timeZone),
+            timeZone,
+          );
+          const dateValue = new Date(`${date}T00:00:00.000Z`);
+          const [dailyRows, sessions, punches, records] = await Promise.all([
+            transaction.attendanceDaily.findMany({
+              where: { employeeId: employeeRecordId, date: dateValue },
+              select: { id: true, employeeId: true, date: true, firstIn: true, lastOut: true, status: true },
+              take: 2,
+            }),
+            transaction.workSession.findMany({
+              where: {
+                record: { employeeId: employeeUserId },
+                OR: [
+                  { startAt: { gte: startAt, lt: endAt } },
+                  { endAt: { gte: startAt, lt: endAt } },
+                ],
+              },
+              select: { id: true, recordId: true, mode: true, startAt: true, endAt: true },
+              orderBy: [{ startAt: "asc" }, { id: "asc" }],
+              take: 2,
+            }),
+            transaction.attendanceRaw.findMany({
+              where: { employeeId: employeeRecordId, timestamp: { gte: startAt, lt: endAt } },
+              select: { id: true, timestamp: true, punchType: true, workMode: true },
+              orderBy: [{ timestamp: "asc" }, { id: "asc" }],
+            }),
+            transaction.attendanceRecord.findMany({
+              where: { employeeId: employeeUserId, workDate: dateValue },
+              select: { id: true, sessions: { select: { id: true } } },
+              take: 2,
+            }),
+          ]);
+          if (dailyRows.length > 1 || sessions.length > 1 || records.length > 1) {
+            throw new DailyAttendanceCorrectionConflictError();
+          }
+          return {
+            dateValue,
+            startAt,
+            endAt,
+            daily: dailyRows[0] ?? null,
+            session: sessions[0] ?? null,
+            punches,
+            record: records[0] ?? null,
+          };
+        }
+
+        async function finalizeAttendanceDateCorrection(
+          transaction: Prisma.TransactionClient,
+          input: {
+            correctionRequestId: string;
+            employeeUserId: string;
+            employeeRecordId: string;
+            attendanceDate: Date;
+            timeZone: string;
+            requested: z.infer<typeof dailyCorrectionValuesSchema>;
+            requestedMode: "OFFICE" | "WFH";
+            dailyAttendanceId: string | null;
+            expectedFirstIn: Date | null;
+            expectedLastOut: Date | null;
+            expectedAttendanceRecordId: string | null;
+            sessionId: string | null;
+            originalSession: {
+              id: string;
+              recordId: string;
+              mode: "OFFICE" | "WFH";
+              startAt: Date;
+              endAt: Date | null;
+            } | null;
+          },
+        ) {
+          const date = input.attendanceDate.toISOString().slice(0, 10);
+          const state = await loadAttendanceDateState(
+            transaction,
+            input.employeeUserId,
+            input.employeeRecordId,
+            date,
+            input.timeZone,
+          );
+          if (
+            (input.dailyAttendanceId === null && state.daily !== null)
+            || (input.dailyAttendanceId !== null && (
+              state.daily?.id !== input.dailyAttendanceId
+              || state.daily.firstIn?.getTime() !== input.expectedFirstIn?.getTime()
+              || state.daily.lastOut?.getTime() !== input.expectedLastOut?.getTime()
+            ))
+          ) {
+            throw new DailyAttendanceCorrectionConflictError();
+          }
+          if (
+            (input.sessionId === null && state.session !== null)
+            || (input.sessionId !== null && (
+              state.session?.id !== input.sessionId
+              || !input.originalSession
+              || state.session.mode !== input.originalSession.mode
+              || state.session.startAt.getTime() !== input.originalSession.startAt.getTime()
+              || state.session.endAt?.getTime() !== input.originalSession.endAt?.getTime()
+              || state.session.recordId !== input.originalSession.recordId
+            ))
+          ) {
+            throw new DailyAttendanceCorrectionConflictError();
+          }
+          if (
+            (state.record?.id ?? null) !== input.expectedAttendanceRecordId
+            || (!state.session && Boolean(state.record?.sessions.length))
+          ) {
+            throw new DailyAttendanceCorrectionConflictError();
+          }
+          if (input.requested.firstIn === null || input.requested.lastOut === null) {
+            throw new DailyAttendanceCorrectionConflictError();
+          }
+
+          const firstIn = input.requested.firstIn
+            ? new Date(input.requested.firstIn)
+            : state.session?.startAt
+              ?? state.daily?.firstIn
+              ?? state.punches.find((punch) => punch.punchType === "IN")?.timestamp
+              ?? null;
+          const lastOut = input.requested.lastOut
+            ? new Date(input.requested.lastOut)
+            : state.session?.endAt
+              ?? state.daily?.lastOut
+              ?? [...state.punches].reverse().find((punch) => punch.punchType === "OUT")?.timestamp
+              ?? null;
+          if (!firstIn) throw new DailyAttendanceCorrectionConflictError();
+          if (lastOut && firstIn >= lastOut) {
+            throw new DailyAttendanceCorrectionInvalidValuesError("The attendance start time must be before the end time.");
+          }
+          if (firstIn < state.startAt || firstIn >= state.endAt || (lastOut && (lastOut < state.startAt || lastOut >= state.endAt))) {
+            throw new DailyAttendanceCorrectionInvalidValuesError(
+              "Corrected times must fall within the selected employee-local attendance date supported by daily calculation.",
+            );
+          }
+
+          let sessionId = state.session?.id ?? null;
+          if (state.session) {
+            const updated = await transaction.workSession.updateMany({
+              where: {
+                id: state.session.id,
+                recordId: state.session.recordId,
+                mode: state.session.mode,
+                startAt: state.session.startAt,
+                endAt: state.session.endAt,
+              },
+              data: {
+                startAt: firstIn,
+                endAt: lastOut,
+                mode: input.requestedMode,
+              },
+            });
+            if (updated.count !== 1) throw new DailyAttendanceCorrectionConflictError();
+          } else {
+            if (state.record?.sessions.length) {
+              throw new DailyAttendanceCorrectionConflictError();
+            }
+            if (state.record) {
+              const session = await transaction.workSession.create({
+                data: {
+                  recordId: state.record.id,
+                  mode: input.requestedMode,
+                  startAt: firstIn,
+                  endAt: lastOut,
+                },
+                select: { id: true },
+              });
+              sessionId = session.id;
+            } else {
+              const record = await transaction.attendanceRecord.create({
+                data: {
+                  employeeId: input.employeeUserId,
+                  workDate: state.dateValue,
+                  sessions: {
+                    create: { mode: input.requestedMode, startAt: firstIn, endAt: lastOut },
+                  },
+                },
+                select: {
+                  sessions: { select: { id: true }, take: 1 },
+                },
+              });
+              sessionId = record.sessions[0]?.id ?? null;
+            }
+            if (!sessionId) throw new DailyAttendanceCorrectionConflictError();
+          }
+
+          const correctionValues: z.infer<typeof dailyCorrectionValuesSchema> = {
+            ...(input.requested.firstIn !== undefined
+              ? { firstIn: input.requested.firstIn }
+              : {}),
+            ...(input.requested.lastOut !== undefined
+              ? { lastOut: input.requested.lastOut }
+              : {}),
+          };
+          const applied = await applyApprovedAttendanceCorrection(transaction, {
+            dailyAttendanceId: input.dailyAttendanceId,
+            employeeId: input.employeeRecordId,
+            date,
+            expectedFirstIn: input.expectedFirstIn,
+            expectedLastOut: input.expectedLastOut,
+            correction: {
+              ...(correctionValues.firstIn !== undefined
+                ? { firstIn: correctionValues.firstIn === null ? null : new Date(correctionValues.firstIn) }
+                : {}),
+              ...(correctionValues.lastOut !== undefined
+                ? { lastOut: correctionValues.lastOut === null ? null : new Date(correctionValues.lastOut) }
+                : {}),
+            },
+          });
+          const linked = await transaction.attendanceCorrectionRequest.updateMany({
+            where: {
+              id: input.correctionRequestId,
+              status: AttendanceCorrectionStatus.APPROVED,
+              dailyAttendanceId: input.dailyAttendanceId,
+            },
+            data: { dailyAttendanceId: applied.attendanceDaily.id, sessionId },
+          });
+          if (linked.count !== 1) throw new DailyAttendanceCorrectionConflictError();
+          return {
+            dailyAttendanceId: applied.attendanceDaily.id,
+            sessionId,
+            attendance: {
+              firstIn: applied.calculation.firstIn?.toISOString() ?? null,
+              lastOut: applied.calculation.lastOut?.toISOString() ?? null,
+              workingHours: applied.calculation.workingHours,
+              lateMinutes: applied.calculation.lateMinutes,
+              earlyMinutes: applied.calculation.earlyMinutes,
+              status: applied.calculation.status,
+            },
+            session: {
+              id: sessionId,
+              mode: input.requestedMode,
+              startAt: firstIn.toISOString(),
+              endAt: lastOut?.toISOString() ?? null,
+            },
+          };
+        }
 export async function listDailyAttendanceCorrections(
   actor: AttendanceCorrectionActor,
   database: Pick<PrismaClient, "attendanceCorrectionRequest"> = prisma,
@@ -606,6 +1148,7 @@ export async function listDailyAttendanceCorrections(
       ? {
           OR: [
             { dailyAttendance: { employee: { supervisor: { userId: actor.id } } } },
+            { employee: { employee: { supervisor: { userId: actor.id } } } },
             {
               session: {
                 record: {
@@ -647,6 +1190,7 @@ export async function decideDailyAttendanceCorrection(
         currentApprovalStage: true,
         originalValues: true,
         requestedValues: true,
+        attendanceDate: true,
         sessionId: true,
         originalMode: true,
         requestedMode: true,
@@ -672,6 +1216,7 @@ export async function decideDailyAttendanceCorrection(
         session: {
           select: {
             id: true,
+            recordId: true,
             mode: true,
             startAt: true,
             endAt: true,
@@ -691,6 +1236,16 @@ export async function decideDailyAttendanceCorrection(
             },
           },
         },
+        employee: {
+          select: {
+            employee: {
+              select: {
+                id: true,
+                supervisor: { select: { userId: true } },
+              },
+            },
+          },
+        },
       },
     });
     if (!correction) throw new DailyAttendanceCorrectionTargetNotFoundError();
@@ -706,17 +1261,20 @@ export async function decideDailyAttendanceCorrection(
       ? "SUPERVISOR"
       : "HR_ADMINISTRATOR";
     if (actor.role !== expectedRole) throw new DailyAttendanceCorrectionAccessError();
-    const isSessionModeCorrection = Boolean(correction.sessionId);
+    const isDateCorrection = Boolean(correction.attendanceDate && correction.requestedMode);
+    const isSessionModeCorrection = !isDateCorrection && Boolean(correction.sessionId);
     if (
       correction.currentApprovalStage === AttendanceCorrectionApprovalStage.SUPERVISOR
       && (isSessionModeCorrection
         ? correction.session?.record.employee.employee?.supervisor?.userId !== actor.id
-        : correction.dailyAttendance?.employee.supervisor?.userId !== actor.id)
+        : isDateCorrection
+          ? correction.employee.employee?.supervisor?.userId !== actor.id
+          : correction.dailyAttendance?.employee.supervisor?.userId !== actor.id)
     ) {
       throw new DailyAttendanceCorrectionReviewerScopeError();
     }
 
-    if (correction.employeeId === actor.id) {
+    if (correction.employeeId === actor.id || correction.requesterId === actor.id) {
       throw new DailyAttendanceCorrectionSelfApprovalError();
     }
     if (isSessionModeCorrection) {
@@ -731,13 +1289,17 @@ export async function decideDailyAttendanceCorrection(
       ) {
         throw new DailyAttendanceCorrectionConflictError();
       }
-    } else if (!correction.dailyAttendance || !correction.dailyAttendanceId) {
+    } else if (!isDateCorrection && (!correction.dailyAttendance || !correction.dailyAttendanceId)) {
       throw new DailyAttendanceCorrectionTargetNotFoundError();
     }
     if (isSessionModeCorrection && !correction.originalValues) {
       throw new DailyAttendanceCorrectionConflictError();
     }
-    if (!isSessionModeCorrection && correction.dailyAttendance?.employee.userId !== correction.employeeId) {
+    if (
+      !isSessionModeCorrection
+      && !isDateCorrection
+      && correction.dailyAttendance?.employee.userId !== correction.employeeId
+    ) {
       throw new DailyAttendanceCorrectionConflictError();
     }
     let requested: z.infer<typeof dailyCorrectionValuesSchema> = {};
@@ -748,6 +1310,62 @@ export async function decideDailyAttendanceCorrection(
       if (!modeRequest.success || modeRequest.data.requestedMode !== correction.requestedMode) {
         throw new DailyAttendanceCorrectionConflictError();
       }
+    } else if (isDateCorrection) {
+      const dateValues = attendanceDateCorrectionValuesSchema.safeParse(correction.requestedValues);
+      const snapshot = attendanceDateCorrectionSnapshotSchema.safeParse(correction.originalValues);
+      if (
+        !dateValues.success
+        || !snapshot.success
+        || !correction.attendanceDate
+        || snapshot.data.attendanceDate !== correction.attendanceDate.toISOString().slice(0, 10)
+        || dateValues.data.requestedMode !== correction.requestedMode
+        || !correction.employee.employee
+      ) {
+        throw new DailyAttendanceCorrectionConflictError();
+      }
+      if (dateValues.data.firstIn === null || dateValues.data.lastOut === null) {
+        throw new DailyAttendanceCorrectionConflictError();
+      }
+      await transaction.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${correction.employeeId} FOR UPDATE`;
+      await transaction.$queryRaw`SELECT "id" FROM "Employee" WHERE "id" = ${correction.employee.employee.id} FOR UPDATE`;
+      const owner = await transaction.user.findUnique({
+        where: { id: correction.employeeId },
+        select: { timeZone: true },
+      });
+      if (!owner || owner.timeZone !== snapshot.data.timeZone) {
+        throw new DailyAttendanceCorrectionConflictError();
+      }
+      const state = await loadAttendanceDateState(
+        transaction,
+        correction.employeeId,
+        correction.employee.employee.id,
+        snapshot.data.attendanceDate,
+        owner.timeZone,
+      );
+      if (
+        (snapshot.data.dailyAttendance === null && state.daily !== null)
+        || (snapshot.data.dailyAttendance !== null && (
+          state.daily?.id !== snapshot.data.dailyAttendance.id
+          || (state.daily.firstIn?.toISOString() ?? null) !== snapshot.data.dailyAttendance.firstIn
+          || (state.daily.lastOut?.toISOString() ?? null) !== snapshot.data.dailyAttendance.lastOut
+        ))
+        || (snapshot.data.session === null && state.session !== null)
+        || (snapshot.data.session !== null && (
+          state.session?.id !== snapshot.data.session.id
+          || state.session.recordId !== snapshot.data.session.recordId
+          || state.session.mode !== snapshot.data.session.mode
+          || state.session.startAt.toISOString() !== snapshot.data.session.startAt
+          || (state.session.endAt?.toISOString() ?? null) !== snapshot.data.session.endAt
+        ))
+        || (state.record?.id ?? null) !== snapshot.data.attendanceRecordId
+        || (!state.session && Boolean(state.record?.sessions.length))
+      ) {
+        throw new DailyAttendanceCorrectionConflictError();
+      }
+      requested = {
+        ...(dateValues.data.firstIn !== undefined ? { firstIn: dateValues.data.firstIn } : {}),
+        ...(dateValues.data.lastOut !== undefined ? { lastOut: dateValues.data.lastOut } : {}),
+      };
     } else {
       const requestedResult = dailyCorrectionValuesSchema.safeParse(correction.requestedValues);
       if (!requestedResult.success) throw new DailyAttendanceCorrectionConflictError();
@@ -784,6 +1402,7 @@ export async function decideDailyAttendanceCorrection(
         }
       : {};
     let finalizedValues: Prisma.InputJsonObject | undefined;
+    let finalizedSessionId = correction.sessionId;
 
     const changed = await transaction.attendanceCorrectionRequest.updateMany({
       where: {
@@ -793,7 +1412,9 @@ export async function decideDailyAttendanceCorrection(
         ...(correction.currentApprovalStage === AttendanceCorrectionApprovalStage.SUPERVISOR
           ? isSessionModeCorrection
             ? { session: { record: { employee: { employee: { supervisor: { userId: actor.id } } } } } }
-            : { dailyAttendance: { employee: { supervisor: { userId: actor.id } } } }
+            : isDateCorrection
+              ? { employee: { employee: { supervisor: { userId: actor.id } } } }
+              : { dailyAttendance: { employee: { supervisor: { userId: actor.id } } } }
           : {}),
       },
       data: {
@@ -833,13 +1454,60 @@ export async function decideDailyAttendanceCorrection(
           startAt: finalizedSession.startAt.toISOString(),
           endAt: finalizedSession.endAt?.toISOString() ?? null,
         };
+      } else if (isDateCorrection) {
+        const dateSnapshot = attendanceDateCorrectionSnapshotSchema.safeParse(correction.originalValues);
+        const employee = correction.employee.employee;
+        if (!correction.attendanceDate || !dateSnapshot.success || !employee) {
+          throw new DailyAttendanceCorrectionConflictError();
+        }
+        const owner = await transaction.user.findUnique({
+          where: { id: correction.employeeId },
+          select: { timeZone: true },
+        });
+        if (!owner) throw new DailyAttendanceCorrectionConflictError();
+        try {
+          const applied = await finalizeAttendanceDateCorrection(transaction, {
+            correctionRequestId: correction.id,
+            employeeUserId: correction.employeeId,
+            employeeRecordId: employee.id,
+            attendanceDate: correction.attendanceDate,
+            timeZone: owner.timeZone,
+            requested,
+            requestedMode: correction.requestedMode as "OFFICE" | "WFH",
+            dailyAttendanceId: correction.dailyAttendanceId,
+            expectedFirstIn: correction.dailyAttendance?.firstIn ?? null,
+            expectedLastOut: correction.dailyAttendance?.lastOut ?? null,
+            expectedAttendanceRecordId: dateSnapshot.data.attendanceRecordId,
+            sessionId: correction.sessionId,
+            originalSession: correction.session
+              ? {
+                  id: correction.session.id,
+                  recordId: correction.session.recordId,
+                  mode: correction.session.mode,
+                  startAt: correction.session.startAt,
+                  endAt: correction.session.endAt,
+                }
+              : null,
+          });
+          finalizedValues = {
+            attendanceDate: correction.attendanceDate.toISOString().slice(0, 10),
+            attendance: applied.attendance,
+            session: applied.session,
+          };
+          finalizedSessionId = applied.sessionId;
+        } catch (error) {
+          if (error instanceof AttendanceCorrectionEngineConflictError) {
+            throw new DailyAttendanceCorrectionConflictError();
+          }
+          throw error;
+        }
       } else {
         const attendance = correction.dailyAttendance;
         if (!attendance || !correction.dailyAttendanceId) {
           throw new DailyAttendanceCorrectionTargetNotFoundError();
         }
         try {
-        const calculation = await applyApprovedAttendanceCorrection(transaction, {
+        const applied = await applyApprovedAttendanceCorrection(transaction, {
           dailyAttendanceId: correction.dailyAttendanceId,
           employeeId: attendance.employee.id,
           date: attendance.date.toISOString().slice(0, 10),
@@ -847,6 +1515,7 @@ export async function decideDailyAttendanceCorrection(
           expectedLastOut: attendance.lastOut,
           correction: correctionValues,
         });
+        const calculation = applied.calculation;
         finalizedValues = {
           firstIn: calculation.firstIn?.toISOString() ?? null,
           lastOut: calculation.lastOut?.toISOString() ?? null,
@@ -873,13 +1542,19 @@ export async function decideDailyAttendanceCorrection(
       status,
       currentApprovalStage: nextStage,
       ...(finalizedValues
-        ? isSessionModeCorrection ? { session: finalizedValues } : { attendance: finalizedValues }
+        ? isSessionModeCorrection
+          ? { session: finalizedValues }
+          : isDateCorrection
+            ? finalizedValues
+            : { attendance: finalizedValues }
         : {}),
     };
     await transaction.attendanceAuditLog.create({
       data: {
         employeeId: correction.employeeId,
-        ...(isSessionModeCorrection ? { sessionId: correction.sessionId } : {}),
+        ...(isSessionModeCorrection || isDateCorrection
+          ? { sessionId: finalizedSessionId }
+          : {}),
         actorId: actor.id,
         correctionRequestId: correction.id,
         actionType,
@@ -897,9 +1572,9 @@ export async function decideDailyAttendanceCorrection(
     });
 
     if (nextStage === AttendanceCorrectionApprovalStage.HR) {
-      const correctionDate = correction.dailyAttendance?.date ?? correction.session?.startAt;
+      const correctionDate = correction.attendanceDate ?? correction.dailyAttendance?.date ?? correction.session?.startAt;
       if (!correctionDate) throw new DailyAttendanceCorrectionTargetNotFoundError();
-      await notifyActiveHrReviewers(transaction, correctionDate);
+      await notifyActiveHrReviewers(transaction, correctionDate, correction.employeeId);
     } else {
       const outcome = status === AttendanceCorrectionStatus.APPROVED ? "approved" : "rejected";
       await transaction.notification.create({

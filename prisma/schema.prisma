@@ -130,6 +130,7 @@ model AttendanceCorrectionRequest {
   resolvedAt       DateTime?
   createdAt        DateTime                   @default(now())
   updatedAt        DateTime                   @updatedAt
+  attendanceDate   DateTime?                  @db.Date
   dailyAttendanceId String?
   requesterId       String?
   originalValues    Json?
@@ -144,6 +145,7 @@ model AttendanceCorrectionRequest {
   @@index([employeeId, status])
   @@index([status, requestedAt])
   @@index([status, currentApprovalStage, requestedAt])
+  @@index([employeeId, attendanceDate, status])
 }
 
 model OvertimeRequest {

@@ -24,7 +24,7 @@ const employeeLinksWithSettings: NavigationLink[] = [
   settingsLink,
 ];
 
-function getLinks(isAdmin: boolean, canReadAuditHistory: boolean, canManageEmployees: boolean, canReadTeamAttendance: boolean, canManageShifts: boolean, canManageLeave: boolean, canReadLeaveBalance: boolean, canReviewCorrections: boolean, canReviewLeave: boolean, canReadReports: boolean, canReadDepartmentReports: boolean, canSubmitOvertime: boolean, canReviewOvertime: boolean, canSubmitWorkFromHome: boolean, canReviewWorkFromHome: boolean) {
+function getLinks(isAdmin: boolean, canReadAuditHistory: boolean, canManageEmployees: boolean, canReadTeamAttendance: boolean, canManageShifts: boolean, canManageLeave: boolean, canReadLeaveBalance: boolean, canReviewCorrections: boolean, canSubmitAttendanceCorrections: boolean, canReviewLeave: boolean, canReadReports: boolean, canReadDepartmentReports: boolean, canSubmitOvertime: boolean, canReviewOvertime: boolean, canSubmitWorkFromHome: boolean, canReviewWorkFromHome: boolean) {
   const links = isAdmin ? [
     ...employeeLinks.filter(({ href }) => href !== "/leave"),
     { href: "/admin", label: "Admin", icon: Shield },
@@ -69,6 +69,9 @@ function getLinks(isAdmin: boolean, canReadAuditHistory: boolean, canManageEmplo
   if (canReviewCorrections) {
     links.splice(links.length - 1, 0, { href: "/approvals/attendance-corrections", label: "Correction approvals", icon: ClipboardList });
   }
+  if (!isAdmin && canSubmitAttendanceCorrections) {
+    links.splice(links.length - 1, 0, { href: "/attendance/corrections", label: "Request Attendance Correction", icon: ClipboardList });
+  }
   if (canReviewLeave) {
     links.splice(links.length - 1, 0, { href: "/approvals/leave", label: "Leave approvals", icon: BriefcaseBusiness });
   }
@@ -96,18 +99,18 @@ function NavigationItems({ links, pathname, onNavigate }: { links: NavigationLin
   });
 }
 
-export function AppNav({ isAdmin, canReadAuditHistory, canManageEmployees, canReadTeamAttendance, canManageShifts, canManageLeave, canReadLeaveBalance, canReviewCorrections, canReviewLeave, canReadReports, canReadDepartmentReports, canSubmitOvertime, canReviewOvertime, canSubmitWorkFromHome, canReviewWorkFromHome }: { isAdmin: boolean; canReadAuditHistory: boolean; canManageEmployees: boolean; canReadTeamAttendance: boolean; canManageShifts: boolean; canManageLeave: boolean; canReadLeaveBalance: boolean; canReviewCorrections: boolean; canReviewLeave: boolean; canReadReports: boolean; canReadDepartmentReports: boolean; canSubmitOvertime: boolean; canReviewOvertime: boolean; canSubmitWorkFromHome: boolean; canReviewWorkFromHome: boolean }) {
+export function AppNav({ isAdmin, canReadAuditHistory, canManageEmployees, canReadTeamAttendance, canManageShifts, canManageLeave, canReadLeaveBalance, canReviewCorrections, canSubmitAttendanceCorrections, canReviewLeave, canReadReports, canReadDepartmentReports, canSubmitOvertime, canReviewOvertime, canSubmitWorkFromHome, canReviewWorkFromHome }: { isAdmin: boolean; canReadAuditHistory: boolean; canManageEmployees: boolean; canReadTeamAttendance: boolean; canManageShifts: boolean; canManageLeave: boolean; canReadLeaveBalance: boolean; canReviewCorrections: boolean; canSubmitAttendanceCorrections: boolean; canReviewLeave: boolean; canReadReports: boolean; canReadDepartmentReports: boolean; canSubmitOvertime: boolean; canReviewOvertime: boolean; canSubmitWorkFromHome: boolean; canReviewWorkFromHome: boolean }) {
   const pathname = usePathname();
 
   return (
     <nav aria-label="Main navigation" className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
       <p className="px-3 pb-2 text-xs font-semibold text-white/50">Workspace</p>
-      <div className="flex flex-col gap-1"><NavigationItems links={getLinks(isAdmin, canReadAuditHistory, canManageEmployees, canReadTeamAttendance, canManageShifts, canManageLeave, canReadLeaveBalance, canReviewCorrections, canReviewLeave, canReadReports, canReadDepartmentReports, canSubmitOvertime, canReviewOvertime, canSubmitWorkFromHome, canReviewWorkFromHome)} pathname={pathname} /></div>
+      <div className="flex flex-col gap-1"><NavigationItems links={getLinks(isAdmin, canReadAuditHistory, canManageEmployees, canReadTeamAttendance, canManageShifts, canManageLeave, canReadLeaveBalance, canReviewCorrections, canSubmitAttendanceCorrections, canReviewLeave, canReadReports, canReadDepartmentReports, canSubmitOvertime, canReviewOvertime, canSubmitWorkFromHome, canReviewWorkFromHome)} pathname={pathname} /></div>
     </nav>
   );
 }
 
-export function MobileNav({ companyName, isAdmin, canReadAuditHistory, canManageEmployees, canReadTeamAttendance, canManageShifts, canManageLeave, canReadLeaveBalance, canReviewCorrections, canReviewLeave, canReadReports, canReadDepartmentReports, canSubmitOvertime, canReviewOvertime, canSubmitWorkFromHome, canReviewWorkFromHome, user }: { companyName: string; isAdmin: boolean; canReadAuditHistory: boolean; canManageEmployees: boolean; canReadTeamAttendance: boolean; canManageShifts: boolean; canManageLeave: boolean; canReadLeaveBalance: boolean; canReviewCorrections: boolean; canReviewLeave: boolean; canReadReports: boolean; canReadDepartmentReports: boolean; canSubmitOvertime: boolean; canReviewOvertime: boolean; canSubmitWorkFromHome: boolean; canReviewWorkFromHome: boolean; user: { name: string; email: string } }) {
+export function MobileNav({ companyName, isAdmin, canReadAuditHistory, canManageEmployees, canReadTeamAttendance, canManageShifts, canManageLeave, canReadLeaveBalance, canReviewCorrections, canSubmitAttendanceCorrections, canReviewLeave, canReadReports, canReadDepartmentReports, canSubmitOvertime, canReviewOvertime, canSubmitWorkFromHome, canReviewWorkFromHome, user }: { companyName: string; isAdmin: boolean; canReadAuditHistory: boolean; canManageEmployees: boolean; canReadTeamAttendance: boolean; canManageShifts: boolean; canManageLeave: boolean; canReadLeaveBalance: boolean; canReviewCorrections: boolean; canSubmitAttendanceCorrections: boolean; canReviewLeave: boolean; canReadReports: boolean; canReadDepartmentReports: boolean; canSubmitOvertime: boolean; canReviewOvertime: boolean; canSubmitWorkFromHome: boolean; canReviewWorkFromHome: boolean; user: { name: string; email: string } }) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
 
@@ -141,7 +144,7 @@ export function MobileNav({ companyName, isAdmin, canReadAuditHistory, canManage
             </div>
             <nav aria-label="Mobile main navigation" className="flex-1 overflow-y-auto px-4 py-4">
               <p className="px-3 pb-2 text-xs font-semibold text-white/50">Workspace</p>
-              <div className="flex flex-col gap-1"><NavigationItems links={getLinks(isAdmin, canReadAuditHistory, canManageEmployees, canReadTeamAttendance, canManageShifts, canManageLeave, canReadLeaveBalance, canReviewCorrections, canReviewLeave, canReadReports, canReadDepartmentReports, canSubmitOvertime, canReviewOvertime, canSubmitWorkFromHome, canReviewWorkFromHome)} pathname={pathname} onNavigate={() => setOpen(false)} /></div>
+              <div className="flex flex-col gap-1"><NavigationItems links={getLinks(isAdmin, canReadAuditHistory, canManageEmployees, canReadTeamAttendance, canManageShifts, canManageLeave, canReadLeaveBalance, canReviewCorrections, canSubmitAttendanceCorrections, canReviewLeave, canReadReports, canReadDepartmentReports, canSubmitOvertime, canReviewOvertime, canSubmitWorkFromHome, canReviewWorkFromHome)} pathname={pathname} onNavigate={() => setOpen(false)} /></div>
             </nav>
             <div className="border-t border-white/15 p-4">
               <p className="truncate text-xs font-semibold">{user.name}</p>

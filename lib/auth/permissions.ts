@@ -49,6 +49,7 @@ const rolePermissions: Record<Exclude<Role, "ADMIN">, readonly Permission[]> = {
     "audit:read",
     "attendance:correction:manage",
     "attendance:correction:approve",
+    "attendance:correction:submit",
     "leave:manage",
     "leave:approve",
     "shift:manage",
@@ -80,6 +81,11 @@ const rolePermissions: Record<Exclude<Role, "ADMIN">, readonly Permission[]> = {
 export function hasPermission(role: Role, permission: Permission) {
   if (role === "ADMIN") return true;
   return rolePermissions[role].includes(permission);
+}
+
+export function canSubmitOwnAttendanceCorrection(role: Role) {
+  return (role === "EMPLOYEE" || role === "HR_ADMINISTRATOR")
+    && hasPermission(role, "attendance:correction:submit");
 }
 
 export function canReadScopedAttendance(role: Role) {

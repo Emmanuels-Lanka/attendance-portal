@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Role } from "@prisma/client";
-import { canReadScopedAttendance, hasPermission } from "./permissions";
+import { canReadScopedAttendance, canSubmitOwnAttendanceCorrection, hasPermission } from "./permissions";
 
 describe("role permissions", () => {
   it("preserves ADMIN as the full-access compatibility role", () => {
@@ -22,6 +22,8 @@ describe("role permissions", () => {
     assert.equal(hasPermission(Role.HR_ADMINISTRATOR, "reports:read"), true);
     assert.equal(hasPermission(Role.HR_ADMINISTRATOR, "leave:approve"), true);
     assert.equal(hasPermission(Role.HR_ADMINISTRATOR, "attendance:correction:approve"), true);
+    assert.equal(hasPermission(Role.HR_ADMINISTRATOR, "attendance:correction:submit"), true);
+    assert.equal(canSubmitOwnAttendanceCorrection(Role.HR_ADMINISTRATOR), true);
   });
 
   it("limits Department Manager permissions to the SRS department duties", () => {
@@ -60,5 +62,8 @@ describe("role permissions", () => {
     assert.equal(hasPermission(Role.EMPLOYEE, "attendance:department:read"), false);
     assert.equal(hasPermission(Role.EMPLOYEE, "attendance:locations:read"), false);
     assert.equal(hasPermission(Role.EMPLOYEE, "audit:read"), false);
+    assert.equal(canSubmitOwnAttendanceCorrection(Role.EMPLOYEE), true);
+    assert.equal(canSubmitOwnAttendanceCorrection(Role.SUPERVISOR), false);
+    assert.equal(canSubmitOwnAttendanceCorrection(Role.ADMIN), false);
   });
 });

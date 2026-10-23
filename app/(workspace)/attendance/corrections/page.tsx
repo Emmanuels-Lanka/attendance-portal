@@ -2,8 +2,9 @@ import { formatInTimeZone } from "date-fns-tz";
 import Link from "next/link";
 import { ChevronLeft } from "lucide-react";
 import { AttendanceCorrectionRequestForm } from "@/components/attendance-correction-request-form";
+import { AttendanceDateCorrectionRequestForm } from "@/components/attendance-date-correction-request-form";
 import { AttendanceSessionModeCorrectionForm } from "@/components/attendance-session-mode-correction-form";
-import { hasPermission } from "@/lib/auth/permissions";
+import { canSubmitOwnAttendanceCorrection } from "@/lib/auth/permissions";
 import {
   listOwnAttendanceCorrectionHistory,
   listOwnDailyAttendanceForCorrection,
@@ -19,7 +20,7 @@ function readableValues(value: unknown) {
 
 export default async function AttendanceCorrectionRequestPage() {
   const actor = await requirePageUser();
-  if (actor.role !== "EMPLOYEE" || !hasPermission(actor.role, "attendance:correction:submit")) {
+  if (!canSubmitOwnAttendanceCorrection(actor.role)) {
     redirect("/dashboard");
   }
 
@@ -52,6 +53,11 @@ export default async function AttendanceCorrectionRequestPage() {
           The recorded session mode changes only after final approval; original punch evidence is retained.
         </p>
       </div>
+
+      <AttendanceDateCorrectionRequestForm
+        attendanceDate={formatInTimeZone(new Date(), actor.timeZone, "yyyy-MM-dd")}
+        timeZone={actor.timeZone}
+      />
 
       <section aria-labelledby="session-mode-correction-title" className="space-y-4">
         <div>
@@ -120,7 +126,9 @@ export default async function AttendanceCorrectionRequestPage() {
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <h3 className="text-sm font-semibold">
-                      Attendance date {request.dailyAttendance
+                      Attendance date {request.attendanceDate
+                        ? formatInTimeZone(request.attendanceDate, "UTC", "yyyy-MM-dd")
+                        : request.dailyAttendance
                         ? formatInTimeZone(request.dailyAttendance.date, "UTC", "yyyy-MM-dd")
                         : request.session
                           ? formatInTimeZone(request.session.startAt, actor.timeZone, "yyyy-MM-dd")

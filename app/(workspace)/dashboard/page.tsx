@@ -146,6 +146,7 @@ export default async function DashboardPage() {
             <Link href="/admin/attendance/daily" className="inline-flex h-10 items-center rounded-md bg-[var(--action)] px-4 text-sm font-semibold text-white hover:bg-[var(--action-hover)]">Daily attendance</Link>
             <Link href="/reports/monthly" className="inline-flex h-10 items-center rounded-md border border-[var(--line)] bg-white px-4 text-sm font-semibold text-[var(--ink)] hover:bg-zinc-50">Monthly report</Link>
             <Link href="/approvals/attendance-corrections" className="inline-flex h-10 items-center rounded-md border border-[var(--line)] bg-white px-4 text-sm font-semibold text-[var(--ink)] hover:bg-zinc-50">Correction approvals</Link>
+            <Link href="/attendance/corrections" className="inline-flex h-10 items-center rounded-md border border-[var(--line)] bg-white px-4 text-sm font-semibold text-[var(--ink)] hover:bg-zinc-50">Request own correction</Link>
           </div>
         </header>
 
