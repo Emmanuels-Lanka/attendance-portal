@@ -44,11 +44,17 @@ export default async function AttendanceCorrectionApprovalsPage() {
             <li key={correction.id} className="rounded-lg border border-[var(--line)] bg-white p-5 shadow-sm">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <h2 className="text-base font-semibold">{correction.dailyAttendance?.employee.name ?? correction.employee.name}</h2>
+                  <h2 className="text-base font-semibold">
+                    {correction.dailyAttendance?.employee.name ?? correction.session?.record.employee.name ?? correction.employee.name}
+                  </h2>
                   <p className="mt-1 text-xs text-[var(--muted)]">
                     {correction.dailyAttendance?.employee.employeeId ?? correction.employee.employeeCode ?? "No employee ID"}
                     {" · "}
-                    {correction.dailyAttendance ? formatInTimeZone(correction.dailyAttendance.date, "UTC", "yyyy-MM-dd") : "Attendance record unavailable"}
+                    {correction.dailyAttendance
+                      ? formatInTimeZone(correction.dailyAttendance.date, "UTC", "yyyy-MM-dd")
+                      : correction.session
+                        ? formatInTimeZone(correction.session.startAt, "UTC", "yyyy-MM-dd")
+                        : "Attendance record unavailable"}
                     {" · "}
                     Requested {timeLabel(correction.requestedAt)}
                   </p>
@@ -60,7 +66,9 @@ export default async function AttendanceCorrectionApprovalsPage() {
               <p className="mt-4 text-sm"><span className="font-semibold">Request reason:</span> {correction.reason}</p>
               <div className="mt-4 grid gap-3 md:grid-cols-2">
                 <div>
-                  <h3 className="text-xs font-semibold text-[var(--muted)]">Original calculated attendance</h3>
+                  <h3 className="text-xs font-semibold text-[var(--muted)]">
+                    {correction.sessionId ? "Original recorded session" : "Original calculated attendance"}
+                  </h3>
                   <pre className="mt-1 overflow-auto whitespace-pre-wrap break-words rounded-md bg-zinc-50 p-3 text-xs">{readableValues(correction.originalValues)}</pre>
                 </div>
                 <div>
@@ -68,8 +76,8 @@ export default async function AttendanceCorrectionApprovalsPage() {
                   <pre className="mt-1 overflow-auto whitespace-pre-wrap break-words rounded-md bg-zinc-50 p-3 text-xs">{readableValues(correction.requestedValues)}</pre>
                 </div>
               </div>
-              {!correction.dailyAttendance && <p role="alert" className="mt-3 text-sm text-[var(--danger)]">The calculated attendance record is unavailable; this request cannot be decided.</p>}
-              {correction.dailyAttendance && <div className="mt-4 border-t border-[var(--line)] pt-4"><AttendanceCorrectionReviewForm correctionRequestId={correction.id} /></div>}
+              {!correction.dailyAttendance && !correction.session && <p role="alert" className="mt-3 text-sm text-[var(--danger)]">The attendance session or calculated record is unavailable; this request cannot be decided.</p>}
+              {(correction.dailyAttendance || correction.session) && <div className="mt-4 border-t border-[var(--line)] pt-4"><AttendanceCorrectionReviewForm correctionRequestId={correction.id} /></div>}
             </li>
           ))}
         </ol>

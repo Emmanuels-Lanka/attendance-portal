@@ -125,6 +125,8 @@ export default async function AttendanceCorrectionReportPage({
               </header>
 
               <dl className="mt-4 grid gap-3 sm:grid-cols-2">
+                <div><dt className="text-xs font-semibold text-[var(--muted)]">Affected attendance date</dt><dd className="mt-1 text-sm">{entry.session?.startAt ? formatInTimeZone(entry.session.startAt, actor.timeZone, "yyyy-MM-dd") : "Daily attendance correction"}</dd></div>
+                <div><dt className="text-xs font-semibold text-[var(--muted)]">Correction type</dt><dd className="mt-1 text-sm">{entry.sessionId ? `${entry.originalMode ?? "Unknown"} → ${entry.requestedMode ?? "Unknown"} session mode` : "Attendance time"}</dd></div>
                 <div><dt className="text-xs font-semibold text-[var(--muted)]">Requester</dt><dd className="mt-1 text-sm">{entry.requester?.name ?? "Unavailable"}</dd></div>
                 <div><dt className="text-xs font-semibold text-[var(--muted)]">Current approval stage</dt><dd className="mt-1 text-sm">{entry.currentApprovalStage ?? "None"}</dd></div>
                 <div><dt className="text-xs font-semibold text-[var(--muted)]">Reviewer</dt><dd className="mt-1 text-sm">{entry.reviewedBy?.name ?? "—"}</dd></div>

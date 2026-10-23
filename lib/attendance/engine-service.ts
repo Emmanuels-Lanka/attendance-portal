@@ -2,6 +2,7 @@ import "server-only";
 
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { fromZonedTime } from "date-fns-tz";
+import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import {
   attendanceDailyWorkingHoursForStorage,
@@ -50,6 +51,37 @@ const shiftConfigurationSelect = {
 } satisfies Prisma.ShiftSelect;
 
 type EngineTransaction = Prisma.TransactionClient;
+
+const approvedCorrectionValuesSchema = z.object({
+  firstIn: z.string().datetime({ offset: true }).nullable().optional(),
+  lastOut: z.string().datetime({ offset: true }).nullable().optional(),
+}).strict();
+
+async function loadApprovedCorrectionValues(
+  transaction: EngineTransaction,
+  dailyAttendanceId: string,
+): Promise<DailyAttendanceCorrectionValues> {
+  const requests = await transaction.attendanceCorrectionRequest.findMany({
+    where: { dailyAttendanceId, status: "APPROVED" },
+    select: { requestedValues: true },
+    orderBy: [{ resolvedAt: "asc" }, { requestedAt: "asc" }, { id: "asc" }],
+  });
+
+  const correction: DailyAttendanceCorrectionValues = {};
+  for (const request of requests) {
+    const result = approvedCorrectionValuesSchema.safeParse(request.requestedValues);
+    if (!result.success) {
+      throw new AttendanceDailyPersistenceError("An approved attendance correction contains invalid values.");
+    }
+    if (result.data.firstIn !== undefined) {
+      correction.firstIn = result.data.firstIn === null ? null : new Date(result.data.firstIn);
+    }
+    if (result.data.lastOut !== undefined) {
+      correction.lastOut = result.data.lastOut === null ? null : new Date(result.data.lastOut);
+    }
+  }
+  return correction;
+}
 
 async function calculateForEmployeeDay(
   transaction: EngineTransaction,
@@ -163,9 +195,9 @@ export async function calculateAndPersistDailyAttendance(
 ) {
   return database.$transaction(async (transaction) => {
     await transaction.$queryRaw`SELECT "id" FROM "Employee" WHERE "id" = ${employeeId} FOR UPDATE`;
-    const calculated = await calculateForEmployeeDay(transaction, employeeId, date);
+    const dateValue = new Date(`${date}T00:00:00.000Z`);
     const existing = await transaction.attendanceDaily.findMany({
-      where: { employeeId, date: calculated.dateValue },
+      where: { employeeId, date: dateValue },
       select: { id: true },
       take: 2,
     });
@@ -173,6 +205,10 @@ export async function calculateAndPersistDailyAttendance(
       throw new AttendanceDailyPersistenceError("Multiple daily attendance rows exist for this employee and date.");
     }
 
+    const approvedCorrection = existing[0]
+      ? await loadApprovedCorrectionValues(transaction, existing[0].id)
+      : undefined;
+    const calculated = await calculateForEmployeeDay(transaction, employeeId, date, approvedCorrection);
     const attendanceDaily = existing[0]
       ? await transaction.attendanceDaily.update({ where: { id: existing[0].id }, data: calculated.data })
       : await transaction.attendanceDaily.create({ data: calculated.data });
@@ -207,11 +243,12 @@ export async function applyApprovedAttendanceCorrection(
     throw new AttendanceCorrectionEngineConflictError();
   }
 
+  const approvedCorrection = await loadApprovedCorrectionValues(transaction, input.dailyAttendanceId);
   const calculated = await calculateForEmployeeDay(
     transaction,
     input.employeeId,
     input.date,
-    input.correction,
+    { ...approvedCorrection, ...input.correction },
   );
   if (
     (input.correction.firstIn !== undefined

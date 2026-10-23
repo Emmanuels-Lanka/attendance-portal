@@ -209,6 +209,24 @@ describe("employee attendance transitions", () => {
     assert.equal(endStub.rawPunches[0].workMode, "WFH");
   });
 
+  it("does not accept an extra opposite-mode IN while a session is active", async () => {
+    const officeSession = createDatabase([activeSession("office-open")]);
+    await assert.rejects(
+      applyAttendanceAction("employee-1", "WFH_IN", officeSession.database),
+      /End the active session/,
+    );
+    assert.equal(officeSession.sessions.length, 1);
+    assert.equal(officeSession.rawPunches.length, 0);
+
+    const wfhSession = createDatabase([{ ...activeSession("wfh-open"), mode: "WFH" }]);
+    await assert.rejects(
+      applyAttendanceAction("employee-1", "IN", wfhSession.database),
+      /End the active session/,
+    );
+    assert.equal(wfhSession.sessions.length, 1);
+    assert.equal(wfhSession.rawPunches.length, 0);
+  });
+
   it("records an HR Administrator's own attendance using the linked Employee record", async () => {
     const stub = createDatabase();
 

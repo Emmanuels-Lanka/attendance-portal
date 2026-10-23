@@ -89,6 +89,41 @@ describe("attendance correction report", () => {
     assert.deepEqual((stub.calls.findMany as { where: unknown }).where, expectedWhere);
   });
 
+  it("returns consistent filtered entries and counts for one employee and all employees", async () => {
+    const otherEntry = {
+      ...entry,
+      id: "correction-2",
+      status: AttendanceCorrectionStatus.REJECTED,
+      requestedAt: new Date("2026-10-06T08:00:00.000Z"),
+      employee: { id: "other-employee", name: "Other Employee", employeeCode: "E-002" },
+    };
+    const entries = [entry, otherEntry];
+    const matches = (where: { employeeId?: string; status?: AttendanceCorrectionStatus }) =>
+      entries.filter((candidate) =>
+        (!where.employeeId || candidate.employee.id === where.employeeId)
+        && (!where.status || candidate.status === where.status));
+    const database = {
+      attendanceCorrectionRequest: {
+        count: async ({ where }: { where: { employeeId?: string; status?: AttendanceCorrectionStatus } }) => matches(where).length,
+        findMany: async ({ where }: { where: { employeeId?: string; status?: AttendanceCorrectionStatus } }) => matches(where),
+      },
+      user: {
+        findMany: async () => entries.map(({ employee }) => employee),
+      },
+    } as never;
+
+    const selected = await listAttendanceCorrectionReport({ role: Role.ADMIN }, {
+      employeeId: "employee-user",
+      status: "APPROVED",
+    }, database);
+    const all = await listAttendanceCorrectionReport({ role: Role.ADMIN }, {}, database);
+
+    assert.equal(selected.total, 1);
+    assert.deepEqual(selected.entries.map(({ id }) => id), ["correction-1"]);
+    assert.equal(all.total, 2);
+    assert.deepEqual(all.entries.map(({ id }) => id), ["correction-1", "correction-2"]);
+  });
+
   it("rejects unauthorized roles before querying data", async () => {
     const stub = createDatabase();
     await assert.rejects(
@@ -128,6 +163,12 @@ describe("attendance correction report", () => {
         requestedAt: true,
         reviewedAt: true,
         resolvedAt: true,
+        sessionId: true,
+        originalMode: true,
+        requestedMode: true,
+        originalStartAt: true,
+        originalEndAt: true,
+        session: { select: { startAt: true } },
         employee: { select: { id: true, name: true, employeeCode: true } },
         requester: { select: { id: true, name: true } },
         reviewedBy: { select: { id: true, name: true } },

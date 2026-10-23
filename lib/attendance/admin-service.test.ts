@@ -54,7 +54,26 @@ function createDatabase(sessions = [makeSession("one")], linkedUserIds?: string[
   const workSession = {
     findMany: async (args: { where: unknown; include: unknown }) => {
       calls.findWhere = args.where;
-      const queried = [...sessionById.values()];
+      const where = args.where as {
+        mode?: "OFFICE" | "WFH";
+        endAt?: null | { not: null };
+        record?: { employeeId?: { in?: string[] } };
+        OR?: Array<{ record: { employeeId: string }; startAt?: { gte?: Date; lt?: Date } }>;
+      };
+      const employeeIds = where.record?.employeeId?.in;
+      const queried = [...sessionById.values()].filter((session) => {
+        if (employeeIds && !employeeIds.includes(session.record.employee.id)) return false;
+        if (where.mode && session.mode !== where.mode) return false;
+        if (where.endAt === null && session.endAt !== null) return false;
+        if (where.endAt && session.endAt === null) return false;
+        if (where.OR) {
+          return where.OR.some((range) =>
+            range.record.employeeId === session.record.employee.id
+            && (!range.startAt?.gte || session.startAt >= range.startAt.gte)
+            && (!range.startAt?.lt || session.startAt < range.startAt.lt));
+        }
+        return true;
+      });
       return queried.map((session) => ({ ...session }));
     },
     findUnique: async ({ where, select }: { where: { id: string }; select?: unknown }) => {
@@ -156,6 +175,36 @@ describe("admin attendance access and corrections", () => {
     const result = await listAdminAttendance(admin, { employeeId: "missing-employee" }, stub.database);
     assert.deepEqual(result.sessions, []);
     assert.deepEqual(result.dailySummaries, []);
+  });
+
+  it("returns only the selected employee's sessions and labels for a specific selection", async () => {
+    const stub = createDatabase([makeSession("selected"), makeSession("other", "WFH")]);
+
+    const result = await listAdminAttendance(admin, { employeeId: "employee-selected" }, stub.database);
+
+    assert.deepEqual(result.sessions.map(({ id }) => id), ["selected"]);
+    assert.deepEqual(result.employees.map(({ id, name }) => ({ id, name })), [{
+      id: "employee-selected",
+      name: "Employee selected",
+    }]);
+    assert.deepEqual(result.dailySummaries.map(({ employee }) => employee.id), ["employee-selected"]);
+    assert.deepEqual(stub.calls.findWhere, {
+      record: { employeeId: { in: ["employee-selected"] } },
+    });
+  });
+
+  it("uses the all-employees sentinel to remove only the employee restriction", async () => {
+    const stub = createDatabase([makeSession("selected"), makeSession("other", "WFH")]);
+
+    const result = await listAdminAttendance(admin, { employeeId: "", mode: "WFH", status: "ACTIVE" }, stub.database);
+
+    assert.deepEqual(result.sessions.map(({ id }) => id), ["other"]);
+    assert.deepEqual(result.employees.map(({ id }) => id).sort(), ["employee-other", "employee-selected"]);
+    assert.deepEqual(stub.calls.findWhere, {
+      mode: "WFH",
+      endAt: null,
+      record: { employeeId: { in: ["employee-selected", "employee-other"] } },
+    });
   });
 
   it("keeps User-owned attendance readable when no linked Employee exists", async () => {

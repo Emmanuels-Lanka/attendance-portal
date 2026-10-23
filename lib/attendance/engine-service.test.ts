@@ -33,9 +33,16 @@ function createHarness(
   raw: Array<{ id: string; timestamp: Date; punchType: "IN" | "OUT" }>,
   shiftOverrides: ShiftOverrides = {},
   isOrganizationHoliday = false,
+  existingDaily = false,
+  approvedCorrections: Array<{ requestedValues: unknown }> = [],
+  approvedSessionMode: "OFFICE" | "WFH" = "WFH",
 ) {
+  let sessionMode = approvedSessionMode;
+  let sessionModeWrites = 0;
   const rawBefore = raw.map(({ id, timestamp, punchType }) => [id, timestamp.toISOString(), punchType]);
-  const dailyRows: Array<Record<string, unknown> & { id: string }> = [];
+  const dailyRows: Array<Record<string, unknown> & { id: string }> = existingDaily
+    ? [{ id: "daily-existing", employeeId: "employee-1" }]
+    : [];
   let creates = 0;
   let updates = 0;
   const database = {
@@ -50,6 +57,15 @@ function createHarness(
       },
       attendanceRaw: {
         findMany: async () => raw,
+      },
+      attendanceCorrectionRequest: {
+        findMany: async () => approvedCorrections,
+      },
+      workSession: {
+        update: async ({ data }: { data: { mode: "OFFICE" | "WFH" } }) => {
+          sessionModeWrites += 1;
+          sessionMode = data.mode;
+        },
       },
       holiday: {
         findFirst: async ({ where }: { where: { branch: string; applicableEmployeeGroups: { isEmpty: boolean } } }) => (
@@ -81,6 +97,8 @@ function createHarness(
     dailyRows,
     get creates() { return creates; },
     get updates() { return updates; },
+    get sessionMode() { return sessionMode; },
+    get sessionModeWrites() { return sessionModeWrites; },
   };
 }
 
@@ -129,6 +147,9 @@ describe("attendance engine persistence boundary", () => {
             writes.push("attendanceDaily.update");
             throw new Error("No existing daily result was expected.");
           },
+        },
+        attendanceCorrectionRequest: {
+          findMany: async () => [],
         },
       }),
     } as unknown as EngineDatabase;
@@ -182,6 +203,9 @@ describe("attendance engine persistence boundary", () => {
             return { id: where.id, ...data };
           },
         },
+        attendanceCorrectionRequest: {
+          findMany: async () => [],
+        },
       }),
     } as unknown as EngineDatabase;
 
@@ -191,6 +215,23 @@ describe("attendance engine persistence boundary", () => {
     assert.equal(result.attendanceDaily.id, "daily-existing");
     assert.equal(result.calculation.workingHours, 9);
     assert.deepEqual(raw.map(({ id }) => id), ["punch-in", "punch-out"]);
+  });
+
+  it("reapplies approved correction values during raw-punch recalculation without changing raw evidence", async () => {
+    const raw = [
+      { id: "punch-in", timestamp: new Date("2026-06-15T03:00:00.000Z"), punchType: "IN" as const },
+      { id: "punch-out", timestamp: new Date("2026-06-15T12:00:00.000Z"), punchType: "OUT" as const },
+    ];
+    const approvedCorrections = [{
+      requestedValues: { firstIn: "2026-06-15T03:20:00.000Z" },
+    }];
+    const harness = createHarness(raw, {}, false, true, approvedCorrections);
+    const result = await calculateAndPersistDailyAttendance("employee-1", "2026-06-15", harness.database);
+
+    assert.equal(result.calculation.firstIn?.toISOString(), "2026-06-15T03:20:00.000Z");
+    assert.equal(result.calculation.lateMinutes, 10);
+    assert.equal(result.attendanceDaily.id, "daily-existing");
+    assert.deepEqual(raw.map(({ id, timestamp, punchType }) => [id, timestamp.toISOString(), punchType]), harness.rawBefore);
   });
 
   it("persists Present, Late, and Early Out when the configured data supports each status", async () => {
@@ -408,5 +449,17 @@ describe("attendance engine persistence boundary", () => {
     assert.equal(first.attendanceDaily.id, second.attendanceDaily.id);
     assert.deepEqual(first.calculation, second.calculation);
     assert.deepEqual(harness.raw.map(({ id, timestamp, punchType }) => [id, timestamp.toISOString(), punchType]), harness.rawBefore);
+  });
+
+  it("keeps an approved session work-mode correction intact during daily recalculation", async () => {
+    const harness = createHarness([
+      { id: "in", timestamp: new Date("2026-06-15T03:00:00.000Z"), punchType: "IN" },
+      { id: "out", timestamp: new Date("2026-06-15T12:00:00.000Z"), punchType: "OUT" },
+    ], {}, false, true, [], "WFH");
+
+    await calculateAndPersistDailyAttendance("employee-1", "2026-06-15", harness.database);
+
+    assert.equal(harness.sessionMode, "WFH");
+    assert.equal(harness.sessionModeWrites, 0);
   });
 });

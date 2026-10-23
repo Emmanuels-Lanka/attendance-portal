@@ -8,9 +8,11 @@ import { hasPermission } from "@/lib/auth/permissions";
 import { requireUser, AuthorizationError } from "@/lib/auth/session";
 import {
   DailyAttendanceCorrectionAccessError,
+  DailyAttendanceCorrectionPendingRequestExistsError,
   DailyAttendanceCorrectionReviewerNotFoundError,
   DailyAttendanceCorrectionSubjectUserNotFoundError,
   DailyAttendanceCorrectionTargetNotFoundError,
+  submitAttendanceSessionModeCorrection,
   submitDailyAttendanceCorrection,
 } from "@/lib/attendance/correction-service";
 
@@ -39,6 +41,11 @@ const correctionFormSchema = z.object({
 ), {
   message: "Enter a corrected IN or OUT time, or select a time to remove. Do not enter and remove the same time.",
 });
+const sessionModeCorrectionFormSchema = z.object({
+  sessionId: z.string().min(1),
+  requestedMode: z.enum(["OFFICE", "WFH"]),
+  reason: z.string().trim().min(1, "A correction reason is required.").max(500),
+});
 
 function requestedInstant(value: string, timeZone: string) {
   const instant = fromZonedTime(value, timeZone);
@@ -55,6 +62,7 @@ function actionError(error: unknown) {
   if (error instanceof z.ZodError) return error.issues[0]?.message ?? "Check the correction details.";
   if (
     error instanceof DailyAttendanceCorrectionAccessError
+    || error instanceof DailyAttendanceCorrectionPendingRequestExistsError
     || error instanceof DailyAttendanceCorrectionReviewerNotFoundError
     || error instanceof DailyAttendanceCorrectionSubjectUserNotFoundError
     || error instanceof DailyAttendanceCorrectionTargetNotFoundError
@@ -97,6 +105,34 @@ export async function submitAttendanceCorrectionAction(
     revalidatePath("/attendance/corrections");
     revalidatePath("/dashboard");
     return { success: "Your attendance correction request was submitted for review." };
+  } catch (error) {
+    return { error: actionError(error) };
+  }
+}
+
+export async function submitAttendanceSessionModeCorrectionAction(
+  _state: AttendanceCorrectionSubmissionState,
+  formData: FormData,
+): Promise<AttendanceCorrectionSubmissionState> {
+  const actor = await requireUser();
+  if (actor.role !== "EMPLOYEE" || !hasPermission(actor.role, "attendance:correction:submit")) {
+    throw new AuthorizationError();
+  }
+
+  try {
+    const parsed = sessionModeCorrectionFormSchema.parse({
+      sessionId: formData.get("sessionId"),
+      requestedMode: formData.get("requestedMode"),
+      reason: formData.get("reason"),
+    });
+    await submitAttendanceSessionModeCorrection(actor, parsed.sessionId, {
+      requestedMode: parsed.requestedMode,
+      reason: parsed.reason,
+    });
+    revalidatePath("/attendance/corrections");
+    revalidatePath("/dashboard");
+    revalidatePath("/attendance");
+    return { success: "Your work-mode correction request was submitted for review." };
   } catch (error) {
     return { error: actionError(error) };
   }

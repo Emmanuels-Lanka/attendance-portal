@@ -8,6 +8,7 @@ import {
   DailyAttendanceCorrectionAccessError,
   DailyAttendanceCorrectionConflictError,
   DailyAttendanceCorrectionReviewerScopeError,
+  DailyAttendanceCorrectionSelfApprovalError,
   DailyAttendanceCorrectionStageError,
   DailyAttendanceCorrectionTargetNotFoundError,
   decideDailyAttendanceCorrection,
@@ -34,6 +35,8 @@ export async function decideAttendanceCorrectionAction(
     });
     revalidatePath("/approvals/attendance-corrections");
     revalidatePath("/dashboard");
+    revalidatePath("/attendance");
+    revalidatePath("/attendance/corrections");
     return {
       success: result.status === "PENDING"
         ? "Correction advanced to HR review."
@@ -45,6 +48,7 @@ export async function decideAttendanceCorrectionAction(
       error instanceof DailyAttendanceCorrectionAccessError
       || error instanceof DailyAttendanceCorrectionConflictError
       || error instanceof DailyAttendanceCorrectionReviewerScopeError
+      || error instanceof DailyAttendanceCorrectionSelfApprovalError
       || error instanceof DailyAttendanceCorrectionStageError
       || error instanceof DailyAttendanceCorrectionTargetNotFoundError
     ) return { error: error.message };
