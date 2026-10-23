@@ -21,6 +21,7 @@ describe("role permissions", () => {
     assert.equal(hasPermission(Role.HR_ADMINISTRATOR, "holiday:manage"), true);
     assert.equal(hasPermission(Role.HR_ADMINISTRATOR, "reports:read"), true);
     assert.equal(hasPermission(Role.HR_ADMINISTRATOR, "leave:approve"), true);
+    assert.equal(hasPermission(Role.HR_ADMINISTRATOR, "leave:request:self:read"), true);
     assert.equal(hasPermission(Role.HR_ADMINISTRATOR, "attendance:correction:approve"), true);
     assert.equal(hasPermission(Role.HR_ADMINISTRATOR, "attendance:correction:submit"), true);
     assert.equal(canSubmitOwnAttendanceCorrection(Role.HR_ADMINISTRATOR), true);

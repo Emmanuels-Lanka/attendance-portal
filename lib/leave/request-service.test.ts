@@ -37,6 +37,7 @@ function createRequestDatabaseStub(options: {
   forceDecisionRace?: boolean;
   employeeDepartmentId?: string | null;
   managerDepartmentId?: string | null;
+  hrEmployeeLinked?: boolean;
 } = {}) {
   const supervisorStatus = options.supervisor ?? "assigned";
   const managerStatus = options.manager ?? "missing";
@@ -70,6 +71,15 @@ function createRequestDatabaseStub(options: {
       manager: null,
     }],
   ]);
+  if (options.hrEmployeeLinked) {
+    employees.set("hr-user", {
+      ...employees.get("employee-user-1")!,
+      id: "hr-employee-1",
+      userId: "hr-user",
+      name: "HR Administrator",
+      employeeId: "E-HR",
+    });
+  }
   const leaveTypes = new Set(["leave-type-1"]);
   const documents = new Map([
     ["document-1", { id: "document-1", employeeId: "employee-1" }],
@@ -79,6 +89,7 @@ function createRequestDatabaseStub(options: {
   const audits: Record<string, unknown>[] = [];
   const notifications: Record<string, unknown>[] = [];
   const attendanceAndBalanceWrites: string[] = [];
+  const leaveRequestQueries: { operation: "findMany" | "count"; where: Record<string, unknown> }[] = [];
   let nextId = 1;
   const tx = {
     employee: {
@@ -154,6 +165,7 @@ function createRequestDatabaseStub(options: {
         skip?: number;
         take?: number;
       }) => {
+        leaveRequestQueries.push({ operation: "findMany", where });
         return requests.filter((request) => {
           const employee = [...employees.values()].find((candidate) => candidate.id === request.employeeId);
           const scopeMatches = where.currentApproverId === undefined || (where.currentApprovalStage === "MANAGER"
@@ -228,8 +240,10 @@ function createRequestDatabaseStub(options: {
         Object.assign(request, data);
         return { count: 1 };
       },
-      count: async ({ where }: { where: { employeeId: string } }) => requests
-        .filter((request) => request.employeeId === where.employeeId).length,
+      count: async ({ where }: { where: { employeeId: string } }) => {
+        leaveRequestQueries.push({ operation: "count", where });
+        return requests.filter((request) => request.employeeId === where.employeeId).length;
+      },
       findFirst: async ({ where }: { where: { id: string; employeeId: string } }) => requests
         .find((request) => request.id === where.id && request.employeeId === where.employeeId) ?? null,
     },
@@ -250,7 +264,29 @@ function createRequestDatabaseStub(options: {
     ...tx,
     $transaction: async <T>(operation: (transaction: typeof tx) => Promise<T>) => operation(tx),
   } as never;
-  return { database, requests, audits, notifications, attendanceAndBalanceWrites };
+  const seedLeaveRequest = (employeeId: string) => {
+    const request = {
+      id: `leave-request-${nextId++}`,
+      employeeId,
+      leaveTypeId: "leave-type-1",
+      startDate: new Date("2026-10-12T00:00:00.000Z"),
+      endDate: new Date("2026-10-13T00:00:00.000Z"),
+      reason: "Test request",
+      attachmentDocumentId: null,
+      status: LeaveRequestStatus.PENDING,
+      currentApprovalStage: "SUPERVISOR",
+      currentApproverId: "supervisor-user-1",
+      decisionReason: null,
+      reviewedById: null,
+      reviewedAt: null,
+      createdAt: new Date("2026-10-05T10:00:00.000Z"),
+      updatedAt: new Date("2026-10-05T10:00:00.000Z"),
+      leaveType: { id: "leave-type-1", name: "Annual Leave" },
+    };
+    requests.push(request);
+    return request;
+  };
+  return { database, requests, audits, notifications, attendanceAndBalanceWrites, leaveRequestQueries, seedLeaveRequest };
 }
 
 describe("Leave request validation", () => {
@@ -341,6 +377,35 @@ describe("Leave request submission and self-service history", () => {
       getOwnLeaveRequest(employeeActor, "leave-request-2", stub.database),
       LeaveRequestNotFoundError,
     );
+  });
+
+  it("allows a linked HR Administrator to read only their own Leave request history", async () => {
+    const stub = createRequestDatabaseStub({ hrEmployeeLinked: true });
+    const ownRequest = stub.seedLeaveRequest("hr-employee-1");
+    stub.seedLeaveRequest("employee-2");
+
+    const history = await listOwnLeaveRequests(
+      { id: "hr-user", role: Role.HR_ADMINISTRATOR },
+      {},
+      stub.database,
+    );
+
+    assert.equal(history.total, 1);
+    assert.deepEqual(history.items.map((request) => request.id), [ownRequest.id]);
+    assert.deepEqual(stub.leaveRequestQueries, [
+      { operation: "findMany", where: { employeeId: "hr-employee-1" } },
+      { operation: "count", where: { employeeId: "hr-employee-1" } },
+    ]);
+  });
+
+  it("returns the existing controlled error for an HR Administrator without a linked Employee", async () => {
+    const stub = createRequestDatabaseStub();
+
+    await assert.rejects(
+      listOwnLeaveRequests({ id: "hr-user", role: Role.HR_ADMINISTRATOR }, {}, stub.database),
+      LeaveRequestEmployeeNotFoundError,
+    );
+    assert.deepEqual(stub.leaveRequestQueries, []);
   });
 });
 

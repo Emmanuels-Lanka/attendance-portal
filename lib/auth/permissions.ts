@@ -52,6 +52,7 @@ const rolePermissions: Record<Exclude<Role, "ADMIN">, readonly Permission[]> = {
     "attendance:correction:submit",
     "leave:manage",
     "leave:approve",
+    "leave:request:self:read",
     "shift:manage",
     "holiday:manage",
     "reports:read",
