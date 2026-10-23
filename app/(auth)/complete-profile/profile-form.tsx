@@ -1,8 +1,10 @@
 "use client";
 
 import { useActionState } from "react";
+import { useState } from "react";
 import { completeEmployeeProfileAction } from "./actions";
 import type { EmployeeProfileActionState } from "./actions";
+import { employeeGenderValues } from "@/lib/employees/gender";
 
 type ProfileField = {
   name: string;
@@ -29,8 +31,8 @@ const requiredFields: ProfileField[] = [
 ];
 
 const spouseFields: ProfileField[] = [
-  { name: "spouseName", label: "Spouse name", maxLength: 120, required: true },
-  { name: "spouseId", label: "Spouse ID", maxLength: 120, required: true },
+  { name: "spouseName", label: "Spouse name", maxLength: 120 },
+  { name: "spouseId", label: "Spouse ID", maxLength: 120 },
 ];
 
 const motherFields: ProfileField[] = [
@@ -61,6 +63,8 @@ function Field({ field, defaultValue }: { field: ProfileField; defaultValue?: st
 
 export function EmployeeProfileCompletionForm({ contactEmail }: { contactEmail: string }) {
   const [state, formAction, pending] = useActionState<EmployeeProfileActionState, FormData>(completeEmployeeProfileAction, null);
+  const [gender, setGender] = useState("");
+  const [genderCustom, setGenderCustom] = useState("");
 
   return (
     <form action={formAction} aria-busy={pending} className="space-y-7">
@@ -76,18 +80,66 @@ export function EmployeeProfileCompletionForm({ contactEmail }: { contactEmail: 
       <section className="space-y-4 border-t border-[var(--line)] pt-5" aria-labelledby="spouse-details-title">
         <div>
           <h2 id="spouse-details-title" className="text-base font-semibold">Spouse details</h2>
-          <p className="mt-1 text-xs text-[var(--muted)]">Both fields are required.</p>
+          <p className="mt-1 text-xs text-[var(--muted)]">Both fields are optional.</p>
         </div>
         <div className="grid gap-4 sm:grid-cols-2">{spouseFields.map((field) => <Field key={field.name} field={field} />)}</div>
       </section>
 
+      <section className="space-y-4 border-t border-[var(--line)] pt-5" aria-labelledby="gender-title">
+        <div>
+          <h2 id="gender-title" className="text-base font-semibold">Gender</h2>
+          <p className="mt-1 text-xs text-[var(--muted)]">This field is optional.</p>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label htmlFor="gender" className="mb-1.5 block text-sm font-semibold">Gender (optional)</label>
+            <select
+              id="gender"
+              name="gender"
+              value={gender}
+              onChange={(event) => {
+                setGender(event.target.value);
+                if (event.target.value !== "CUSTOM") setGenderCustom("");
+              }}
+              className="min-h-10 w-full rounded-md border border-[var(--line)] bg-white px-3 py-2 text-sm text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--blue)]"
+            >
+              <option value="">Select an option</option>
+              {employeeGenderValues.map((value) => (
+                <option key={value} value={value}>
+                  {value === "MALE" ? "Male" : value === "FEMALE" ? "Female" : value === "PREFER_NOT_TO_SAY" ? "Prefer Not to Say" : "Custom"}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div hidden={gender !== "CUSTOM"}>
+            <label htmlFor="genderCustom" className="mb-1.5 block text-sm font-semibold">Specify your gender</label>
+            <input
+              id="genderCustom"
+              name="genderCustom"
+              type="text"
+              maxLength={120}
+              required={gender === "CUSTOM"}
+              value={genderCustom}
+              onChange={(event) => setGenderCustom(event.target.value)}
+              className="min-h-10 w-full rounded-md border border-[var(--line)] bg-white px-3 py-2 text-sm text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--blue)]"
+            />
+          </div>
+        </div>
+      </section>
+
       <section className="space-y-4 border-t border-[var(--line)] pt-5" aria-labelledby="mother-details-title">
-        <h2 id="mother-details-title" className="text-base font-semibold">Mother details</h2>
+        <div>
+          <h2 id="mother-details-title" className="text-base font-semibold">Mother details</h2>
+          <p className="mt-1 text-xs text-[var(--muted)]">At least one parent’s name and ID are required; contact numbers are optional.</p>
+        </div>
         <div className="grid gap-4 sm:grid-cols-2">{motherFields.map((field) => <Field key={field.name} field={field} />)}</div>
       </section>
 
       <section className="space-y-4 border-t border-[var(--line)] pt-5" aria-labelledby="father-details-title">
-        <h2 id="father-details-title" className="text-base font-semibold">Father details</h2>
+        <div>
+          <h2 id="father-details-title" className="text-base font-semibold">Father details</h2>
+          <p className="mt-1 text-xs text-[var(--muted)]">Enter both the name and ID for this parent, or leave this group blank.</p>
+        </div>
         <div className="grid gap-4 sm:grid-cols-2">{fatherFields.map((field) => <Field key={field.name} field={field} />)}</div>
       </section>
 

@@ -4,6 +4,7 @@ import type { Prisma, PrismaClient, Role } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { employeeProfileRequiredFields } from "@/lib/employees/profile-requirements";
+import { employeeGenderValues } from "@/lib/employees/gender";
 
 function nullableText(maxLength: number) {
   return z.preprocess(
@@ -23,6 +24,11 @@ const dateOfBirthSchema = z.string()
   .refine((value) => value <= new Date().toISOString().slice(0, 10), "Date of birth cannot be in the future.")
   .transform((value) => new Date(`${value}T00:00:00.000Z`));
 
+const optionalGenderSchema = nullableText(32).refine(
+  (value) => value === null || employeeGenderValues.some((choice) => choice === value),
+  "Choose a valid gender option.",
+);
+
 export const employeeProfileCompletionSchema = z.object({
   permanentAddress: z.string().trim().min(1, "Permanent address is required.").max(2000),
   currentAddress: z.string().trim().min(1, "Current address is required.").max(2000),
@@ -36,19 +42,62 @@ export const employeeProfileCompletionSchema = z.object({
   linkedInId: z.string().trim().min(1, "LinkedIn ID is required.").max(512),
   dateOfBirth: dateOfBirthSchema,
   maritalStatus: z.string().trim().min(1, "Marital status is required.").max(50),
-  spouseName: z.string().trim().min(1, "Spouse name is required.").max(120),
-  spouseId: z.string().trim().min(1, "Spouse ID is required.").max(120),
+  spouseName: nullableText(120),
+  spouseId: nullableText(120),
   motherName: nullableText(120),
   motherId: nullableText(120),
   motherContactNumber: nullableText(64),
   fatherName: nullableText(120),
   fatherId: nullableText(120),
   fatherContactNumber: nullableText(64),
+  gender: optionalGenderSchema,
+  genderCustom: nullableText(120),
 }).superRefine((profile, context) => {
   for (const field of employeeProfileRequiredFields) {
     if (profile[field] === null || profile[field] === undefined) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${field} is required.` });
     }
+  }
+
+  const motherComplete = profile.motherName !== null && profile.motherId !== null;
+  const fatherComplete = profile.fatherName !== null && profile.fatherId !== null;
+  const motherHasAnyValue = profile.motherName !== null || profile.motherId !== null || profile.motherContactNumber !== null;
+  const fatherHasAnyValue = profile.fatherName !== null || profile.fatherId !== null || profile.fatherContactNumber !== null;
+
+  if (motherHasAnyValue && !motherComplete) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["motherName"],
+      message: "Enter both the mother's name and ID, or leave all mother details blank.",
+    });
+  }
+  if (fatherHasAnyValue && !fatherComplete) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["fatherName"],
+      message: "Enter both the father's name and ID, or leave all father details blank.",
+    });
+  }
+  if (!motherComplete && !fatherComplete) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["motherName"],
+      message: "Provide both the name and ID for at least one parent.",
+    });
+  }
+  if (profile.gender === "CUSTOM" && profile.genderCustom === null) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["genderCustom"],
+      message: "Specify your gender when selecting Custom.",
+    });
+  }
+  if (profile.gender !== "CUSTOM" && profile.genderCustom !== null) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["genderCustom"],
+      message: "Custom gender text is only allowed when selecting Custom.",
+    });
   }
 });
 

@@ -25,6 +25,8 @@ const validProfile = {
   maritalStatus: "Single",
   spouseName: "Spouse Name",
   spouseId: "SPOUSE-100",
+  motherName: "Mother Name",
+  motherId: "MOTHER-100",
 };
 
 function createProfileDatabase(options: { userId?: string; onboardingRequired?: boolean; profileCompletedAt?: Date | null } = {}) {
@@ -119,27 +121,72 @@ describe("employee profile validation", () => {
     }
   });
 
-  it("accepts optional mother and father fields as empty and normalizes email", () => {
-    const parsed = employeeProfileCompletionSchema.parse(validProfile);
+  it("accepts optional spouse and gender fields and normalizes blank values", () => {
+    const parsed = employeeProfileCompletionSchema.parse({
+      ...validProfile,
+      spouseName: "",
+      spouseId: undefined,
+      gender: "",
+      genderCustom: "",
+    });
 
     assert.equal(parsed.email, "employee@example.com");
-    assert.equal(parsed.motherName, null);
-    assert.equal(parsed.motherId, null);
+    assert.equal(parsed.spouseName, null);
+    assert.equal(parsed.spouseId, null);
+    assert.equal(parsed.gender, null);
+    assert.equal(parsed.genderCustom, null);
+    assert.equal(parsed.fatherName, null);
+    assert.equal(parsed.fatherId, null);
+    assert.equal(parsed.fatherContactNumber, null);
+  });
+
+  it("requires both name and ID for at least one parent, while allowing either complete group", () => {
+    const emptyParents = { motherName: "", motherId: "", fatherName: "", fatherId: "" };
+    assert.equal(employeeProfileCompletionSchema.safeParse({ ...validProfile, ...emptyParents }).success, false);
+    assert.equal(employeeProfileCompletionSchema.safeParse({ ...validProfile, fatherName: "Father", fatherId: "FATHER-1", motherName: "", motherId: "" }).success, true);
+    assert.equal(employeeProfileCompletionSchema.safeParse({ ...validProfile, fatherName: "Father", fatherId: "FATHER-1" }).success, true);
+    assert.equal(employeeProfileCompletionSchema.safeParse({ ...validProfile, fatherName: "Father", fatherId: "FATHER-1", motherName: "Mother", motherId: "MOTHER-1" }).success, true);
+  });
+
+  it("rejects each partial parent group, including contact-only details", () => {
+    const completeMother = { motherName: "Mother", motherId: "MOTHER-1" };
+    const completeFather = { fatherName: "Father", fatherId: "FATHER-1" };
+    assert.equal(employeeProfileCompletionSchema.safeParse({ ...validProfile, ...completeFather, motherName: "Mother", motherId: "" }).success, false);
+    assert.equal(employeeProfileCompletionSchema.safeParse({ ...validProfile, ...completeFather, motherName: "", motherId: "MOTHER-1" }).success, false);
+    assert.equal(employeeProfileCompletionSchema.safeParse({ ...validProfile, ...completeMother, fatherName: "Father", fatherId: "" }).success, false);
+    assert.equal(employeeProfileCompletionSchema.safeParse({ ...validProfile, ...completeMother, fatherName: "", fatherId: "FATHER-1" }).success, false);
+    assert.equal(employeeProfileCompletionSchema.safeParse({ ...validProfile, motherName: "", motherId: "", motherContactNumber: "+94770000000", fatherName: "", fatherId: "" }).success, false);
+  });
+
+  it("keeps parent contact optional, normalizes blanks, and preserves field length limits", () => {
+    const parsed = employeeProfileCompletionSchema.parse({ ...validProfile, motherContactNumber: "", fatherName: "", fatherId: "", fatherContactNumber: "" });
     assert.equal(parsed.motherContactNumber, null);
     assert.equal(parsed.fatherName, null);
     assert.equal(parsed.fatherId, null);
     assert.equal(parsed.fatherContactNumber, null);
-    assert.equal(parsed.spouseName, "Spouse Name");
-    assert.equal(parsed.spouseId, "SPOUSE-100");
+    assert.equal(employeeProfileCompletionSchema.safeParse({ ...validProfile, motherName: "M".repeat(121) }).success, false);
+    assert.equal(employeeProfileCompletionSchema.safeParse({ ...validProfile, motherId: "I".repeat(121) }).success, false);
+    assert.equal(employeeProfileCompletionSchema.safeParse({ ...validProfile, motherContactNumber: "1".repeat(65) }).success, false);
   });
 
-  it("requires spouse name and ID regardless of marital status", () => {
-    for (const maritalStatus of ["Single", "Married"]) {
-      assert.equal(employeeProfileCompletionSchema.safeParse({ ...validProfile, maritalStatus, spouseName: "" }).success, false);
-      assert.equal(employeeProfileCompletionSchema.safeParse({ ...validProfile, maritalStatus, spouseId: "" }).success, false);
-      assert.equal(employeeProfileCompletionSchema.safeParse({ ...validProfile, maritalStatus, spouseName: undefined }).success, false);
-      assert.equal(employeeProfileCompletionSchema.safeParse({ ...validProfile, maritalStatus, spouseId: undefined }).success, false);
+  it("validates optional canonical and custom gender values", () => {
+    for (const gender of ["MALE", "FEMALE", "PREFER_NOT_TO_SAY", "CUSTOM"]) {
+      const result = employeeProfileCompletionSchema.safeParse({
+        ...validProfile,
+        gender,
+        genderCustom: gender === "CUSTOM" ? " Non-binary " : "",
+      });
+      assert.equal(result.success, true, `${gender} should be accepted`);
+      if (result.success) {
+        assert.equal(result.data.gender, gender);
+        assert.equal(result.data.genderCustom, gender === "CUSTOM" ? "Non-binary" : null);
+      }
     }
+    assert.equal(employeeProfileCompletionSchema.safeParse({ ...validProfile, gender: undefined }).success, true);
+    assert.equal(employeeProfileCompletionSchema.safeParse({ ...validProfile, gender: "UNKNOWN" }).success, false);
+    assert.equal(employeeProfileCompletionSchema.safeParse({ ...validProfile, gender: "CUSTOM", genderCustom: "   " }).success, false);
+    assert.equal(employeeProfileCompletionSchema.safeParse({ ...validProfile, gender: "MALE", genderCustom: "stale" }).success, false);
+    assert.equal(employeeProfileCompletionSchema.safeParse({ ...validProfile, gender: "CUSTOM", genderCustom: "G".repeat(121) }).success, false);
   });
 
   it("rejects invalid dates and future dates", () => {
@@ -216,9 +263,24 @@ describe("employee profile completion service", () => {
     assert.equal(stub.getProfile()?.email, "employee@example.com");
     assert.equal(stub.getProfile()?.motherId, "MOTHER-100");
     assert.equal(stub.getProfile()?.fatherId, "FATHER-100");
+    assert.equal(stub.getProfile()?.gender, null);
+    assert.equal(stub.getProfile()?.genderCustom, null);
     assert.equal("password" in (stub.getProfile() ?? {}), false);
     assert.deepEqual(stub.getAuditEntries(), [{ employeeId: "user-1", actorId: "user-1", actionType: "EMPLOYEE_PROFILE_COMPLETED" }]);
     assert.equal(await getEmployeeProfileOnboardingStatus("user-1", stub.database).then(({ required }) => required), false);
+  });
+
+  it("persists every supported gender choice and trimmed custom text", async () => {
+    for (const gender of ["MALE", "FEMALE", "PREFER_NOT_TO_SAY", "CUSTOM"] as const) {
+      const stub = createProfileDatabase();
+      await completeEmployeeProfileForUser("user-1", {
+        ...validProfile,
+        gender,
+        genderCustom: gender === "CUSTOM" ? "  Non-binary  " : "",
+      }, stub.database, completedAt);
+      assert.equal(stub.getProfile()?.gender, gender);
+      assert.equal(stub.getProfile()?.genderCustom, gender === "CUSTOM" ? "Non-binary" : null);
+    }
   });
 
   it("does not permit a second completion after the employee is complete", async () => {

@@ -20,7 +20,7 @@ import {
   updateEmployee,
   writeEmployeeAuditEvent,
 } from "@/lib/employees/service";
-import { createEmployeeSchema, updateEmployeeSchema } from "@/lib/employees/validation";
+import { adminEmployeeProfilePatchSchema, createEmployeeSchema, updateEmployeeSchema } from "@/lib/employees/validation";
 import { OrganizationNotFoundError } from "@/lib/organization/service";
 import { ShiftAssignmentConflictError, ShiftNotFoundError } from "@/lib/shifts/service";
 
@@ -349,6 +349,86 @@ describe("employee management", () => {
     assert.equal("employeeRecordId" in employeeUpdate, false);
     assert.equal("userId" in employeeUpdate, false);
     assert.equal(stub.getUpdateData()?.email, employeeInput.email);
+  });
+
+  it("accepts and round-trips all supported admin gender profile values", async () => {
+    for (const gender of ["MALE", "FEMALE", "PREFER_NOT_TO_SAY", "CUSTOM"] as const) {
+      const parsed = adminEmployeeProfilePatchSchema.parse({
+        gender,
+        genderCustom: gender === "CUSTOM" ? "  Non-binary  " : "",
+      });
+      assert.equal(parsed.gender, gender);
+      assert.equal(parsed.genderCustom, gender === "CUSTOM" ? "Non-binary" : null);
+
+      const stub = createDatabaseStub();
+      await createEmployee(admin, employeeInput, stub.database);
+      await updateEmployee(admin, "employee-1", {
+        ...employeeInput,
+        password: "",
+        profile: parsed,
+      }, stub.database);
+      const employeeUpdate = (stub.getUpdateData()?.employee as { upsert: { update: Record<string, unknown> } }).upsert.update;
+      assert.deepEqual(employeeUpdate.profile, {
+        upsert: {
+          create: { gender, genderCustom: gender === "CUSTOM" ? "Non-binary" : null },
+          update: { gender, genderCustom: gender === "CUSTOM" ? "Non-binary" : null },
+        },
+      });
+    }
+    assert.deepEqual(adminEmployeeProfilePatchSchema.parse({ gender: "", genderCustom: "" }), {
+      gender: null,
+      genderCustom: null,
+    });
+    assert.equal(adminEmployeeProfilePatchSchema.safeParse({ gender: "UNKNOWN" }).success, false);
+    assert.equal(adminEmployeeProfilePatchSchema.safeParse({ gender: "CUSTOM", genderCustom: "" }).success, false);
+
+    const stub = createDatabaseStub();
+    await createEmployee(admin, employeeInput, stub.database);
+    await updateEmployee(admin, "employee-1", {
+      ...employeeInput,
+      password: "",
+      profile: { gender: "CUSTOM", genderCustom: "Non-binary" },
+    }, stub.database);
+    const employeeUpdate = (stub.getUpdateData()?.employee as { upsert: { update: Record<string, unknown> } }).upsert.update;
+    assert.deepEqual(employeeUpdate.profile, {
+      upsert: {
+        create: { gender: "CUSTOM", genderCustom: "Non-binary" },
+        update: { gender: "CUSTOM", genderCustom: "Non-binary" },
+      },
+    });
+
+    await updateEmployee(admin, "employee-1", {
+      ...employeeInput,
+      password: "",
+      profile: { gender: "MALE" },
+    }, stub.database);
+    const standardGenderUpdate = (stub.getUpdateData()?.employee as { upsert: { update: Record<string, unknown> } }).upsert.update;
+    assert.deepEqual(standardGenderUpdate.profile, {
+      upsert: {
+        create: { gender: "MALE", genderCustom: null },
+        update: { gender: "MALE", genderCustom: null },
+      },
+    });
+  });
+
+  it("does not reopen onboarding when an administrator clears optional spouse fields", async () => {
+    const stub = createDatabaseStub();
+    await createEmployee(admin, employeeInput, stub.database);
+    await updateEmployee(admin, "employee-1", {
+      ...employeeInput,
+      password: "",
+      profile: { spouseName: "", spouseId: "" },
+    }, stub.database);
+
+    const employeeUpdate = (stub.getUpdateData()?.employee as { upsert: { update: Record<string, unknown> } }).upsert.update;
+    assert.equal("profileOnboardingRequired" in employeeUpdate, false);
+    assert.equal("profileCompletedAt" in employeeUpdate, false);
+    assert.deepEqual(employeeUpdate.profile, {
+      upsert: {
+        create: { spouseName: null, spouseId: null },
+        update: { spouseName: null, spouseId: null },
+      },
+    });
   });
 
   it("reopens profile completion when an admin clears a mandatory profile field", async () => {

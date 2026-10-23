@@ -11,6 +11,4 @@ export const employeeProfileRequiredFields = [
   "linkedInId",
   "dateOfBirth",
   "maritalStatus",
-  "spouseName",
-  "spouseId",
 ] as const;

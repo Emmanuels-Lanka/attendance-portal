@@ -13,6 +13,13 @@ function dateOrMissing(value: Date | null | undefined) {
   return value ? value.toISOString().slice(0, 10) : "Not provided";
 }
 
+function genderLabel(gender: string | null | undefined, custom: string | null | undefined) {
+  if (gender === "MALE") return "Male";
+  if (gender === "FEMALE") return "Female";
+  if (gender === "PREFER_NOT_TO_SAY") return "Prefer Not to Say";
+  return gender === "CUSTOM" ? valueOrMissing(custom) : "Not provided";
+}
+
 function roleLabel(role: string | undefined) {
   if (role === "ADMIN") return "Super Administrator";
   if (role === "HR_ADMINISTRATOR") return "HR Administrator";
@@ -71,6 +78,7 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
           <div><dt className="text-xs text-[var(--muted)]">Contact number</dt><dd className="mt-1 text-sm font-medium">{valueOrMissing(employee.profile?.contactNumber)}</dd></div>
           <div><dt className="text-xs text-[var(--muted)]">Date of birth</dt><dd className="mt-1 text-sm font-medium">{dateOrMissing(employee.profile?.dateOfBirth)}</dd></div>
           <div><dt className="text-xs text-[var(--muted)]">LinkedIn ID</dt><dd className="mt-1 text-sm font-medium">{valueOrMissing(employee.profile?.linkedInId)}</dd></div>
+          <div><dt className="text-xs text-[var(--muted)]">Gender</dt><dd className="mt-1 text-sm font-medium">{genderLabel(employee.profile?.gender, employee.profile?.genderCustom)}</dd></div>
           <div><dt className="text-xs text-[var(--muted)]">Marital status</dt><dd className="mt-1 text-sm font-medium">{valueOrMissing(employee.profile?.maritalStatus)}</dd></div>
           <div><dt className="text-xs text-[var(--muted)]">Spouse</dt><dd className="mt-1 text-sm font-medium">{employee.profile?.spouseName || employee.profile?.spouseId ? `${employee.profile?.spouseName ?? "Not provided"} · ${employee.profile?.spouseId ?? "Not provided"}` : "Not provided"}</dd></div>
           <div className="sm:col-span-2"><dt className="text-xs text-[var(--muted)]">Permanent address</dt><dd className="mt-1 whitespace-pre-wrap text-sm font-medium">{valueOrMissing(employee.profile?.permanentAddress)}</dd></div>

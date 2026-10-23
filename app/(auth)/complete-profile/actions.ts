@@ -28,6 +28,8 @@ const profileFieldNames = [
   "fatherName",
   "fatherId",
   "fatherContactNumber",
+  "gender",
+  "genderCustom",
 ] as const;
 
 export async function completeEmployeeProfileAction(

@@ -476,6 +476,8 @@ model EmployeeProfile {
   fatherName                    String?   @db.VarChar(120)
   fatherId                      String?   @db.VarChar(120)
   fatherContactNumber           String?   @db.VarChar(64)
+  gender                        String?   @db.VarChar(32)
+  genderCustom                  String?   @db.VarChar(120)
   createdAt                     DateTime  @default(now()) @db.Timestamptz(3)
   updatedAt                     DateTime  @updatedAt @db.Timestamptz(3)
   employee                      Employee  @relation(fields: [employeeRecordId], references: [id], onDelete: Cascade)

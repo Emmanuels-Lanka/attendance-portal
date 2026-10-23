@@ -11,6 +11,11 @@ const profileMigration = readFileSync(join(
   process.cwd(),
   "prisma/migrations/20261003000003_employee_profile_completion/migration.sql",
 ), "utf8");
+const genderMigration = readFileSync(join(
+  process.cwd(),
+  "prisma/migrations/20261024000000_employee_profile_gender/migration.sql",
+), "utf8");
+const schema = readFileSync(join(process.cwd(), "prisma/schema.prisma"), "utf8");
 
 describe("Employee foundation migration", () => {
   it("backfills each existing User using its existing ID and available name/code only", () => {
@@ -33,5 +38,13 @@ describe("Employee foundation migration", () => {
     assert.match(profileMigration, /REFERENCES "Employee"\("id"\)/);
     assert.doesNotMatch(profileMigration, /INSERT INTO "EmployeeProfile"|UPDATE "Employee"/);
     assert.doesNotMatch(profileMigration, /ALTER TABLE "AttendanceRecord"|ALTER TABLE "WorkSession"|ALTER TABLE "User"/);
+  });
+
+  it("adds nullable gender columns in a new migration without defaults or data backfills", () => {
+    assert.match(schema, /gender\s+String\?\s+@db\.VarChar\(32\)/);
+    assert.match(schema, /genderCustom\s+String\?\s+@db\.VarChar\(120\)/);
+    assert.match(genderMigration, /ALTER TABLE "EmployeeProfile"\s+ADD COLUMN "gender" VARCHAR\(32\),\s+ADD COLUMN "genderCustom" VARCHAR\(120\);/);
+    assert.doesNotMatch(genderMigration, /NOT NULL|DEFAULT|UPDATE\s+"EmployeeProfile"|INSERT INTO\s+"EmployeeProfile"/i);
+    assert.doesNotMatch(profileMigration, /gender/);
   });
 });

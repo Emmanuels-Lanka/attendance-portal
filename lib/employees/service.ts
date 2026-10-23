@@ -82,6 +82,8 @@ export const adminEmployeeSelect = {
       fatherName: true,
       fatherId: true,
       fatherContactNumber: true,
+      gender: true,
+      genderCustom: true,
     },
   },
 } as const;
@@ -508,7 +510,9 @@ export async function updateEmployee(admin: EmployeeAdmin, employeeId: string, i
 
 function definedProfileFields(profile: AdminEmployeeProfilePatch | undefined) {
   if (!profile) return {};
-  return Object.fromEntries(Object.entries(profile).filter(([, value]) => value !== undefined));
+  const fields = Object.fromEntries(Object.entries(profile).filter(([, value]) => value !== undefined));
+  if (fields.gender !== undefined && fields.gender !== "CUSTOM") fields.genderCustom = null;
+  return fields;
 }
 
 export async function setEmployeeActive(admin: EmployeeAdmin, employeeId: string, isActive: boolean, database: EmployeeDatabase = prisma) {

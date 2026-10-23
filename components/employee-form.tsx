@@ -2,9 +2,11 @@
 
 import Link from "next/link";
 import { useActionState } from "react";
+import { useState } from "react";
 import { createEmployeeAction, updateEmployeeAction } from "@/app/(workspace)/admin/employees/actions";
 import type { EmployeeActionState } from "@/app/(workspace)/admin/employees/actions";
 import type { Role } from "@prisma/client";
+import { employeeGenderValues } from "@/lib/employees/gender";
 
 type EmployeeFormValues = {
   id: string;
@@ -45,6 +47,8 @@ type EmployeeFormValues = {
     fatherName: string | null;
     fatherId: string | null;
     fatherContactNumber: string | null;
+    gender: string | null;
+    genderCustom: string | null;
   } | null;
 };
 
@@ -71,6 +75,8 @@ export function EmployeeForm({
 }) {
   const boundUpdateAction = employee ? updateEmployeeAction.bind(null, employee.id) : createEmployeeAction;
   const [state, formAction, pending] = useActionState<EmployeeActionState, FormData>(boundUpdateAction, null);
+  const [gender, setGender] = useState(employee?.profile?.gender ?? "");
+  const [genderCustom, setGenderCustom] = useState(employee?.profile?.genderCustom ?? "");
 
   return (
     <form action={formAction} className="max-w-4xl space-y-5 rounded-lg border border-[var(--line)] bg-white p-5 shadow-sm sm:p-7">
@@ -215,6 +221,38 @@ export function EmployeeForm({
             <div>
               <label htmlFor="maritalStatus" className="mb-2 block text-sm font-semibold">Marital status</label>
               <input id="maritalStatus" name="maritalStatus" maxLength={50} defaultValue={employee.profile?.maritalStatus ?? ""} className="h-10 w-full rounded-md border border-[var(--line)] bg-white px-3 text-sm" />
+            </div>
+            <div>
+              <label htmlFor="gender" className="mb-2 block text-sm font-semibold">Gender</label>
+              <select
+                id="gender"
+                name="gender"
+                value={gender}
+                onChange={(event) => {
+                  setGender(event.target.value);
+                  if (event.target.value !== "CUSTOM") setGenderCustom("");
+                }}
+                className="h-10 w-full rounded-md border border-[var(--line)] bg-white px-3 text-sm"
+              >
+                <option value="">Not provided</option>
+                {employeeGenderValues.map((value) => (
+                  <option key={value} value={value}>
+                    {value === "MALE" ? "Male" : value === "FEMALE" ? "Female" : value === "PREFER_NOT_TO_SAY" ? "Prefer Not to Say" : "Custom"}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div hidden={gender !== "CUSTOM"}>
+              <label htmlFor="genderCustom" className="mb-2 block text-sm font-semibold">Specify gender</label>
+              <input
+                id="genderCustom"
+                name="genderCustom"
+                maxLength={120}
+                required={gender === "CUSTOM"}
+                value={genderCustom}
+                onChange={(event) => setGenderCustom(event.target.value)}
+                className="h-10 w-full rounded-md border border-[var(--line)] bg-white px-3 text-sm"
+              />
             </div>
             <div>
               <label htmlFor="spouseName" className="mb-2 block text-sm font-semibold">Spouse name</label>

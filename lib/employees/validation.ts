@@ -3,6 +3,7 @@ import { isIanaTimeZone } from "@/lib/attendance/timezone";
 import { passwordWithinBcryptLimit } from "@/lib/auth/password";
 import { organizationAssignmentsSchema, organizationIdSchema } from "@/lib/organization/validation";
 import { shiftIdSchema } from "@/lib/shifts/validation";
+import { employeeGenderValues } from "@/lib/employees/gender";
 
 const countryTimeZones: Record<string, string> = {
   LK: "Asia/Colombo",
@@ -104,6 +105,26 @@ export const adminEmployeeProfilePatchSchema = z.object({
   fatherName: optionalNullableText(120),
   fatherId: optionalNullableText(120),
   fatherContactNumber: optionalNullableText(64),
+  gender: z.preprocess(
+    (value) => value === undefined ? undefined : value === null || typeof value === "string" && value.trim() === "" ? null : value,
+    z.enum(employeeGenderValues).nullable(),
+  ).optional(),
+  genderCustom: optionalNullableText(120),
+}).superRefine((profile, context) => {
+  if (profile.gender === "CUSTOM" && profile.genderCustom == null) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["genderCustom"],
+      message: "Specify a custom gender value.",
+    });
+  }
+  if (profile.gender !== "CUSTOM" && profile.genderCustom != null) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["genderCustom"],
+      message: "Custom gender text is only allowed when gender is Custom.",
+    });
+  }
 });
 
 export type AdminEmployeeProfilePatch = z.infer<typeof adminEmployeeProfilePatchSchema>;

@@ -47,6 +47,8 @@ function employeeFormData(formData: FormData) {
     ["fatherName", "fatherName"],
     ["fatherId", "fatherId"],
     ["fatherContactNumber", "fatherContactNumber"],
+    ["gender", "gender"],
+    ["genderCustom", "genderCustom"],
   ] as const;
 
   const profile = Object.fromEntries(profileFields
