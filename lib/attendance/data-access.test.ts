@@ -38,6 +38,44 @@ function session(id: string, startAt: string, endAt: string | null = null): Test
 }
 
 describe("employee attendance data access", () => {
+  it("reports missing Employee linkage while keeping HR dashboard reads scoped to the session user", async () => {
+    const filters: Array<Record<string, unknown>> = [];
+    const lookups: Array<{ userId: string }> = [];
+    const database = {
+      employee: {
+        findUnique: async ({ where }: { where: { userId: string } }) => {
+          lookups.push(where);
+          return null;
+        },
+      },
+      workSession: {
+        findFirst: async ({ where }: { where: Record<string, unknown> }) => {
+          filters.push(where);
+          return null;
+        },
+        findMany: async ({ where }: { where: Record<string, unknown> }) => {
+          filters.push(where);
+          return [];
+        },
+      },
+    } as never;
+    const hrUser = { id: "hr-session-user", timeZone: "Asia/Colombo" };
+
+    const dashboard = await getEmployeeAttendanceDashboard(
+      hrUser,
+      new Date("2026-06-15T12:00:00Z"),
+      database,
+    );
+    await getEmployeeAttendanceHistory(hrUser, database);
+
+    assert.equal(dashboard.employeeRecordFound, false);
+    assert.deepEqual(lookups, [{ userId: hrUser.id }, { userId: hrUser.id }]);
+    assert.equal(filters.length, 3);
+    for (const filter of filters) {
+      assert.deepEqual(filter.record, { employeeId: hrUser.id });
+    }
+  });
+
   it("scopes dashboard and history queries to the authenticated employee context", async () => {
     const filters: Array<Record<string, unknown>> = [];
     const database = {
@@ -55,9 +93,10 @@ describe("employee attendance data access", () => {
     } as never;
     const employee = { id: "session-user-17", timeZone: "Asia/Colombo" };
 
-    await getEmployeeAttendanceDashboard(employee, new Date("2026-06-15T12:00:00Z"), database);
+    const dashboard = await getEmployeeAttendanceDashboard(employee, new Date("2026-06-15T12:00:00Z"), database);
     await getEmployeeAttendanceHistory(employee, database);
 
+    assert.equal(dashboard.employeeRecordFound, true);
     assert.equal(filters.length, 3);
     for (const filter of filters) {
       assert.deepEqual(filter.record, { employeeId: employee.id });

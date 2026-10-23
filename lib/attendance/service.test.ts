@@ -209,6 +209,17 @@ describe("employee attendance transitions", () => {
     assert.equal(endStub.rawPunches[0].workMode, "WFH");
   });
 
+  it("records an HR Administrator's own attendance using the linked Employee record", async () => {
+    const stub = createDatabase();
+
+    const started = await applyAttendanceAction("hr-session-user", "IN", stub.database);
+
+    assert.equal(stub.sessions[0].employeeId, "hr-session-user");
+    assert.equal(started.id, stub.sessions[0].id);
+    assert.equal(stub.rawPunches[0].employeeId, "employee-record-1");
+    assert.equal(stub.rawPunches[0].punchType, "IN");
+  });
+
   it("does not create raw evidence for rejected actions or users without a linked Employee", async () => {
     const noEmployee = createDatabase([], "Asia/Colombo", false);
     await assert.rejects(
@@ -359,6 +370,15 @@ describe("employee attendance transitions", () => {
     assert.equal(attendanceActionSchema.safeParse({ action: "BREAK", location: testLocation }).success, false);
     assert.equal(attendanceActionSchema.safeParse({ action: "IN" }).success, false);
     assert.equal(attendanceActionSchema.safeParse({ action: "WFH_OUT", location: testLocation }).success, true);
+    assert.deepEqual(
+      attendanceActionSchema.parse({
+        action: "IN",
+        location: testLocation,
+        userId: "another-user",
+        employeeId: "another-employee",
+      }),
+      { action: "IN", location: testLocation },
+    );
     assert.equal(attendanceLocationSchema.safeParse({ latitude: 91, longitude: 0, accuracy: 0 }).success, false);
     assert.equal(attendanceLocationSchema.safeParse({ latitude: 0, longitude: 181, accuracy: 0 }).success, false);
     assert.equal(attendanceLocationSchema.safeParse({ latitude: 0, longitude: 0, accuracy: -0.1 }).success, false);

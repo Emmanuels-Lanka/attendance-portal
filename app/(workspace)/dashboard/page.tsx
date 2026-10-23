@@ -2,6 +2,7 @@ import { ArrowUpRight } from "lucide-react";
 import { formatInTimeZone } from "date-fns-tz";
 import Link from "next/link";
 import { AttendanceToday } from "@/components/attendance-today";
+import { HrSelfAttendance } from "@/components/hr-self-attendance";
 import { hasPermission } from "@/lib/auth/permissions";
 import { getAdminAttendanceSummary } from "@/lib/attendance/admin-dashboard";
 import { listCalculatedDailyAttendance } from "@/lib/attendance/daily-read";
@@ -82,9 +83,10 @@ export default async function DashboardPage() {
 
   if (user.role === "HR_ADMINISTRATOR") {
     const today = formatInTimeZone(new Date(), user.timeZone, "yyyy-MM-dd");
-    const [todaySummary, monthlyReport] = await Promise.all([
+    const [todaySummary, monthlyReport, personalAttendance] = await Promise.all([
       getAdminAttendanceSummary(user, { date: today }),
       getMonthlyAttendanceSummaryReport(user, currentMonth),
+      getEmployeeAttendanceDashboard(user),
     ]);
     const employeesWithWfh = todaySummary.employees.filter(({ day }) => day.sessions.some(({ session }) => session.mode === "WFH")).length;
     const departmentMetrics = new Map<string, {
@@ -153,6 +155,23 @@ export default async function DashboardPage() {
             {todayMetrics.map(({ label, value }) => <div key={label} className="min-h-24 rounded-lg border border-[var(--line)] bg-white p-4 shadow-sm"><p className="text-xs font-medium text-[var(--muted)]">{label}</p><p className="mt-3 text-xl font-semibold tabular-nums">{value}</p></div>)}
           </div>
         </section>
+
+        <HrSelfAttendance
+          employeeRecordFound={personalAttendance.employeeRecordFound}
+          controls={
+            <AttendanceToday
+              activeSession={personalAttendance.activeSession}
+              previousDayActiveSession={personalAttendance.previousDayActiveSession}
+              activeSessionTiming={personalAttendance.activeSessionTiming}
+              previousDayActiveSessionTiming={personalAttendance.previousDayActiveSessionTiming}
+              day={personalAttendance.day}
+              attendanceDate={personalAttendance.date}
+              timeZone={user.timeZone}
+              invalidSessions={personalAttendance.invalidSessions}
+              completedSessionToday={personalAttendance.completedSessionToday}
+            />
+          }
+        />
 
         <section aria-labelledby="month-attendance-title" className="space-y-3">
           <div><h2 id="month-attendance-title" className="text-base font-semibold">Month to date · {currentMonth}</h2><p className="mt-1 text-xs text-[var(--muted)]">Absences are reported only when an ABSENT status has been explicitly saved.</p></div>
