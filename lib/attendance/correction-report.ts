@@ -70,8 +70,31 @@ const correctionReportSelect = {
   requestedMode: true,
   originalStartAt: true,
   originalEndAt: true,
-  session: { select: { startAt: true } },
-  employee: { select: { id: true, name: true, employeeCode: true } },
+  attendanceDate: true,
+  dailyAttendance: { select: { date: true } },
+  session: { select: { startAt: true, endAt: true } },
+  auditLogs: {
+    where: {
+      actionType: {
+        in: [
+          "ATTENDANCE_CORRECTION_SUPERVISOR_APPROVED",
+          "ATTENDANCE_CORRECTION_HR_APPROVED",
+          "ATTENDANCE_CORRECTION_REJECTED",
+        ],
+      },
+    },
+    select: {
+      actionType: true,
+      actorId: true,
+      actor: { select: { name: true } },
+      createdAt: true,
+      reason: true,
+      previousValues: true,
+      newValues: true,
+    },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+  },
+  employee: { select: { id: true, name: true, employeeCode: true, timeZone: true } },
   requester: { select: { id: true, name: true } },
   reviewedBy: { select: { id: true, name: true } },
 } satisfies Prisma.AttendanceCorrectionRequestSelect;

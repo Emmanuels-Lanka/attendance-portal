@@ -2,15 +2,18 @@ import "server-only";
 
 import type { Prisma, PrismaClient, Role } from "@prisma/client";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
+import { hasPermission } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
 import { getEmployeeLocalDayWindow } from "@/lib/attendance/timezone";
 import { groupSessionsByEmployeeLocalDay } from "@/lib/attendance/history";
 import { lockAttendanceEmployee } from "@/lib/attendance/service";
 import { resolveAttendanceEmployees } from "@/lib/attendance/employee-link";
+import { lockEmployeeForApproval, getActiveManagerDepartmentScope, lockActiveManagerDepartmentScope } from "@/lib/organization/manager-scope";
 import { adminAttendanceCorrectionSchema, adminAttendanceFilterSchema, type AdminAttendanceFilters } from "@/lib/attendance/admin-validation";
 
 type AdminActor = { id?: string; role: Role } | null;
-type AdminAttendanceDatabase = Pick<PrismaClient, "user" | "employee" | "workSession">;
+type AdminAttendanceReader = Pick<PrismaClient, "user" | "employee" | "workSession">;
+type AdminAttendanceDatabase = AdminAttendanceReader & Pick<PrismaClient, "$transaction">;
 type AdminAttendanceWriteDatabase = AdminAttendanceDatabase & Pick<PrismaClient, "$transaction">;
 
 export const adminEmployeeSelect = {
@@ -45,8 +48,18 @@ export class AdminAttendanceCorrectionError extends Error {
   }
 }
 
-function requireAdmin(admin: AdminActor): asserts admin is { role: Role } {
-  if (!admin || admin.role !== "ADMIN") throw new AdminAttendanceAuthorizationError();
+function requireAttendanceCorrectionAccess(actor: AdminActor): asserts actor is Exclude<AdminActor, null> {
+  if (
+    actor
+    && Boolean(actor.id)
+    && (
+      actor.role === "ADMIN"
+      || (actor.role === "HR_ADMINISTRATOR" && hasPermission(actor.role, "attendance:correction:manage"))
+      || (actor.role === "SUPERVISOR" && hasPermission(actor.role, "attendance:correction:approve"))
+      || (actor.role === "DEPARTMENT_MANAGER" && hasPermission(actor.role, "attendance:correction:manage"))
+    )
+  ) return;
+  throw new AdminAttendanceAuthorizationError();
 }
 
 function nextLocalDay(date: string, timeZone: string) {
@@ -62,16 +75,19 @@ function localDateTimeToInstant(value: string, timeZone: string, label: string) 
   return instant;
 }
 
-export async function listAdminAttendance(
-  admin: AdminActor,
-  input: unknown,
-  database: AdminAttendanceDatabase = prisma,
+async function loadAdminAttendance(
+  admin: Exclude<AdminActor, null>,
+  filters: AdminAttendanceFilters,
+  database: AdminAttendanceReader,
+  managerScope: Awaited<ReturnType<typeof getActiveManagerDepartmentScope>>,
 ) {
-  requireAdmin(admin);
-  const filters = adminAttendanceFilterSchema.parse(input);
   const employeeWhere = filters.employeeId ? { id: filters.employeeId } : {};
   const employees = await database.user.findMany({
-    where: employeeWhere,
+    where: admin.role === "SUPERVISOR"
+      ? { ...employeeWhere, employee: { supervisor: { userId: admin.id } } }
+      : managerScope && !managerScope.isHrDepartment
+        ? { ...employeeWhere, employee: { departmentId: managerScope.departmentId } }
+        : employeeWhere,
     select: adminEmployeeSelect,
     orderBy: { name: "asc" },
   });
@@ -154,13 +170,30 @@ export async function listAdminAttendance(
   return { employees: employeesWithRecords, sessions: sessionsWithEmployeeRecords, dailySummaries, filters };
 }
 
+export async function listAdminAttendance(
+  admin: AdminActor,
+  input: unknown,
+  database: AdminAttendanceDatabase = prisma,
+) {
+  requireAttendanceCorrectionAccess(admin);
+  const filters = adminAttendanceFilterSchema.parse(input);
+  if (admin.role === "DEPARTMENT_MANAGER") {
+    return database.$transaction(async (transaction) => {
+      const managerScope = await lockActiveManagerDepartmentScope(transaction, admin.id!);
+      if (!managerScope) throw new AdminAttendanceAuthorizationError();
+      return loadAdminAttendance(admin, filters, transaction, managerScope);
+    });
+  }
+  return loadAdminAttendance(admin, filters, database, null);
+}
+
 export async function correctAdminAttendance(
   admin: AdminActor,
   sessionId: string,
   input: unknown,
   database: AdminAttendanceWriteDatabase = prisma,
 ) {
-  requireAdmin(admin);
+  requireAttendanceCorrectionAccess(admin);
   const correction = adminAttendanceCorrectionSchema.parse(input);
   return database.$transaction(async (transaction) => {
     const reference = await transaction.workSession.findUnique({
@@ -170,13 +203,68 @@ export async function correctAdminAttendance(
     if (!reference) throw new AdminAttendanceNotFoundError();
 
     const employeeId = reference.record.employeeId;
+    const managerScope = admin.role === "DEPARTMENT_MANAGER"
+      ? await lockActiveManagerDepartmentScope(transaction, admin.id!)
+      : null;
+    if (admin.role === "DEPARTMENT_MANAGER" && !managerScope) {
+      throw new AdminAttendanceAuthorizationError();
+    }
     await lockAttendanceEmployee(transaction, employeeId);
 
-    const current = await transaction.workSession.findUnique({
+    let current = await transaction.workSession.findUnique({
       where: { id: sessionId },
-      include: { record: { select: { employee: { select: { id: true, timeZone: true } } } } },
+      include: {
+        record: {
+          select: {
+            employee: {
+              select: {
+                id: true,
+                timeZone: true,
+                employee: { select: { id: true, departmentId: true, supervisor: { select: { userId: true } } } },
+              },
+            },
+          },
+        },
+      },
     });
     if (!current) throw new AdminAttendanceNotFoundError();
+    const targetEmployeeRecordId = current.record.employee.employee?.id;
+    if (targetEmployeeRecordId) {
+      await lockEmployeeForApproval(transaction, targetEmployeeRecordId);
+      const lockedCurrent = await transaction.workSession.findUnique({
+        where: { id: sessionId },
+        include: {
+          record: {
+            select: {
+              employee: {
+                select: {
+                  id: true,
+                  timeZone: true,
+                  employee: { select: { id: true, departmentId: true, supervisor: { select: { userId: true } } } },
+                },
+              },
+            },
+          },
+        },
+      });
+      if (!lockedCurrent || lockedCurrent.record.employee.employee?.id !== targetEmployeeRecordId) {
+        throw new AdminAttendanceAuthorizationError();
+      }
+      current = lockedCurrent;
+    }
+    if (current.record.employee.id === admin.id) {
+      throw new AdminAttendanceCorrectionError("Submit a correction request to change your own attendance.");
+    }
+    if (admin.role === "SUPERVISOR" && current.record.employee.employee?.supervisor?.userId !== admin.id) {
+      throw new AdminAttendanceAuthorizationError();
+    }
+    if (
+      managerScope
+      && !managerScope.isHrDepartment
+      && current.record.employee.employee?.departmentId !== managerScope.departmentId
+    ) {
+      throw new AdminAttendanceAuthorizationError();
+    }
 
     const startAt = correction.startAt === undefined
       ? current.startAt
@@ -218,28 +306,41 @@ export async function correctAdminAttendance(
       }
     }
 
-    const updated = await transaction.workSession.update({
-      where: { id: sessionId },
+    const changed = await transaction.workSession.updateMany({
+      where: {
+        id: sessionId,
+        mode: current.mode,
+        startAt: current.startAt,
+        endAt: current.endAt,
+        ...(managerScope && !managerScope.isHrDepartment
+          ? { record: { employee: { employee: { departmentId: managerScope.departmentId } } } }
+          : {}),
+      },
       data: {
         ...(correction.startAt !== undefined ? { startAt } : {}),
         ...(correction.endAt !== undefined ? { endAt } : {}),
         ...(correction.mode !== undefined ? { mode: correction.mode } : {}),
       },
+    });
+    if (changed.count !== 1) {
+      throw new AdminAttendanceCorrectionError("This session changed while the correction was being saved. Refresh and try again.");
+    }
+    const updated = await transaction.workSession.findUnique({
+      where: { id: sessionId },
       include: {
-        record: {
-          select: { employee: { select: adminEmployeeSelect } },
-        },
+        record: { select: { employee: { select: adminEmployeeSelect } } },
       },
     });
+    if (!updated) throw new AdminAttendanceNotFoundError();
 
     await transaction.attendanceAuditLog.create({
       data: {
         employeeId,
         sessionId,
         actorId: admin.id ?? null,
-        actionType: "ADMIN_ATTENDANCE_CORRECTED",
+        actionType: "ATTENDANCE_DIRECTLY_CORRECTED",
         previousValues: { mode: current.mode, startAt: current.startAt.toISOString(), endAt: current.endAt?.toISOString() ?? null },
-        newValues: { mode: updated.mode, startAt: updated.startAt.toISOString(), endAt: updated.endAt?.toISOString() ?? null },
+        newValues: { mode: updated.mode, startAt: updated.startAt.toISOString(), endAt: updated.endAt?.toISOString() ?? null, actorRole: admin.role },
         reason: correction.reason,
       },
       select: { id: true, employeeId: true, sessionId: true, actorId: true, actionType: true, previousValues: true, newValues: true, reason: true, createdAt: true },

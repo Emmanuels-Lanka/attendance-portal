@@ -23,7 +23,7 @@ export async function decideAttendanceCorrectionAction(
 ): Promise<AttendanceCorrectionDecisionState> {
   const actor = await requireUser();
   if (
-    (actor.role !== "SUPERVISOR" && actor.role !== "HR_ADMINISTRATOR")
+    (actor.role !== "SUPERVISOR" && actor.role !== "HR_ADMINISTRATOR" && actor.role !== "DEPARTMENT_MANAGER" && actor.role !== "ADMIN")
     || !hasPermission(actor.role, "attendance:correction:approve")
   ) {
     throw new AuthorizationError();

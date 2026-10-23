@@ -19,7 +19,16 @@ const entry = {
   requestedAt: new Date("2026-10-05T08:00:00.000Z"),
   reviewedAt: new Date("2026-10-05T09:00:00.000Z"),
   resolvedAt: new Date("2026-10-05T09:00:00.000Z"),
-  employee: { id: "employee-user", name: "Affected Employee", employeeCode: "E-001" },
+  attendanceDate: new Date("2026-10-05T00:00:00.000Z"),
+  dailyAttendance: null,
+  session: {
+    startAt: new Date("2026-10-05T03:00:00.000Z"),
+    endAt: new Date("2026-10-05T12:00:00.000Z"),
+  },
+  originalStartAt: new Date("2026-10-05T03:00:00.000Z"),
+  originalEndAt: new Date("2026-10-05T12:00:00.000Z"),
+  auditLogs: [],
+  employee: { id: "employee-user", name: "Affected Employee", employeeCode: "E-001", timeZone: "Asia/Dhaka" },
   requester: { id: "requester-user", name: "Requester" },
   reviewedBy: { id: "reviewer-user", name: "Reviewer" },
 };
@@ -61,6 +70,7 @@ describe("attendance correction report", () => {
     assert.equal(result.entries[0]?.reason, "Forgot to punch out");
     assert.ok(result.entries[0]?.requestedAt instanceof Date);
     assert.ok(result.entries[0]?.reviewedAt instanceof Date);
+    assert.equal(result.entries[0]?.employee.timeZone, "Asia/Dhaka");
     assert.deepEqual(stub.calls.employees, {
       where: { correctionRequests: { some: {} } },
       select: { id: true, name: true, employeeCode: true },
@@ -168,8 +178,31 @@ describe("attendance correction report", () => {
         requestedMode: true,
         originalStartAt: true,
         originalEndAt: true,
-        session: { select: { startAt: true } },
-        employee: { select: { id: true, name: true, employeeCode: true } },
+        attendanceDate: true,
+        dailyAttendance: { select: { date: true } },
+        session: { select: { startAt: true, endAt: true } },
+        auditLogs: {
+          where: {
+            actionType: {
+              in: [
+                "ATTENDANCE_CORRECTION_SUPERVISOR_APPROVED",
+                "ATTENDANCE_CORRECTION_HR_APPROVED",
+                "ATTENDANCE_CORRECTION_REJECTED",
+              ],
+            },
+          },
+          select: {
+            actionType: true,
+            actorId: true,
+            actor: { select: { name: true } },
+            createdAt: true,
+            reason: true,
+            previousValues: true,
+            newValues: true,
+          },
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        },
+        employee: { select: { id: true, name: true, employeeCode: true, timeZone: true } },
         requester: { select: { id: true, name: true } },
         reviewedBy: { select: { id: true, name: true } },
       },

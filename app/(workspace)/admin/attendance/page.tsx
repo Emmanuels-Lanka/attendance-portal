@@ -1,6 +1,7 @@
 import { formatInTimeZone } from "date-fns-tz";
 import { CalendarDays } from "lucide-react";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { AdminAttendanceCorrectionForm } from "@/components/admin-attendance-correction-form";
 import { AttendancePunch } from "@/components/attendance-punch";
 import { formatWorkedDuration } from "@/lib/attendance/history";
@@ -10,7 +11,8 @@ import { getAdminAttendanceExceptions, type AttendanceExceptionCategory } from "
 import type { AttendanceReviewReason } from "@/lib/attendance/data-quality";
 import { adminAttendanceFilterSchema, type AdminAttendanceFilters } from "@/lib/attendance/admin-validation";
 import { listAdminAttendance } from "@/lib/attendance/admin-service";
-import { requireAdmin } from "@/lib/auth/session";
+import { hasPermission } from "@/lib/auth/permissions";
+import { requirePageUser } from "@/lib/auth/session";
 
 type SearchParams = Record<string, string | string[] | undefined>;
 
@@ -54,7 +56,13 @@ function exceptionEmployeeHref(filters: AdminAttendanceFilters, employeeId?: str
 }
 
 export default async function AdminAttendancePage({ searchParams }: { searchParams: Promise<SearchParams> }) {
-  const admin = await requireAdmin();
+  const actor = await requirePageUser();
+  const isAdmin = actor.role === "ADMIN";
+  const canCorrectAttendance = isAdmin
+    || (actor.role === "HR_ADMINISTRATOR" && hasPermission(actor.role, "attendance:correction:manage"))
+    || (actor.role === "SUPERVISOR" && hasPermission(actor.role, "attendance:correction:approve"))
+    || (actor.role === "DEPARTMENT_MANAGER" && hasPermission(actor.role, "attendance:correction:manage"));
+  if (!canCorrectAttendance) redirect("/dashboard");
   const params = await searchParams;
   const filterResult = adminAttendanceFilterSchema.safeParse({
     employeeId: params.employeeId ?? "",
@@ -83,17 +91,17 @@ export default async function AdminAttendancePage({ searchParams }: { searchPara
   }
 
   const filters = filterResult.data;
-  const { employees, sessions, dailySummaries } = await listAdminAttendance(admin, filters);
+  const { employees, sessions, dailySummaries } = await listAdminAttendance(actor, filters);
   const reviewItems = sessions.flatMap((session) => {
     const view = sessionView(session);
     if (!view.reviewReasons.length || (filters.reviewReason !== "ALL" && !view.reviewReasons.includes(filters.reviewReason))) return [];
     return [{ session, view }];
   });
-  const summary = filters.summaryDate
-    ? await getAdminAttendanceSummary(admin, { date: filters.summaryDate, employeeId: filters.employeeId, mode: filters.mode })
+  const summary = isAdmin && filters.summaryDate
+    ? await getAdminAttendanceSummary(actor, { date: filters.summaryDate, employeeId: filters.employeeId, mode: filters.mode })
     : null;
-  const exceptions = filters.summaryDate
-    ? await getAdminAttendanceExceptions(admin, {
+  const exceptions = isAdmin && filters.summaryDate
+    ? await getAdminAttendanceExceptions(actor, {
         date: filters.summaryDate,
         employeeId: filters.employeeId,
         mode: filters.mode,
@@ -104,9 +112,9 @@ export default async function AdminAttendancePage({ searchParams }: { searchPara
   return (
     <div className="space-y-6">
       <div>
-        <p className="text-sm font-medium text-[var(--blue)]">Administration</p>
-        <h1 className="mt-1 text-2xl font-semibold sm:text-[28px]">Attendance report</h1>
-        <p className="mt-2 text-sm text-[var(--muted)]">Employee-local daily summaries and individual sessions.</p>
+        <p className="text-sm font-medium text-[var(--blue)]">{actor.role === "SUPERVISOR" ? "Assigned attendance" : actor.role === "HR_ADMINISTRATOR" ? "HR attendance" : actor.role === "DEPARTMENT_MANAGER" ? "Department attendance" : "Administration"}</p>
+        <h1 className="mt-1 text-2xl font-semibold sm:text-[28px]">{isAdmin ? "Attendance report" : "Direct attendance corrections"}</h1>
+        <p className="mt-2 text-sm text-[var(--muted)]">Direct corrections are limited to the employee attendance scope shown here and are recorded in audit history.</p>
       </div>
 
       <form method="get" className="grid gap-3 rounded-lg border border-[var(--line)] bg-white p-4 shadow-sm sm:grid-cols-2 xl:grid-cols-4 xl:items-end">
@@ -116,9 +124,9 @@ export default async function AdminAttendancePage({ searchParams }: { searchPara
             {employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name}{employee.employeeCode ? ` (${employee.employeeCode})` : ""}</option>)}
           </select>
         </label>
-        <label className="text-xs font-semibold text-[var(--muted)]">Selected local date
+        {isAdmin && <label className="text-xs font-semibold text-[var(--muted)]">Selected local date
           <input name="summaryDate" type="date" defaultValue={filters.summaryDate} className="mt-1.5 h-10 w-full rounded-md border border-[var(--line)] bg-white px-2.5 text-sm text-[var(--ink)]" />
-        </label>
+        </label>}
         <label className="text-xs font-semibold text-[var(--muted)]">From local date
           <input name="from" type="date" defaultValue={filters.from} className="mt-1.5 h-10 w-full rounded-md border border-[var(--line)] bg-white px-2.5 text-sm text-[var(--ink)]" />
         </label>
@@ -131,7 +139,7 @@ export default async function AdminAttendancePage({ searchParams }: { searchPara
         <label className="text-xs font-semibold text-[var(--muted)]">Session status
           <select name="status" defaultValue={filters.status} className="mt-1.5 h-10 w-full rounded-md border border-[var(--line)] bg-white px-2.5 text-sm text-[var(--ink)]"><option value="ALL">All status</option><option value="ACTIVE">Active</option><option value="COMPLETED">Completed</option></select>
         </label>
-        <label className="text-xs font-semibold text-[var(--muted)]">Exception category
+        {isAdmin && <label className="text-xs font-semibold text-[var(--muted)]">Exception category
           <select name="exceptionCategory" defaultValue={filters.exceptionCategory} className="mt-1.5 h-10 w-full rounded-md border border-[var(--line)] bg-white px-2.5 text-sm text-[var(--ink)]">
             <option value="ALL">All exceptions</option>
             <option value="LATE_ARRIVAL">Late arrivals</option>
@@ -139,8 +147,8 @@ export default async function AdminAttendancePage({ searchParams }: { searchPara
             <option value="ACTIVE_SESSION">Currently open sessions</option>
             <option value="NO_ATTENDANCE">No attendance records</option>
           </select>
-        </label>
-        <label className="text-xs font-semibold text-[var(--muted)]">Data quality reason
+        </label>}
+        {isAdmin && <label className="text-xs font-semibold text-[var(--muted)]">Data quality reason
           <select name="reviewReason" defaultValue={filters.reviewReason} className="mt-1.5 h-10 w-full rounded-md border border-[var(--line)] bg-white px-2.5 text-sm text-[var(--ink)]">
             <option value="ALL">All review reasons</option>
             <option value="INVALID_IN_TIMESTAMP">Invalid IN timestamp</option>
@@ -148,12 +156,12 @@ export default async function AdminAttendancePage({ searchParams }: { searchPara
             <option value="OUT_BEFORE_IN">OUT precedes IN</option>
             <option value="UNSAFE_DURATION">Unsafe duration</option>
           </select>
-        </label>
+        </label>}
         <button type="submit" className="h-10 self-end rounded-md bg-[var(--action)] px-3.5 text-sm font-medium text-white hover:bg-[var(--action-hover)]">Apply filters</button>
       </form>
       {sessions.length === 500 && <p role="status" className="text-xs text-[var(--muted)]">The detailed session table is limited to the 500 most recent matches. Narrow the filters to inspect older sessions.</p>}
 
-      <section className="space-y-4" aria-labelledby="exceptions-title">
+      {isAdmin && <section className="space-y-4" aria-labelledby="exceptions-title">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
             <h2 id="exceptions-title" className="text-base font-semibold">Attendance exceptions</h2>
@@ -253,7 +261,7 @@ export default async function AdminAttendancePage({ searchParams }: { searchPara
         ) : (
           <p className="rounded-lg border border-[var(--line)] bg-white px-4 py-5 text-sm text-[var(--muted)] shadow-sm">Choose a local date to review attendance exceptions.</p>
         )}
-      </section>
+      </section>}
 
       <section className="space-y-4" aria-labelledby="data-quality-title">
         <div>

@@ -9,6 +9,8 @@ describe("role permissions", () => {
     assert.equal(hasPermission(Role.ADMIN, "leave:approve"), true);
     assert.equal(hasPermission(Role.ADMIN, "payroll:export"), true);
     assert.equal(hasPermission(Role.ADMIN, "audit:read"), true);
+    assert.equal(hasPermission(Role.ADMIN, "attendance:correction:manage"), true);
+    assert.equal(hasPermission(Role.ADMIN, "attendance:correction:approve"), true);
   });
 
   it("grants HR Administrator the SRS HR management capabilities", () => {
@@ -23,12 +25,15 @@ describe("role permissions", () => {
     assert.equal(hasPermission(Role.HR_ADMINISTRATOR, "leave:approve"), true);
     assert.equal(hasPermission(Role.HR_ADMINISTRATOR, "leave:request:self:read"), true);
     assert.equal(hasPermission(Role.HR_ADMINISTRATOR, "attendance:correction:approve"), true);
+    assert.equal(hasPermission(Role.HR_ADMINISTRATOR, "attendance:correction:manage"), true);
     assert.equal(hasPermission(Role.HR_ADMINISTRATOR, "attendance:correction:submit"), true);
     assert.equal(canSubmitOwnAttendanceCorrection(Role.HR_ADMINISTRATOR), true);
   });
 
   it("limits Department Manager permissions to the SRS department duties", () => {
     assert.equal(hasPermission(Role.DEPARTMENT_MANAGER, "attendance:department:read"), true);
+    assert.equal(hasPermission(Role.DEPARTMENT_MANAGER, "attendance:correction:manage"), true);
+    assert.equal(hasPermission(Role.DEPARTMENT_MANAGER, "attendance:correction:approve"), true);
     assert.equal(hasPermission(Role.DEPARTMENT_MANAGER, "leave:approve"), true);
     assert.equal(hasPermission(Role.DEPARTMENT_MANAGER, "attendance:manage"), false);
     assert.equal(hasPermission(Role.DEPARTMENT_MANAGER, "attendance:locations:read"), false);
@@ -40,6 +45,7 @@ describe("role permissions", () => {
   it("limits Supervisor permissions to assigned employee work and request review", () => {
     assert.equal(hasPermission(Role.SUPERVISOR, "attendance:assigned:read"), true);
     assert.equal(hasPermission(Role.SUPERVISOR, "attendance:correction:approve"), true);
+    assert.equal(hasPermission(Role.SUPERVISOR, "attendance:correction:manage"), false);
     assert.equal(hasPermission(Role.SUPERVISOR, "leave:approve"), true);
     assert.equal(hasPermission(Role.SUPERVISOR, "attendance:department:read"), false);
     assert.equal(hasPermission(Role.SUPERVISOR, "attendance:locations:read"), false);

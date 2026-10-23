@@ -1,39 +1,36 @@
-import { formatInTimeZone } from "date-fns-tz";
 import { redirect } from "next/navigation";
 import { AttendanceCorrectionApprovalStage } from "@prisma/client";
 import { AttendanceCorrectionReviewForm } from "@/components/attendance-correction-review-form";
 import { listDailyAttendanceCorrections } from "@/lib/attendance/correction-service";
+import {
+  correctionDisplayTimeZone,
+  formatCorrectionCalendarDate,
+  formatCorrectionJsonForDisplay,
+  formatCorrectionTimestamp,
+} from "@/lib/attendance/correction-display";
 import { requirePageUser } from "@/lib/auth/session";
 import { hasPermission } from "@/lib/auth/permissions";
-
-function readableValues(value: unknown) {
-  return value === null || value === undefined ? "—" : JSON.stringify(value, null, 2);
-}
-
-function timeLabel(value: Date | null) {
-  return value ? formatInTimeZone(value, "UTC", "yyyy-MM-dd HH:mm:ss 'UTC'") : "—";
-}
 
 export default async function AttendanceCorrectionApprovalsPage() {
   const actor = await requirePageUser();
   if (
-    (actor.role !== "SUPERVISOR" && actor.role !== "HR_ADMINISTRATOR")
+    (actor.role !== "SUPERVISOR" && actor.role !== "HR_ADMINISTRATOR" && actor.role !== "DEPARTMENT_MANAGER" && actor.role !== "ADMIN")
     || !hasPermission(actor.role, "attendance:correction:approve")
   ) {
     redirect("/dashboard");
   }
   const corrections = await listDailyAttendanceCorrections(actor);
-  const stage = actor.role === "SUPERVISOR"
-    ? AttendanceCorrectionApprovalStage.SUPERVISOR
-    : AttendanceCorrectionApprovalStage.HR;
-
   return (
     <div className="space-y-6">
       <header>
         <p className="text-sm font-medium text-[var(--blue)]">Approvals</p>
         <h1 className="mt-1 text-2xl font-semibold sm:text-[28px]">Attendance correction approvals</h1>
         <p className="mt-2 text-sm text-[var(--muted)]">
-          {stage === AttendanceCorrectionApprovalStage.SUPERVISOR ? "Corrections for employees assigned to you." : "Corrections awaiting final HR review."}
+          {actor.role === "SUPERVISOR"
+            ? "Correction requests for employees assigned to you, at their current approval stage."
+            : actor.role === "DEPARTMENT_MANAGER"
+              ? "Correction requests for employees within your authorized department scope, at their current approval stage."
+            : "Correction requests at their current approval stage."}
         </p>
       </header>
       {corrections.length === 0 ? (
@@ -51,18 +48,20 @@ export default async function AttendanceCorrectionApprovalsPage() {
                     {correction.dailyAttendance?.employee.employeeId ?? correction.employee.employeeCode ?? "No employee ID"}
                     {" · "}
                     {correction.attendanceDate
-                      ? formatInTimeZone(correction.attendanceDate, "UTC", "yyyy-MM-dd")
+                      ? correction.attendanceDate.toISOString().slice(0, 10)
                       : correction.dailyAttendance
-                      ? formatInTimeZone(correction.dailyAttendance.date, "UTC", "yyyy-MM-dd")
+                      ? correction.dailyAttendance.date.toISOString().slice(0, 10)
                       : correction.session
-                        ? formatInTimeZone(correction.session.startAt, "UTC", "yyyy-MM-dd")
+                        ? formatCorrectionCalendarDate(correction.session.startAt, correction.employee.timeZone)
                         : "Attendance record unavailable"}
                     {" · "}
-                    Requested {timeLabel(correction.requestedAt)}
+                    Requested {formatCorrectionTimestamp(correction.requestedAt, correction.employee.timeZone)}
                   </p>
                 </div>
                 <span className="rounded-sm bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800">
-                  {stage === AttendanceCorrectionApprovalStage.SUPERVISOR ? "Supervisor review" : "HR review"}
+                  {correction.currentApprovalStage === AttendanceCorrectionApprovalStage.SUPERVISOR
+                    ? "Supervisor review"
+                    : "HR review"}
                 </span>
               </div>
               <p className="mt-4 text-sm"><span className="font-semibold">Request reason:</span> {correction.reason}</p>
@@ -71,11 +70,13 @@ export default async function AttendanceCorrectionApprovalsPage() {
                   <h3 className="text-xs font-semibold text-[var(--muted)]">
                     {correction.sessionId ? "Original recorded session" : "Original calculated attendance"}
                   </h3>
-                  <pre className="mt-1 overflow-auto whitespace-pre-wrap break-words rounded-md bg-zinc-50 p-3 text-xs">{readableValues(correction.originalValues)}</pre>
+                  <p className="mt-1 text-[11px] text-[var(--muted)]">Instants formatted for {correctionDisplayTimeZone(correction.employee.timeZone)}; stored values are unchanged.</p>
+                  <pre className="mt-1 overflow-auto whitespace-pre-wrap break-words rounded-md bg-zinc-50 p-3 text-xs">{formatCorrectionJsonForDisplay(correction.originalValues, correction.employee.timeZone)}</pre>
                 </div>
                 <div>
                   <h3 className="text-xs font-semibold text-[var(--muted)]">Requested values</h3>
-                  <pre className="mt-1 overflow-auto whitespace-pre-wrap break-words rounded-md bg-zinc-50 p-3 text-xs">{readableValues(correction.requestedValues)}</pre>
+                  <p className="mt-1 text-[11px] text-[var(--muted)]">Instants formatted for {correctionDisplayTimeZone(correction.employee.timeZone)}; stored values are unchanged.</p>
+                  <pre className="mt-1 overflow-auto whitespace-pre-wrap break-words rounded-md bg-zinc-50 p-3 text-xs">{formatCorrectionJsonForDisplay(correction.requestedValues, correction.employee.timeZone)}</pre>
                 </div>
               </div>
               {!correction.attendanceDate && !correction.dailyAttendance && !correction.session && <p role="alert" className="mt-3 text-sm text-[var(--danger)]">The attendance session or calculated record is unavailable; this request cannot be decided.</p>}

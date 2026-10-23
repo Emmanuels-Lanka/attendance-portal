@@ -2,8 +2,9 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { requireAdmin } from "@/lib/auth/session";
+import { requireUser } from "@/lib/auth/session";
 import {
+  AdminAttendanceAuthorizationError,
   AdminAttendanceCorrectionError,
   AdminAttendanceNotFoundError,
   correctAdminAttendance,
@@ -17,7 +18,7 @@ export async function correctAttendanceAction(
   formData: FormData,
 ): Promise<AttendanceCorrectionState> {
   try {
-    const admin = await requireAdmin();
+    const admin = await requireUser();
     await correctAdminAttendance(admin, sessionId, {
       startAt: formData.get("startAt"),
       endAt: formData.get("endAt"),
@@ -25,10 +26,16 @@ export async function correctAttendanceAction(
       reason: formData.get("reason"),
     });
     revalidatePath("/admin/attendance");
+    revalidatePath("/admin/attendance/daily");
+    revalidatePath("/attendance");
     return { success: "Attendance correction saved." };
   } catch (error) {
     if (error instanceof z.ZodError) return { error: error.issues[0]?.message ?? "Check the correction values." };
-    if (error instanceof AdminAttendanceCorrectionError || error instanceof AdminAttendanceNotFoundError) {
+    if (
+      error instanceof AdminAttendanceAuthorizationError
+      || error instanceof AdminAttendanceCorrectionError
+      || error instanceof AdminAttendanceNotFoundError
+    ) {
       return { error: error.message };
     }
     console.error("Attendance correction failed", error instanceof Error ? error.name : "Unknown error");

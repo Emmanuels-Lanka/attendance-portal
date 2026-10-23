@@ -23,10 +23,26 @@ type TestSession = {
   mode: "OFFICE" | "WFH";
   startAt: Date;
   endAt: Date | null;
-  record: { employee: { id: string; name: string; employeeCode: string; timeZone: string; countryCode: string; email: string; role: Role; isActive: boolean } };
+  record: { employee: {
+    id: string;
+    name: string;
+    employeeCode: string;
+    timeZone: string;
+    countryCode: string;
+    email: string;
+    role: Role;
+    isActive: boolean;
+    employee: { departmentId: string; supervisor: { userId: string | null } };
+  } };
 };
 
-function makeSession(id: string, mode: "OFFICE" | "WFH" = "OFFICE", timeZone = "Asia/Colombo"): TestSession {
+function makeSession(
+  id: string,
+  mode: "OFFICE" | "WFH" = "OFFICE",
+  timeZone = "Asia/Colombo",
+  supervisorUserId: string | null = "supervisor-user",
+  departmentId = "engineering-dept",
+): TestSession {
   return {
     id,
     mode,
@@ -42,12 +58,21 @@ function makeSession(id: string, mode: "OFFICE" | "WFH" = "OFFICE", timeZone = "
         email: `${id}@example.invalid`,
         role: Role.EMPLOYEE,
         isActive: true,
+        employee: { departmentId, supervisor: { userId: supervisorUserId } },
       },
     },
   };
 }
 
-function createDatabase(sessions = [makeSession("one")], linkedUserIds?: string[]) {
+function createDatabase(
+  sessions = [makeSession("one")],
+  linkedUserIds?: string[],
+  options: {
+    failConditionalUpdate?: boolean;
+    managerDepartmentId?: string | null;
+    managerDepartmentName?: string;
+  } = {},
+) {
   const sessionById = new Map(sessions.map((session) => [session.id, session]));
   const employeeRows = [...new Map(sessions.map((session) => [session.record.employee.id, session.record.employee])).values()];
   const calls: { findWhere?: unknown; employeeSelect?: unknown; updateData?: Record<string, unknown>; auditData?: Record<string, unknown> } = {};
@@ -57,7 +82,7 @@ function createDatabase(sessions = [makeSession("one")], linkedUserIds?: string[
       const where = args.where as {
         mode?: "OFFICE" | "WFH";
         endAt?: null | { not: null };
-        record?: { employeeId?: { in?: string[] } };
+        record?: { employeeId?: { in?: string[] }; employee?: { employee?: { departmentId?: string } } };
         OR?: Array<{ record: { employeeId: string }; startAt?: { gte?: Date; lt?: Date } }>;
       };
       const employeeIds = where.record?.employeeId?.in;
@@ -66,6 +91,8 @@ function createDatabase(sessions = [makeSession("one")], linkedUserIds?: string[
         if (where.mode && session.mode !== where.mode) return false;
         if (where.endAt === null && session.endAt !== null) return false;
         if (where.endAt && session.endAt === null) return false;
+        if (where.record?.employee?.employee?.departmentId
+          && session.record.employee.employee.departmentId !== where.record.employee.employee.departmentId) return false;
         if (where.OR) {
           return where.OR.some((range) =>
             range.record.employeeId === session.record.employee.id
@@ -78,7 +105,12 @@ function createDatabase(sessions = [makeSession("one")], linkedUserIds?: string[
     },
     findUnique: async ({ where, select }: { where: { id: string }; select?: unknown }) => {
       const session = sessionById.get(where.id);
-      if (session && select) return { record: { employeeId: session.record.employee.id } };
+      if (session && select) return {
+        record: {
+          employeeId: session.record.employee.id,
+          employee: { employee: { id: `employee-record-${session.record.employee.id}` } },
+        },
+      };
       return session ? { ...session } : null;
     },
     findFirst: async ({ where }: { where: { id?: { not: string }; record: { employeeId: string }; endAt?: null; startAt?: { gte: Date; lt: Date } } }) => {
@@ -88,17 +120,72 @@ function createDatabase(sessions = [makeSession("one")], linkedUserIds?: string[
       );
       return session ? { id: session.id } : null;
     },
-    update: async ({ where, data }: { where: { id: string }; data: Record<string, unknown>; include: unknown }) => {
+    updateMany: async ({ where, data }: {
+      where: {
+        id: string;
+        mode: "OFFICE" | "WFH";
+        startAt: Date;
+        endAt: Date | null;
+        record?: { employee?: { employee?: { departmentId?: string } } };
+      };
+      data: Record<string, unknown>;
+    }) => {
       calls.updateData = data;
       const session = sessionById.get(where.id);
-      if (!session) throw new Error("missing session");
+      if (
+        options.failConditionalUpdate
+        || !session
+        || session.mode !== where.mode
+        || session.startAt.getTime() !== where.startAt.getTime()
+        || session.endAt?.getTime() !== where.endAt?.getTime()
+        || (where.record?.employee?.employee?.departmentId
+          && session.record.employee.employee.departmentId !== where.record.employee.employee.departmentId)
+      ) return { count: 0 };
       const updated = { ...session, ...data } as TestSession;
       sessionById.set(where.id, updated);
-      return { ...updated };
+      return { count: 1 };
     },
   };
   const transaction = {
     $queryRaw: async () => [],
+    user: {
+      findMany: async (args: { select: unknown; where?: { id?: string; employee?: { supervisor?: { userId: string | undefined }; departmentId?: string } } }) => {
+        calls.employeeSelect = args.select;
+        const rows = args.where?.id ? employeeRows.filter((employee) => employee.id === args.where?.id) : employeeRows;
+        if (args.where?.employee?.supervisor) {
+          return rows.filter((employee) => employee.employee.supervisor.userId === args.where?.employee?.supervisor?.userId);
+        }
+        if (args.where?.employee?.departmentId) {
+          return rows.filter((employee) => employee.employee.departmentId === args.where?.employee?.departmentId);
+        }
+        return rows;
+      },
+    },
+    employee: {
+      findUnique: async ({ where }: { where: { userId?: string; id?: string } }) => {
+        if (where.userId === "department-manager") return {
+          id: "manager-employee",
+          departmentId: options.managerDepartmentId === undefined ? "engineering-dept" : options.managerDepartmentId,
+          department: { name: options.managerDepartmentName ?? "Engineering" },
+          user: { role: Role.DEPARTMENT_MANAGER, isActive: true },
+        };
+        return null;
+      },
+      findMany: async ({ where }: { where: { userId: { in: string[] } } }) => where.userId.in.flatMap((userId) => {
+        if (linkedUserIds && !linkedUserIds.includes(userId)) return [];
+        const user = employeeRows.find((row) => row.id === userId);
+        return user
+          ? [{
+              id: `record-${user.id}`,
+              name: `HR ${user.name}`,
+              employeeId: `HR-${user.employeeCode}`,
+              userId,
+              shift: null,
+              shiftAssignments: [{ effectiveFrom: new Date("0001-01-01T00:00:00.000Z"), effectiveTo: null, shift: testShift }],
+            }]
+          : [];
+      }),
+    },
     workSession,
     attendanceAuditLog: {
       create: async ({ data }: { data: Record<string, unknown> }) => { calls.auditData = data; return data; },
@@ -106,12 +193,24 @@ function createDatabase(sessions = [makeSession("one")], linkedUserIds?: string[
   };
   const database = {
     user: {
-      findMany: async (args: { select: unknown; where?: { id?: string } }) => {
+      findMany: async (args: { select: unknown; where?: { id?: string; employee?: { supervisor?: { userId: string | undefined }; departmentId?: string } } }) => {
         calls.employeeSelect = args.select;
-        return args.where?.id ? employeeRows.filter((employee) => employee.id === args.where?.id) : employeeRows;
+        const rows = args.where?.id ? employeeRows.filter((employee) => employee.id === args.where?.id) : employeeRows;
+        if (args.where?.employee?.supervisor) {
+          return rows.filter((employee) => employee.employee.supervisor.userId === args.where?.employee?.supervisor?.userId);
+        }
+        if (args.where?.employee?.departmentId) {
+          return rows.filter((employee) => employee.employee.departmentId === args.where?.employee?.departmentId);
+        }
+        return rows;
       },
     },
     employee: {
+      findUnique: async ({ where }: { where: { userId: string } }) => where.userId === "department-manager" ? ({
+        departmentId: options.managerDepartmentId === undefined ? "engineering-dept" : options.managerDepartmentId,
+        department: { name: options.managerDepartmentName ?? "Engineering" },
+        user: { role: Role.DEPARTMENT_MANAGER, isActive: true },
+      }) : null,
       findMany: async ({ where }: { where: { userId: { in: string[] } } }) => where.userId.in.flatMap((userId) => {
         if (linkedUserIds && !linkedUserIds.includes(userId)) return [];
         const user = employeeRows.find((row) => row.id === userId);
@@ -133,7 +232,7 @@ function createDatabase(sessions = [makeSession("one")], linkedUserIds?: string[
   return { database, calls, sessionById };
 }
 
-const admin = { role: Role.ADMIN };
+const admin = { id: "admin-user", role: Role.ADMIN };
 
 describe("admin attendance access and corrections", () => {
   it("rejects non-admin and unauthenticated attendance reads", async () => {
@@ -146,7 +245,165 @@ describe("admin attendance access and corrections", () => {
     const stub = createDatabase();
     await assert.rejects(correctAdminAttendance({ role: Role.EMPLOYEE }, "one", { startAt: "2026-06-15T08:00" }, stub.database), AdminAttendanceAuthorizationError);
     await assert.rejects(correctAdminAttendance(null, "one", { startAt: "2026-06-15T08:00" }, stub.database), AdminAttendanceAuthorizationError);
+    await assert.rejects(
+      correctAdminAttendance({ role: Role.HR_ADMINISTRATOR }, "one", { mode: "WFH", reason: "Missing identity." }, stub.database),
+      AdminAttendanceAuthorizationError,
+    );
     assert.equal(stub.calls.updateData, undefined);
+  });
+
+  it("allows HR direct corrections and records actor, action, reason, and before/after values", async () => {
+    const stub = createDatabase([makeSession("hr-direct")]);
+    const corrected = await correctAdminAttendance(
+      { id: "hr-user", role: Role.HR_ADMINISTRATOR },
+      "hr-direct",
+      { startAt: "2026-06-15T08:15", reason: "Verified the recorded IN was inaccurate." },
+      stub.database,
+    );
+
+    assert.equal(corrected.startAt.toISOString(), "2026-06-15T02:45:00.000Z");
+    assert.equal(stub.calls.auditData?.actorId, "hr-user");
+    assert.equal(stub.calls.auditData?.actionType, "ATTENDANCE_DIRECTLY_CORRECTED");
+    assert.equal(stub.calls.auditData?.reason, "Verified the recorded IN was inaccurate.");
+    assert.deepEqual(stub.calls.auditData?.previousValues, {
+      mode: "OFFICE",
+      startAt: "2026-06-15T02:30:00.000Z",
+      endAt: null,
+    });
+    assert.deepEqual(stub.calls.auditData?.newValues, {
+      mode: "OFFICE",
+      startAt: "2026-06-15T02:45:00.000Z",
+      endAt: null,
+      actorRole: Role.HR_ADMINISTRATOR,
+    });
+  });
+
+  it("allows Supervisors to directly correct only assigned employees", async () => {
+    const stub = createDatabase([makeSession("supervisor-direct", "OFFICE", "Asia/Colombo", "supervisor-user")]);
+    const corrected = await correctAdminAttendance(
+      { id: "supervisor-user", role: Role.SUPERVISOR },
+      "supervisor-direct",
+      { mode: "WFH", reason: "Employee confirmed the correct work mode." },
+      stub.database,
+    );
+    assert.equal(corrected.mode, "WFH");
+    assert.equal(stub.calls.auditData?.actorId, "supervisor-user");
+    assert.equal(stub.calls.auditData?.actionType, "ATTENDANCE_DIRECTLY_CORRECTED");
+    assert.equal(stub.calls.auditData?.reason, "Employee confirmed the correct work mode.");
+    assert.equal((stub.calls.auditData?.newValues as Record<string, unknown>).actorRole, Role.SUPERVISOR);
+
+    const outsideScope = createDatabase([makeSession("not-assigned", "OFFICE", "Asia/Colombo", "other-supervisor")]);
+    await assert.rejects(
+      correctAdminAttendance(
+        { id: "supervisor-user", role: Role.SUPERVISOR },
+        "not-assigned",
+        { mode: "WFH", reason: "Should be denied." },
+        outsideScope.database,
+      ),
+      AdminAttendanceAuthorizationError,
+    );
+    assert.equal(outsideScope.calls.updateData, undefined);
+  });
+
+  it("limits a non-HR Department Manager to direct corrections and reads within the assigned department", async () => {
+    const departmentSessions = [
+      makeSession("engineering-session", "OFFICE", "Asia/Colombo", "supervisor-user", "engineering-dept"),
+      makeSession("finance-session", "OFFICE", "Asia/Colombo", "supervisor-user", "finance-dept"),
+    ];
+    const stub = createDatabase(departmentSessions, undefined, {
+      managerDepartmentId: "engineering-dept",
+      managerDepartmentName: "Engineering",
+    });
+    const manager = { id: "department-manager", role: Role.DEPARTMENT_MANAGER };
+    const listed = await listAdminAttendance(manager, {}, stub.database);
+    assert.deepEqual(listed.sessions.map(({ id }) => id), ["engineering-session"]);
+    const corrected = await correctAdminAttendance(
+      manager,
+      "engineering-session",
+      { mode: "WFH", reason: "Corrected by the assigned department manager." },
+      stub.database,
+    );
+    assert.equal(corrected.mode, "WFH");
+    await assert.rejects(
+      correctAdminAttendance(
+        manager,
+        "finance-session",
+        { mode: "WFH", reason: "Attempt to access another department." },
+        stub.database,
+      ),
+      AdminAttendanceAuthorizationError,
+    );
+    assert.equal(stub.sessionById.get("finance-session")?.mode, "OFFICE");
+  });
+
+  it("allows an HR Department Manager cross-department attendance reads and direct corrections", async () => {
+    const stub = createDatabase([
+      makeSession("engineering-session", "OFFICE", "Asia/Colombo", "supervisor-user", "engineering-dept"),
+      makeSession("finance-session", "OFFICE", "Asia/Dhaka", "supervisor-user", "finance-dept"),
+    ], undefined, { managerDepartmentId: "hr-dept", managerDepartmentName: "Human Resources" });
+    const manager = { id: "department-manager", role: Role.DEPARTMENT_MANAGER };
+    const listed = await listAdminAttendance(manager, {}, stub.database);
+    assert.deepEqual(listed.sessions.map(({ id }) => id), ["engineering-session", "finance-session"]);
+    const corrected = await correctAdminAttendance(
+      manager,
+      "finance-session",
+      { mode: "WFH", reason: "HR verified a cross-department correction." },
+      stub.database,
+    );
+    assert.equal(corrected.mode, "WFH");
+    assert.equal(stub.calls.auditData?.actorId, manager.id);
+    assert.equal(stub.calls.auditData?.reason, "HR verified a cross-department correction.");
+  });
+
+  it("routes HR and Supervisor self-corrections through the independent request workflow", async () => {
+    const hrOwnSession = createDatabase([makeSession("hr-self")]);
+    await assert.rejects(
+      correctAdminAttendance(
+        { id: "employee-hr-self", role: Role.HR_ADMINISTRATOR },
+        "hr-self",
+        { mode: "WFH", reason: "Self correction attempt." },
+        hrOwnSession.database,
+      ),
+      /Submit a correction request/,
+    );
+    assert.equal(hrOwnSession.calls.updateData, undefined);
+
+    const supervisorOwnSession = createDatabase([makeSession("supervisor-self", "OFFICE", "Asia/Colombo", "employee-supervisor-self")]);
+    await assert.rejects(
+      correctAdminAttendance(
+        { id: "employee-supervisor-self", role: Role.SUPERVISOR },
+        "supervisor-self",
+        { mode: "WFH", reason: "Self correction attempt." },
+        supervisorOwnSession.database,
+      ),
+      /Submit a correction request/,
+    );
+    assert.equal(supervisorOwnSession.calls.updateData, undefined);
+  });
+
+  it("lists Supervisors only attendance sessions belonging to assigned employees", async () => {
+    const stub = createDatabase([
+      makeSession("assigned", "OFFICE", "Asia/Colombo", "supervisor-user"),
+      makeSession("unassigned", "WFH", "Asia/Colombo", "other-supervisor"),
+    ]);
+    const result = await listAdminAttendance({ id: "supervisor-user", role: Role.SUPERVISOR }, {}, stub.database);
+
+    assert.deepEqual(result.employees.map(({ id }) => id), ["employee-assigned"]);
+    assert.deepEqual(result.sessions.map(({ id }) => id), ["assigned"]);
+  });
+
+  it("does not write audit data when a concurrent session update invalidates the conditional correction", async () => {
+    const stub = createDatabase([makeSession("concurrent")], undefined, { failConditionalUpdate: true });
+    await assert.rejects(
+      correctAdminAttendance(
+        { id: "hr-user", role: Role.HR_ADMINISTRATOR },
+        "concurrent",
+        { mode: "WFH", reason: "Correct work mode." },
+        stub.database,
+      ),
+      /changed while the correction was being saved/,
+    );
+    assert.equal(stub.calls.auditData, undefined);
   });
 
   it("allows an admin to view multiple Office/WFH sessions without exposing password hashes", async () => {
@@ -260,7 +517,8 @@ describe("admin attendance access and corrections", () => {
     assert.equal(corrected.startAt.toISOString(), "2026-06-15T02:45:00.000Z");
     assert.equal(classifyWorkSession(corrected, "Asia/Colombo", testShift).arrival, "LATE");
     assert.deepEqual(Object.keys(stub.calls.updateData ?? {}), ["startAt"]);
-    assert.equal(stub.calls.auditData?.actionType, "ADMIN_ATTENDANCE_CORRECTED");
+    assert.equal(stub.calls.auditData?.actionType, "ATTENDANCE_DIRECTLY_CORRECTED");
+    assert.equal(stub.calls.auditData?.actorId, admin.id);
     assert.deepEqual(stub.calls.auditData?.previousValues, {
       mode: "OFFICE",
       startAt: "2026-06-15T02:30:00.000Z",

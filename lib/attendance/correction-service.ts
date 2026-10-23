@@ -13,6 +13,11 @@ import { canSubmitOwnAttendanceCorrection, hasPermission } from "@/lib/auth/perm
 import { prisma } from "@/lib/prisma";
 import { getEmployeeLocalDayWindow } from "@/lib/attendance/timezone";
 import {
+  getActiveManagerDepartmentScope,
+  lockActiveManagerDepartmentScope,
+  lockEmployeeForApproval,
+} from "@/lib/organization/manager-scope";
+import {
   applyApprovedAttendanceCorrection,
   AttendanceCorrectionEngineConflictError,
 } from "@/lib/attendance/engine-service";
@@ -847,7 +852,14 @@ const correctionReviewSelect = {
       endAt: true,
       record: {
         select: {
-          employee: { select: { id: true, name: true, employeeCode: true } },
+          employee: {
+            select: {
+              id: true,
+              name: true,
+              employeeCode: true,
+              employee: { select: { departmentId: true } },
+            },
+          },
         },
       },
     },
@@ -865,6 +877,7 @@ const correctionReviewSelect = {
           id: true,
           name: true,
           employeeId: true,
+          departmentId: true,
           supervisor: { select: { userId: true } },
         },
       },
@@ -875,7 +888,8 @@ const correctionReviewSelect = {
       id: true,
       name: true,
       employeeCode: true,
-      employee: { select: { supervisor: { select: { userId: true } } } },
+      timeZone: true,
+      employee: { select: { departmentId: true, supervisor: { select: { userId: true } } } },
     },
   },
 } satisfies Prisma.AttendanceCorrectionRequestSelect;
@@ -883,11 +897,34 @@ const correctionReviewSelect = {
 function assertCorrectionReviewer(actor: AttendanceCorrectionActor): asserts actor is Exclude<AttendanceCorrectionActor, null> {
   if (
     !actor
+    || !actor.id
     || !hasPermission(actor.role, "attendance:correction:approve")
-    || (actor.role !== "SUPERVISOR" && actor.role !== "HR_ADMINISTRATOR")
+    || (actor.role !== "SUPERVISOR" && actor.role !== "HR_ADMINISTRATOR" && actor.role !== "ADMIN" && actor.role !== "DEPARTMENT_MANAGER")
   ) {
     throw new DailyAttendanceCorrectionAccessError();
   }
+}
+
+function departmentCorrectionQueueScope(departmentId: string): Prisma.AttendanceCorrectionRequestWhereInput {
+  return {
+    OR: [
+      {
+        attendanceDate: { not: null },
+        requestedMode: { not: null },
+        employee: { employee: { departmentId } },
+      },
+      {
+        attendanceDate: null,
+        sessionId: { not: null },
+        session: { record: { employee: { employee: { departmentId } } } },
+      },
+      {
+        attendanceDate: null,
+        sessionId: null,
+        dailyAttendance: { employee: { departmentId } },
+      },
+    ],
+  };
 }
 
 async function loadAttendanceDateState(
@@ -1135,38 +1172,53 @@ async function loadAttendanceDateState(
         }
 export async function listDailyAttendanceCorrections(
   actor: AttendanceCorrectionActor,
-  database: Pick<PrismaClient, "attendanceCorrectionRequest"> = prisma,
+  database: Pick<PrismaClient, "attendanceCorrectionRequest" | "employee" | "$transaction"> = prisma,
 ) {
   assertCorrectionReviewer(actor);
-  const stage = actor.role === "SUPERVISOR"
-    ? AttendanceCorrectionApprovalStage.SUPERVISOR
-    : AttendanceCorrectionApprovalStage.HR;
-  const where: Prisma.AttendanceCorrectionRequestWhereInput = {
-    status: AttendanceCorrectionStatus.PENDING,
-    currentApprovalStage: stage,
-    ...(actor.role === "SUPERVISOR"
-      ? {
-          OR: [
-            { dailyAttendance: { employee: { supervisor: { userId: actor.id } } } },
-            { employee: { employee: { supervisor: { userId: actor.id } } } },
-            {
-              session: {
-                record: {
-                  employee: {
-                    employee: { supervisor: { userId: actor.id } },
+  const listForScope = async (
+    queryDatabase: Pick<PrismaClient, "attendanceCorrectionRequest">,
+    managerScope: Awaited<ReturnType<typeof getActiveManagerDepartmentScope>>,
+  ) => {
+    const where: Prisma.AttendanceCorrectionRequestWhereInput = {
+      status: AttendanceCorrectionStatus.PENDING,
+      currentApprovalStage: {
+        in: [AttendanceCorrectionApprovalStage.SUPERVISOR, AttendanceCorrectionApprovalStage.HR],
+      },
+      ...(actor.role === "SUPERVISOR"
+        ? {
+            OR: [
+              { dailyAttendance: { employee: { supervisor: { userId: actor.id } } } },
+              { employee: { employee: { supervisor: { userId: actor.id } } } },
+              {
+                session: {
+                  record: {
+                    employee: {
+                      employee: { supervisor: { userId: actor.id } },
+                    },
                   },
                 },
               },
-            },
-          ],
-        }
-      : {}),
+            ],
+          }
+        : {}),
+      ...(managerScope && !managerScope.isHrDepartment
+        ? departmentCorrectionQueueScope(managerScope.departmentId)
+        : {}),
+    };
+    return queryDatabase.attendanceCorrectionRequest.findMany({
+      where,
+      select: correctionReviewSelect,
+      orderBy: [{ requestedAt: "asc" }, { id: "asc" }],
+    });
   };
-  return database.attendanceCorrectionRequest.findMany({
-    where,
-    select: correctionReviewSelect,
-    orderBy: [{ requestedAt: "asc" }, { id: "asc" }],
-  });
+  if (actor.role === "DEPARTMENT_MANAGER") {
+    return database.$transaction(async (transaction) => {
+      const managerScope = await lockActiveManagerDepartmentScope(transaction, actor.id);
+      if (!managerScope) throw new DailyAttendanceCorrectionReviewerScopeError();
+      return listForScope(transaction, managerScope);
+    });
+  }
+  return listForScope(database, null);
 }
 
 export async function decideDailyAttendanceCorrection(
@@ -1208,6 +1260,7 @@ export async function decideDailyAttendanceCorrection(
               select: {
                 id: true,
                 userId: true,
+                departmentId: true,
                 supervisor: { select: { userId: true } },
               },
             },
@@ -1227,6 +1280,8 @@ export async function decideDailyAttendanceCorrection(
                   select: {
                     employee: {
                       select: {
+                        id: true,
+                        departmentId: true,
                         supervisor: { select: { userId: true } },
                       },
                     },
@@ -1241,10 +1296,15 @@ export async function decideDailyAttendanceCorrection(
             employee: {
               select: {
                 id: true,
+                departmentId: true,
                 supervisor: { select: { userId: true } },
               },
             },
           },
+        },
+        auditLogs: {
+          where: { actionType: "ATTENDANCE_CORRECTION_SUPERVISOR_APPROVED" },
+          select: { actorId: true },
         },
       },
     });
@@ -1256,15 +1316,30 @@ export async function decideDailyAttendanceCorrection(
     ) {
       throw new DailyAttendanceCorrectionStageError();
     }
-
-    const expectedRole = correction.currentApprovalStage === AttendanceCorrectionApprovalStage.SUPERVISOR
-      ? "SUPERVISOR"
-      : "HR_ADMINISTRATOR";
-    if (actor.role !== expectedRole) throw new DailyAttendanceCorrectionAccessError();
     const isDateCorrection = Boolean(correction.attendanceDate && correction.requestedMode);
     const isSessionModeCorrection = !isDateCorrection && Boolean(correction.sessionId);
+    const managerScope = actor.role === "DEPARTMENT_MANAGER"
+      ? await lockActiveManagerDepartmentScope(transaction, actor.id)
+      : null;
+    if (actor.role === "DEPARTMENT_MANAGER" && !managerScope) {
+      throw new DailyAttendanceCorrectionReviewerScopeError();
+    }
+    if (managerScope) {
+      const targetEmployee = isDateCorrection
+        ? correction.employee.employee
+        : isSessionModeCorrection
+          ? correction.session?.record.employee.employee
+          : correction.dailyAttendance?.employee;
+      if (!targetEmployee?.id || !targetEmployee.departmentId) {
+        throw new DailyAttendanceCorrectionReviewerScopeError();
+      }
+      await lockEmployeeForApproval(transaction, targetEmployee.id);
+      if (!managerScope.isHrDepartment && targetEmployee.departmentId !== managerScope.departmentId) {
+        throw new DailyAttendanceCorrectionReviewerScopeError();
+      }
+    }
     if (
-      correction.currentApprovalStage === AttendanceCorrectionApprovalStage.SUPERVISOR
+      actor.role === "SUPERVISOR"
       && (isSessionModeCorrection
         ? correction.session?.record.employee.employee?.supervisor?.userId !== actor.id
         : isDateCorrection
@@ -1275,6 +1350,12 @@ export async function decideDailyAttendanceCorrection(
     }
 
     if (correction.employeeId === actor.id || correction.requesterId === actor.id) {
+      throw new DailyAttendanceCorrectionSelfApprovalError();
+    }
+    if (
+      correction.currentApprovalStage === AttendanceCorrectionApprovalStage.HR
+      && correction.auditLogs.some(({ actorId }) => actorId === actor.id)
+    ) {
       throw new DailyAttendanceCorrectionSelfApprovalError();
     }
     if (isSessionModeCorrection) {
@@ -1409,12 +1490,19 @@ export async function decideDailyAttendanceCorrection(
         id: correction.id,
         status: AttendanceCorrectionStatus.PENDING,
         currentApprovalStage: correction.currentApprovalStage,
-        ...(correction.currentApprovalStage === AttendanceCorrectionApprovalStage.SUPERVISOR
+        ...(actor.role === "SUPERVISOR"
           ? isSessionModeCorrection
             ? { session: { record: { employee: { employee: { supervisor: { userId: actor.id } } } } } }
             : isDateCorrection
               ? { employee: { employee: { supervisor: { userId: actor.id } } } }
               : { dailyAttendance: { employee: { supervisor: { userId: actor.id } } } }
+          : {}),
+        ...(managerScope && !managerScope.isHrDepartment
+          ? isDateCorrection
+            ? { employee: { employee: { departmentId: managerScope.departmentId } } }
+            : isSessionModeCorrection
+              ? { session: { record: { employee: { employee: { departmentId: managerScope.departmentId } } } } }
+              : { dailyAttendance: { employee: { departmentId: managerScope.departmentId } } }
           : {}),
       },
       data: {
@@ -1541,6 +1629,7 @@ export async function decideDailyAttendanceCorrection(
     const auditNewValues: Prisma.InputJsonObject = {
       status,
       currentApprovalStage: nextStage,
+      actorRole: actor.role,
       ...(finalizedValues
         ? isSessionModeCorrection
           ? { session: finalizedValues }

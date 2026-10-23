@@ -264,6 +264,7 @@ function createHarness(options: {
               supervisor: { userId: "supervisor-user" },
             },
           },
+          auditLogs: [],
         };
       },
       updateMany: async ({ where, data }: {
