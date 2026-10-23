@@ -109,14 +109,6 @@ it("serializes real concurrent actions and admin reopen corrections in PostgreSQ
     }), 1);
   } finally {
     if (employeeRecordId) {
-      const tasks = await prisma.attendanceDailyCalculationTask.findMany({
-        where: { employeeId: employeeRecordId },
-        select: { id: true },
-      });
-      await prisma.attendanceDailyCalculationTaskEvent.deleteMany({
-        where: { taskId: { in: tasks.map(({ id }) => id) } },
-      });
-      await prisma.attendanceDailyCalculationTask.deleteMany({ where: { employeeId: employeeRecordId } });
       await prisma.attendanceRaw.deleteMany({ where: { employeeId: employeeRecordId } });
       await prisma.employee.delete({ where: { id: employeeRecordId } });
     }

@@ -7,8 +7,6 @@ import { classifySessionForShiftAssignments, groupSessionsByEmployeeLocalDay } f
 import type { WorkSessionTiming } from "@/lib/attendance/schedule";
 import type { EffectiveShiftAssignment } from "@/lib/attendance/shift-assignment";
 import { getEmployeeLocalDayWindow } from "@/lib/attendance/timezone";
-import { enqueueDailyAttendanceCalculation } from "./daily-reconciliation-queue";
-import { lockAttendanceUser } from "./locks";
 
 export class AttendanceStateError extends Error {
   constructor(message: string) {
@@ -22,7 +20,7 @@ function requestedMode(action: AttendanceAction) {
 }
 
 export async function lockAttendanceEmployee(tx: Prisma.TransactionClient, employeeId: string) {
-  await lockAttendanceUser(tx, employeeId);
+  await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${employeeId} FOR UPDATE`;
 }
 
 type AttendanceWriteDatabase = Pick<typeof prisma, "$transaction">;
@@ -98,7 +96,7 @@ export async function applyAttendanceAction(
         },
         include: { sessions: true },
       });
-      const punch = await tx.attendanceRaw.create({
+      await tx.attendanceRaw.create({
         data: {
           employeeId: employeeRecord.id,
           timestamp: startedAt,
@@ -109,12 +107,6 @@ export async function applyAttendanceAction(
           location,
         },
         select: { id: true },
-      });
-      await enqueueDailyAttendanceCalculation(tx, {
-        employeeId: employeeRecord.id,
-        attendanceDate: getEmployeeLocalDayWindow(startedAt, employee.timeZone).date,
-        timeZone: employee.timeZone,
-        punchId: punch.id,
       });
       return record.sessions[0];
     }
@@ -135,7 +127,7 @@ export async function applyAttendanceAction(
       where: { id: activeSession.id },
       data: { endAt: endedAt },
     });
-    const punch = await tx.attendanceRaw.create({
+    await tx.attendanceRaw.create({
       data: {
         employeeId: employeeRecord.id,
         timestamp: endedAt,
@@ -147,18 +139,6 @@ export async function applyAttendanceAction(
       },
       select: { id: true },
     });
-    const affectedDates = new Set([
-      getEmployeeLocalDayWindow(activeSession.startAt, employee.timeZone).date,
-      getEmployeeLocalDayWindow(endedAt, employee.timeZone).date,
-    ]);
-    for (const attendanceDate of affectedDates) {
-      await enqueueDailyAttendanceCalculation(tx, {
-        employeeId: employeeRecord.id,
-        attendanceDate,
-        timeZone: employee.timeZone,
-        punchId: punch.id,
-      });
-    }
     return updatedSession;
   });
 }

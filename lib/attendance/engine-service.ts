@@ -7,7 +7,6 @@ import {
   attendanceDailyWorkingHoursForStorage,
   calculateDailyAttendance,
   AttendanceEngineConfigurationError,
-  parseAttendanceDate,
   type DailyAttendanceCorrectionValues,
 } from "./engine";
 import { getEmployeeLocalDayWindow } from "./timezone";
@@ -26,13 +25,6 @@ export class AttendanceDailyPersistenceError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "AttendanceDailyPersistenceError";
-  }
-}
-
-export class AttendanceDailyCorrectionProtectedError extends Error {
-  constructor() {
-    super("Approved attendance corrections cannot be overwritten by routine recalculation.");
-    this.name = "AttendanceDailyCorrectionProtectedError";
   }
 }
 
@@ -57,14 +49,13 @@ const shiftConfigurationSelect = {
   workingDays: true,
 } satisfies Prisma.ShiftSelect;
 
-export type EngineTransaction = Prisma.TransactionClient;
+type EngineTransaction = Prisma.TransactionClient;
 
 async function calculateForEmployeeDay(
   transaction: EngineTransaction,
   employeeId: string,
   date: string,
   correction?: DailyAttendanceCorrectionValues,
-  timeZoneOverride?: string,
 ) {
   const employee = await transaction.employee.findUnique({
     where: { id: employeeId },
@@ -103,10 +94,9 @@ async function calculateForEmployeeDay(
     : null;
   const applicableShift = optionalSaturdayWithoutAssignment ? null : selectedShift;
 
-  const timeZone = timeZoneOverride ?? employee.user.timeZone;
   const { startAt, endAt } = getEmployeeLocalDayWindow(
-    fromZonedTime(`${date}T12:00:00.000`, timeZone),
-    timeZone,
+    fromZonedTime(`${date}T12:00:00.000`, employee.user.timeZone),
+    employee.user.timeZone,
   );
   const punches = await transaction.attendanceRaw.findMany({
     where: { employeeId, timestamp: { gte: startAt, lt: endAt } },
@@ -136,7 +126,7 @@ async function calculateForEmployeeDay(
   const calculation = calculateDailyAttendance({
     employeeId,
     date,
-    timeZone,
+    timeZone: employee.user.timeZone,
     shift: applicableShift
       ? {
           ...applicableShift,
@@ -166,48 +156,29 @@ async function calculateForEmployeeDay(
   };
 }
 
-export async function calculateAndPersistDailyAttendanceInTransaction(
-  employeeId: string,
-  date: string,
-  transaction: EngineTransaction,
-  timeZoneOverride?: string,
-) {
-  const dateValue = parseAttendanceDate(date);
-  await transaction.$queryRaw`SELECT "id" FROM "Employee" WHERE "id" = ${employeeId} FOR UPDATE`;
-  const existing = await transaction.attendanceDaily.findMany({
-    where: { employeeId, date: dateValue },
-    select: {
-      id: true,
-      correctionRequests: {
-        where: { status: "APPROVED" },
-        select: { id: true },
-        take: 1,
-      },
-    },
-    take: 2,
-  });
-  if (existing.length > 1) {
-    throw new AttendanceDailyPersistenceError("Multiple daily attendance rows exist for this employee and date.");
-  }
-  if (existing[0]?.correctionRequests?.length) throw new AttendanceDailyCorrectionProtectedError();
-
-  const calculated = await calculateForEmployeeDay(transaction, employeeId, date, undefined, timeZoneOverride);
-  const attendanceDaily = existing[0]
-    ? await transaction.attendanceDaily.update({ where: { id: existing[0].id }, data: calculated.data })
-    : await transaction.attendanceDaily.create({ data: calculated.data });
-
-  return { calculation: calculated.calculation, attendanceDaily };
-}
-
 export async function calculateAndPersistDailyAttendance(
   employeeId: string,
   date: string,
   database: EngineDatabase = prisma,
-  timeZoneOverride?: string,
 ) {
-  return database.$transaction((transaction) =>
-    calculateAndPersistDailyAttendanceInTransaction(employeeId, date, transaction, timeZoneOverride),
-  );
+  return database.$transaction(async (transaction) => {
+    await transaction.$queryRaw`SELECT "id" FROM "Employee" WHERE "id" = ${employeeId} FOR UPDATE`;
+    const calculated = await calculateForEmployeeDay(transaction, employeeId, date);
+    const existing = await transaction.attendanceDaily.findMany({
+      where: { employeeId, date: calculated.dateValue },
+      select: { id: true },
+      take: 2,
+    });
+    if (existing.length > 1) {
+      throw new AttendanceDailyPersistenceError("Multiple daily attendance rows exist for this employee and date.");
+    }
+
+    const attendanceDaily = existing[0]
+      ? await transaction.attendanceDaily.update({ where: { id: existing[0].id }, data: calculated.data })
+      : await transaction.attendanceDaily.create({ data: calculated.data });
+
+    return { calculation: calculated.calculation, attendanceDaily };
+  });
 }
 
 export async function applyApprovedAttendanceCorrection(

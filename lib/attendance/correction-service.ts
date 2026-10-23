@@ -14,7 +14,6 @@ import {
   applyApprovedAttendanceCorrection,
   AttendanceCorrectionEngineConflictError,
 } from "@/lib/attendance/engine-service";
-import { lockAttendanceUser } from "@/lib/attendance/locks";
 
 type AttendanceCorrectionActor = { id: string; role: Role } | null;
 type AttendanceCorrectionDatabase = Pick<PrismaClient, "$transaction">;
@@ -463,8 +462,6 @@ export async function decideDailyAttendanceCorrection(
         }
       : {};
     let finalizedValues: Prisma.InputJsonObject | undefined;
-
-    if (finalApproval) await lockAttendanceUser(transaction, correction.employeeId);
 
     const changed = await transaction.attendanceCorrectionRequest.updateMany({
       where: {

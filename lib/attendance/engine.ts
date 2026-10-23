@@ -51,14 +51,6 @@ export class AttendanceEngineConfigurationError extends Error {
   }
 }
 
-export function parseAttendanceDate(date: string) {
-  const parsedDate = new Date(`${date}T00:00:00.000Z`);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(parsedDate.getTime()) || parsedDate.toISOString().slice(0, 10) !== date) {
-    throw new AttendanceEngineConfigurationError("Attendance date must be a valid YYYY-MM-DD calendar date.");
-  }
-  return parsedDate;
-}
-
 function validInstant(value: Date) {
   return value instanceof Date && Number.isFinite(value.getTime());
 }
@@ -92,7 +84,10 @@ export function calculateDailyAttendance(input: {
   optionalWorkday?: boolean;
 }): AttendanceEngineResult {
   const { employeeId, date, timeZone, shift } = input;
-  const parsedDate = parseAttendanceDate(date);
+  const parsedDate = new Date(`${date}T00:00:00.000Z`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(parsedDate.getTime()) || parsedDate.toISOString().slice(0, 10) !== date) {
+    throw new AttendanceEngineConfigurationError("Attendance date must be a valid YYYY-MM-DD calendar date.");
+  }
   const localDay = getEmployeeLocalDayWindow(fromZonedTime(`${date}T12:00:00.000`, timeZone), timeZone);
   if (!shift) {
     if (input.optionalWorkday && input.punches.length === 0 && !input.correction) {

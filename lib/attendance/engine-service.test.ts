@@ -36,7 +36,6 @@ function createHarness(
 ) {
   const rawBefore = raw.map(({ id, timestamp, punchType }) => [id, timestamp.toISOString(), punchType]);
   const dailyRows: Array<Record<string, unknown> & { id: string }> = [];
-  let rawQuery: { timestamp: { gte: Date; lt: Date } } | null = null;
   let creates = 0;
   let updates = 0;
   const database = {
@@ -50,10 +49,7 @@ function createHarness(
         }),
       },
       attendanceRaw: {
-        findMany: async ({ where }: { where: { timestamp: { gte: Date; lt: Date } } }) => {
-          rawQuery = where;
-          return raw;
-        },
+        findMany: async () => raw,
       },
       holiday: {
         findFirst: async ({ where }: { where: { branch: string; applicableEmployeeGroups: { isEmpty: boolean } } }) => (
@@ -83,7 +79,6 @@ function createHarness(
     rawBefore,
     raw,
     dailyRows,
-    get rawQuery() { return rawQuery; },
     get creates() { return creates; },
     get updates() { return updates; },
   };
@@ -146,20 +141,6 @@ describe("attendance engine persistence boundary", () => {
     assert.equal(createdDaily[0].employeeId, "employee-1");
     assert.equal(createdDaily[0].shiftId, "shift-1");
     assert.deepEqual(raw.map(({ id, timestamp, punchType }) => [id, timestamp.toISOString(), punchType]), rawBefore);
-  });
-
-  it("uses the timezone captured with a reconciliation task across a different UTC date boundary", async () => {
-    const harness = createHarness([]);
-
-    await calculateAndPersistDailyAttendance(
-      "employee-1",
-      "2026-06-15",
-      harness.database,
-      "America/Los_Angeles",
-    );
-
-    assert.equal(harness.rawQuery?.timestamp.gte.toISOString(), "2026-06-15T07:00:00.000Z");
-    assert.equal(harness.rawQuery?.timestamp.lt.toISOString(), "2026-06-16T07:00:00.000Z");
   });
 
   it("updates an existing daily row on recalculation without writing raw punches", async () => {
