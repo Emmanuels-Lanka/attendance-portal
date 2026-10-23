@@ -88,14 +88,14 @@ export function EmployeeProfileCompletionForm({ contactEmail }: { contactEmail: 
       <section className="space-y-4 border-t border-[var(--line)] pt-5" aria-labelledby="gender-title">
         <div>
           <h2 id="gender-title" className="text-base font-semibold">Gender</h2>
-          <p className="mt-1 text-xs text-[var(--muted)]">This field is optional.</p>
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
-            <label htmlFor="gender" className="mb-1.5 block text-sm font-semibold">Gender (optional)</label>
+            <label htmlFor="gender" className="mb-1.5 block text-sm font-semibold">Gender</label>
             <select
               id="gender"
               name="gender"
+              required
               value={gender}
               onChange={(event) => {
                 setGender(event.target.value);
@@ -103,7 +103,7 @@ export function EmployeeProfileCompletionForm({ contactEmail }: { contactEmail: 
               }}
               className="min-h-10 w-full rounded-md border border-[var(--line)] bg-white px-3 py-2 text-sm text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--blue)]"
             >
-              <option value="">Select an option</option>
+              <option value="" disabled>Select an option</option>
               {employeeGenderValues.map((value) => (
                 <option key={value} value={value}>
                   {value === "MALE" ? "Male" : value === "FEMALE" ? "Female" : value === "PREFER_NOT_TO_SAY" ? "Prefer Not to Say" : "Custom"}
@@ -119,6 +119,8 @@ export function EmployeeProfileCompletionForm({ contactEmail }: { contactEmail: 
               type="text"
               maxLength={120}
               required={gender === "CUSTOM"}
+              pattern=".*\S.*"
+              title="Enter a nonblank custom gender."
               value={genderCustom}
               onChange={(event) => setGenderCustom(event.target.value)}
               className="min-h-10 w-full rounded-md border border-[var(--line)] bg-white px-3 py-2 text-sm text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--blue)]"
@@ -130,16 +132,13 @@ export function EmployeeProfileCompletionForm({ contactEmail }: { contactEmail: 
       <section className="space-y-4 border-t border-[var(--line)] pt-5" aria-labelledby="mother-details-title">
         <div>
           <h2 id="mother-details-title" className="text-base font-semibold">Mother details</h2>
-          <p className="mt-1 text-xs text-[var(--muted)]">At least one parent’s name and ID are required; contact numbers are optional.</p>
+          <p className="mt-1 text-xs text-[var(--muted)]">At least one parent’s name and contact numbers are required; IDs are optional.</p>
         </div>
         <div className="grid gap-4 sm:grid-cols-2">{motherFields.map((field) => <Field key={field.name} field={field} />)}</div>
       </section>
 
       <section className="space-y-4 border-t border-[var(--line)] pt-5" aria-labelledby="father-details-title">
-        <div>
-          <h2 id="father-details-title" className="text-base font-semibold">Father details</h2>
-          <p className="mt-1 text-xs text-[var(--muted)]">Enter both the name and ID for this parent, or leave this group blank.</p>
-        </div>
+        <h2 id="father-details-title" className="text-base font-semibold">Father details</h2>
         <div className="grid gap-4 sm:grid-cols-2">{fatherFields.map((field) => <Field key={field.name} field={field} />)}</div>
       </section>
 

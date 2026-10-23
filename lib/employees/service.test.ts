@@ -379,6 +379,14 @@ describe("employee management", () => {
       gender: null,
       genderCustom: null,
     });
+    assert.deepEqual(adminEmployeeProfilePatchSchema.parse({}), {});
+    assert.deepEqual(adminEmployeeProfilePatchSchema.parse({ gender: null }), { gender: null });
+    assert.deepEqual(adminEmployeeProfilePatchSchema.parse({ motherName: "Legacy partial parent" }), {
+      motherName: "Legacy partial parent",
+    });
+    assert.deepEqual(adminEmployeeProfilePatchSchema.parse({ fatherContactNumber: "+94770000000" }), {
+      fatherContactNumber: "+94770000000",
+    });
     assert.equal(adminEmployeeProfilePatchSchema.safeParse({ gender: "UNKNOWN" }).success, false);
     assert.equal(adminEmployeeProfilePatchSchema.safeParse({ gender: "CUSTOM", genderCustom: "" }).success, false);
 

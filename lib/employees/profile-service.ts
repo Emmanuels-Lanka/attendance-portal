@@ -24,8 +24,11 @@ const dateOfBirthSchema = z.string()
   .refine((value) => value <= new Date().toISOString().slice(0, 10), "Date of birth cannot be in the future.")
   .transform((value) => new Date(`${value}T00:00:00.000Z`));
 
-const optionalGenderSchema = nullableText(32).refine(
-  (value) => value === null || employeeGenderValues.some((choice) => choice === value),
+const requiredGenderSchema = z.preprocess(
+  (value) => typeof value === "string" ? value : "",
+  z.string().trim().min(1, "Choose a gender option.").max(32),
+).refine(
+  (value) => employeeGenderValues.some((choice) => choice === value),
   "Choose a valid gender option.",
 );
 
@@ -50,7 +53,7 @@ export const employeeProfileCompletionSchema = z.object({
   fatherName: nullableText(120),
   fatherId: nullableText(120),
   fatherContactNumber: nullableText(64),
-  gender: optionalGenderSchema,
+  gender: requiredGenderSchema,
   genderCustom: nullableText(120),
 }).superRefine((profile, context) => {
   for (const field of employeeProfileRequiredFields) {
@@ -59,30 +62,14 @@ export const employeeProfileCompletionSchema = z.object({
     }
   }
 
-  const motherComplete = profile.motherName !== null && profile.motherId !== null;
-  const fatherComplete = profile.fatherName !== null && profile.fatherId !== null;
-  const motherHasAnyValue = profile.motherName !== null || profile.motherId !== null || profile.motherContactNumber !== null;
-  const fatherHasAnyValue = profile.fatherName !== null || profile.fatherId !== null || profile.fatherContactNumber !== null;
+  const motherComplete = profile.motherName !== null && profile.motherContactNumber !== null;
+  const fatherComplete = profile.fatherName !== null && profile.fatherContactNumber !== null;
 
-  if (motherHasAnyValue && !motherComplete) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["motherName"],
-      message: "Enter both the mother's name and ID, or leave all mother details blank.",
-    });
-  }
-  if (fatherHasAnyValue && !fatherComplete) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["fatherName"],
-      message: "Enter both the father's name and ID, or leave all father details blank.",
-    });
-  }
   if (!motherComplete && !fatherComplete) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["motherName"],
-      message: "Provide both the name and ID for at least one parent.",
+      message: "Enter information for at least one parent.",
     });
   }
   if (profile.gender === "CUSTOM" && profile.genderCustom === null) {
