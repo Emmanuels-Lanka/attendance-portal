@@ -78,6 +78,7 @@ model AttendanceDaily {
   id            String    @id @default(cuid())
   employeeId    String
   date          DateTime  @db.Date
+  mode          DailyAttendanceMode?
   shiftId       String?
   firstIn       DateTime? @db.Timestamptz(3)
   lastOut       DateTime? @db.Timestamptz(3)
@@ -536,6 +537,12 @@ enum Role {
 enum WorkMode {
   OFFICE
   WFH
+}
+
+enum DailyAttendanceMode {
+  OFFICE
+  WFH
+  MIXED
 }
 
 enum AttendancePunchType {

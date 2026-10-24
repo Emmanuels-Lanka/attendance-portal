@@ -13,6 +13,7 @@ import {
 const persistedRecord = {
   id: "daily-1",
   date: new Date("2026-10-05T00:00:00.000Z"),
+  mode: "WFH" as string | null,
   firstIn: new Date("2026-10-04T23:00:00.000Z"),
   lastOut: new Date("2026-10-05T08:00:00.000Z"),
   workingHours: { toString: () => "8.00" },
@@ -144,6 +145,13 @@ describe("calculated daily attendance read service", () => {
     assert.equal(result.records[0].earlyMinutes, 0);
     assert.equal(result.records[0].status, "PRESENT");
     assert.equal(result.records[0].overtimeHours, null);
+  });
+
+  it("keeps legacy daily mode unknown instead of inferring it from a status or work request", async () => {
+    const legacyRecord = { ...persistedRecord, mode: null };
+    const result = await listCalculatedDailyAttendance(admin, {}, makeDatabase(1, [legacyRecord]).database);
+
+    assert.equal(result.records[0].mode, null);
   });
 
   it("applies employee, date, department, and implemented-status filters", async () => {
@@ -328,6 +336,7 @@ describe("calculated daily attendance read service", () => {
       select: {
         id: true,
         date: true,
+        mode: true,
         firstIn: true,
         lastOut: true,
         workingHours: true,

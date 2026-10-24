@@ -18,6 +18,7 @@ import {
   lockEmployeeForApproval,
 } from "@/lib/organization/manager-scope";
 import {
+  calculateAndPersistDailyAttendanceInTransaction,
   applyApprovedAttendanceCorrection,
   AttendanceCorrectionEngineConflictError,
 } from "@/lib/attendance/engine-service";
@@ -1161,6 +1162,7 @@ async function loadAttendanceDateState(
             attendance: {
               firstIn: applied.calculation.firstIn?.toISOString() ?? null,
               lastOut: applied.calculation.lastOut?.toISOString() ?? null,
+              mode: applied.calculation.mode,
               workingHours: applied.calculation.workingHours,
               lateMinutes: applied.calculation.lateMinutes,
               earlyMinutes: applied.calculation.earlyMinutes,
@@ -1223,6 +1225,92 @@ export async function listDailyAttendanceCorrections(
     });
   }
   return listForScope(database, null);
+}
+
+async function synchronizeDailyCorrectionSessions(
+  transaction: Prisma.TransactionClient,
+  input: {
+    employeeUserId: string;
+    date: string;
+    timeZone: string;
+    firstIn: Date | null | undefined;
+    lastOut: Date | null | undefined;
+    originalFirstIn: Date | null;
+    originalLastOut: Date | null;
+  },
+) {
+  const { startAt, endAt } = getEmployeeLocalDayWindow(
+    fromZonedTime(`${input.date}T12:00:00.000`, input.timeZone),
+    input.timeZone,
+  );
+  const sessions = await transaction.workSession.findMany({
+    where: {
+      record: { employeeId: input.employeeUserId },
+      OR: [
+        { startAt: { gte: startAt, lt: endAt } },
+        { endAt: { gte: startAt, lt: endAt } },
+      ],
+    },
+    select: { id: true, mode: true, startAt: true, endAt: true },
+    orderBy: [{ startAt: "asc" }, { id: "asc" }],
+  });
+  const updates = new Map<string, {
+    session: (typeof sessions)[number];
+    data: { startAt?: Date; endAt?: Date | null };
+  }>();
+  if (input.firstIn !== undefined) {
+    const matching = input.originalFirstIn
+      ? sessions.filter(({ startAt: value }) => value.getTime() === input.originalFirstIn!.getTime())
+      : [];
+    if (
+      matching.length > 1
+      || (sessions.length > 0 && matching.length === 0)
+      || (input.firstIn === null && matching.length > 0)
+    ) {
+      throw new DailyAttendanceCorrectionConflictError();
+    }
+    if (matching[0] && input.firstIn) {
+      updates.set(matching[0].id, { session: matching[0], data: { startAt: input.firstIn } });
+    }
+  }
+  if (input.lastOut !== undefined) {
+    const matching = input.originalLastOut
+      ? sessions.filter(({ endAt: value }) => value?.getTime() === input.originalLastOut!.getTime())
+      : input.originalFirstIn
+        ? sessions.filter(({ startAt: value, endAt }) =>
+            value.getTime() === input.originalFirstIn!.getTime() && endAt === null)
+        : [];
+    if (matching.length > 1) throw new DailyAttendanceCorrectionConflictError();
+    if (
+      (sessions.length > 0 && matching.length === 0)
+      || (
+        input.lastOut === null
+        && input.originalLastOut !== null
+        && sessions.some(({ endAt }) => endAt !== null)
+      )
+    ) {
+      throw new DailyAttendanceCorrectionConflictError();
+    }
+    if (matching[0]) {
+      const existing = updates.get(matching[0].id);
+      updates.set(matching[0].id, {
+        session: matching[0],
+        data: { ...existing?.data, endAt: input.lastOut },
+      });
+    }
+  }
+  for (const { session, data } of updates.values()) {
+    const changed = await transaction.workSession.updateMany({
+      where: {
+        id: session.id,
+        mode: session.mode,
+        startAt: session.startAt,
+        endAt: session.endAt,
+      },
+      data,
+    });
+    if (changed.count !== 1) throw new DailyAttendanceCorrectionConflictError();
+  }
 }
 
 export async function decideDailyAttendanceCorrection(
@@ -1540,11 +1628,49 @@ export async function decideDailyAttendanceCorrection(
         if (!finalizedSession || finalizedSession.mode !== correction.requestedMode) {
           throw new DailyAttendanceCorrectionConflictError();
         }
+        const employeeRecordId = correction.session?.record.employee.employee?.id;
+        if (!employeeRecordId) throw new DailyAttendanceCorrectionConflictError();
+        const owner = await transaction.user.findUnique({
+          where: { id: correction.employeeId },
+          select: { timeZone: true },
+        });
+        if (!owner) throw new DailyAttendanceCorrectionConflictError();
+        const startDate = getEmployeeLocalDayWindow(finalizedSession.startAt, owner.timeZone).date;
+        const dates = new Set([
+          startDate,
+          ...(finalizedSession.endAt
+            ? [getEmployeeLocalDayWindow(finalizedSession.endAt, owner.timeZone).date]
+            : []),
+        ]);
+        let recalculated: Awaited<ReturnType<typeof calculateAndPersistDailyAttendanceInTransaction>> | null = null;
+        for (const date of dates) {
+          const result = await calculateAndPersistDailyAttendanceInTransaction(
+            transaction,
+            employeeRecordId,
+            date,
+          );
+          if (date === startDate) {
+            recalculated = result;
+          }
+        }
+        if (!recalculated) throw new DailyAttendanceCorrectionConflictError();
+        const linked = await transaction.attendanceCorrectionRequest.updateMany({
+          where: { id: correction.id, status: AttendanceCorrectionStatus.APPROVED },
+          data: { dailyAttendanceId: recalculated.attendanceDaily.id },
+        });
+        if (linked.count !== 1) throw new DailyAttendanceCorrectionConflictError();
         finalizedValues = {
-          sessionId: finalizedSession.id,
-          mode: finalizedSession.mode,
-          startAt: finalizedSession.startAt.toISOString(),
-          endAt: finalizedSession.endAt?.toISOString() ?? null,
+          session: {
+            sessionId: finalizedSession.id,
+            mode: finalizedSession.mode,
+            startAt: finalizedSession.startAt.toISOString(),
+            endAt: finalizedSession.endAt?.toISOString() ?? null,
+          },
+          attendance: {
+            firstIn: recalculated.calculation.firstIn?.toISOString() ?? null,
+            lastOut: recalculated.calculation.lastOut?.toISOString() ?? null,
+            mode: recalculated.calculation.mode,
+          },
         };
       } else if (isDateCorrection) {
         const dateSnapshot = attendanceDateCorrectionSnapshotSchema.safeParse(correction.originalValues);
@@ -1599,6 +1725,28 @@ export async function decideDailyAttendanceCorrection(
           throw new DailyAttendanceCorrectionTargetNotFoundError();
         }
         try {
+        const owner = await transaction.user.findUnique({
+          where: { id: correction.employeeId },
+          select: { timeZone: true },
+        });
+        if (!owner) throw new DailyAttendanceCorrectionConflictError();
+        await synchronizeDailyCorrectionSessions(transaction, {
+          employeeUserId: correction.employeeId,
+          date: attendance.date.toISOString().slice(0, 10),
+          timeZone: owner.timeZone,
+          firstIn: requested.firstIn === undefined
+            ? undefined
+            : requested.firstIn === null
+              ? null
+              : new Date(requested.firstIn),
+          lastOut: requested.lastOut === undefined
+            ? undefined
+            : requested.lastOut === null
+              ? null
+              : new Date(requested.lastOut),
+          originalFirstIn: attendance.firstIn,
+          originalLastOut: attendance.lastOut,
+        });
         const applied = await applyApprovedAttendanceCorrection(transaction, {
           dailyAttendanceId: correction.dailyAttendanceId,
           employeeId: attendance.employee.id,
@@ -1636,7 +1784,7 @@ export async function decideDailyAttendanceCorrection(
       actorRole: actor.role,
       ...(finalizedValues
         ? isSessionModeCorrection
-          ? { session: finalizedValues }
+          ? finalizedValues
           : isDateCorrection
             ? finalizedValues
             : { attendance: finalizedValues }

@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { Prisma, PrismaClient } from "@prisma/client";
+import type { DailyAttendanceMode, Prisma, PrismaClient, WorkMode } from "@prisma/client";
 import { fromZonedTime } from "date-fns-tz";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
@@ -58,17 +58,25 @@ const approvedCorrectionValuesSchema = z.object({
   requestedMode: z.enum(["OFFICE", "WFH"]).optional(),
 }).strict();
 
+type ApprovedCorrectionValues = DailyAttendanceCorrectionValues & {
+  fallbackMode?: WorkMode | null;
+  fallbackModes?: Set<WorkMode>;
+};
+
 async function loadApprovedCorrectionValues(
   transaction: EngineTransaction,
   dailyAttendanceId: string,
-): Promise<DailyAttendanceCorrectionValues> {
+): Promise<ApprovedCorrectionValues> {
   const requests = await transaction.attendanceCorrectionRequest.findMany({
     where: { dailyAttendanceId, status: "APPROVED" },
     select: { requestedValues: true },
     orderBy: [{ resolvedAt: "asc" }, { requestedAt: "asc" }, { id: "asc" }],
   });
 
-  const correction: DailyAttendanceCorrectionValues = {};
+  const correction: ApprovedCorrectionValues = {
+    fallbackMode: null,
+    fallbackModes: new Set(),
+  };
   for (const request of requests) {
     const result = approvedCorrectionValuesSchema.safeParse(request.requestedValues);
     if (!result.success) {
@@ -80,6 +88,10 @@ async function loadApprovedCorrectionValues(
     if (result.data.lastOut !== undefined) {
       correction.lastOut = result.data.lastOut === null ? null : new Date(result.data.lastOut);
     }
+    if (result.data.requestedMode !== undefined) {
+      correction.fallbackModes?.add(result.data.requestedMode);
+      correction.fallbackMode = result.data.requestedMode;
+    }
   }
   return correction;
 }
@@ -88,12 +100,13 @@ async function calculateForEmployeeDay(
   transaction: EngineTransaction,
   employeeId: string,
   date: string,
-  correction?: DailyAttendanceCorrectionValues,
+  correction?: ApprovedCorrectionValues,
 ) {
   const employee = await transaction.employee.findUnique({
     where: { id: employeeId },
     select: {
       id: true,
+      userId: true,
       user: { select: { timeZone: true, countryCode: true } },
       shift: { select: shiftConfigurationSelect },
       shiftAssignments: {
@@ -134,8 +147,22 @@ async function calculateForEmployeeDay(
   const punches = await transaction.attendanceRaw.findMany({
     where: { employeeId, timestamp: { gte: startAt, lt: endAt } },
     orderBy: [{ timestamp: "asc" }, { id: "asc" }],
-    select: { id: true, timestamp: true, punchType: true },
+    select: { id: true, timestamp: true, punchType: true, workMode: true },
   });
+  const sessions = employee.userId
+    ? await transaction.workSession.findMany({
+        where: {
+          record: { employeeId: employee.userId },
+          OR: [
+            { startAt: { gte: startAt, lt: endAt } },
+            { endAt: { gte: startAt, lt: endAt } },
+          ],
+        },
+        select: { id: true, mode: true, startAt: true, endAt: true },
+        orderBy: [{ startAt: "asc" }, { id: "asc" }],
+      })
+    : [];
+  // Sessions hold correction-aware values; raw punches remain immutable calculation evidence.
   if (optionalSaturday && resolution.kind === "NON_WORKING_DAY" && punches.length > 0) {
     throw new AttendanceEngineConfigurationError(
       "Saturday punches exist but no Saturday-applicable Shift is assigned for this employee-local date.",
@@ -156,10 +183,47 @@ async function calculateForEmployeeDay(
         select: { id: true },
       })
     : null;
+  const modes = new Set<WorkMode>();
+  for (const session of sessions) {
+    modes.add(session.mode);
+  }
+  if (sessions.length === 0) {
+    if ((correction?.fallbackModes?.size ?? 0) > 1) {
+      throw new AttendanceDailyPersistenceError(
+        "Approved work-mode corrections conflict because no effective session is available.",
+      );
+    }
+    for (const punch of punches) {
+      if (punch.workMode) modes.add(punch.workMode);
+    }
+    if (correction?.fallbackMode) {
+      modes.clear();
+      modes.add(correction.fallbackMode);
+    }
+  }
+  const mode: DailyAttendanceMode | null = modes.size > 1
+    ? "MIXED"
+    : modes.values().next().value ?? null;
+  const sessionStarts = sessions
+    .map(({ startAt }) => startAt)
+    .filter((value) => value >= startAt && value < endAt)
+    .sort((left, right) => left.getTime() - right.getTime());
+  const sessionEnds = sessions
+    .map(({ endAt: value }) => value)
+    .filter((value): value is Date => Boolean(value && value >= startAt && value < endAt))
+    .sort((left, right) => left.getTime() - right.getTime());
+  const effectiveCorrection: DailyAttendanceCorrectionValues = {
+    ...(correction?.firstIn !== undefined ? { firstIn: correction.firstIn } : {}),
+    ...(correction?.lastOut !== undefined ? { lastOut: correction.lastOut } : {}),
+    ...(sessionStarts.length > 0 ? { firstIn: sessionStarts[0] } : {}),
+    ...(sessionStarts.length > 0 && sessionEnds.length === 0 ? { lastOut: null } : {}),
+    ...(sessionEnds.length > 0 ? { lastOut: sessionEnds.at(-1)! } : {}),
+  };
   const calculation = calculateDailyAttendance({
     employeeId,
     date,
     timeZone: employee.user.timeZone,
+    mode,
     shift: applicableShift
       ? {
           ...applicableShift,
@@ -167,7 +231,7 @@ async function calculateForEmployeeDay(
         }
       : null,
     punches,
-    correction,
+    correction: Object.keys(effectiveCorrection).length > 0 ? effectiveCorrection : undefined,
     holiday: holiday !== null,
     optionalWorkday: optionalSaturday,
   });
@@ -178,6 +242,7 @@ async function calculateForEmployeeDay(
     data: {
       employeeId,
       date: dateValue,
+      mode: calculation.mode,
       shiftId: calculation.shiftId,
       firstIn: calculation.firstIn,
       lastOut: calculation.lastOut,
@@ -189,33 +254,41 @@ async function calculateForEmployeeDay(
   };
 }
 
+export async function calculateAndPersistDailyAttendanceInTransaction(
+  transaction: EngineTransaction,
+  employeeId: string,
+  date: string,
+) {
+  await transaction.$queryRaw`SELECT "id" FROM "Employee" WHERE "id" = ${employeeId} FOR UPDATE`;
+  const dateValue = new Date(`${date}T00:00:00.000Z`);
+  const existing = await transaction.attendanceDaily.findMany({
+    where: { employeeId, date: dateValue },
+    select: { id: true },
+    take: 2,
+  });
+  if (existing.length > 1) {
+    throw new AttendanceDailyPersistenceError("Multiple daily attendance rows exist for this employee and date.");
+  }
+
+  const approvedCorrection = existing[0]
+    ? await loadApprovedCorrectionValues(transaction, existing[0].id)
+    : undefined;
+  const calculated = await calculateForEmployeeDay(transaction, employeeId, date, approvedCorrection);
+  const attendanceDaily = existing[0]
+    ? await transaction.attendanceDaily.update({ where: { id: existing[0].id }, data: calculated.data })
+    : await transaction.attendanceDaily.create({ data: calculated.data });
+
+  return { calculation: calculated.calculation, attendanceDaily };
+}
+
 export async function calculateAndPersistDailyAttendance(
   employeeId: string,
   date: string,
   database: EngineDatabase = prisma,
 ) {
-  return database.$transaction(async (transaction) => {
-    await transaction.$queryRaw`SELECT "id" FROM "Employee" WHERE "id" = ${employeeId} FOR UPDATE`;
-    const dateValue = new Date(`${date}T00:00:00.000Z`);
-    const existing = await transaction.attendanceDaily.findMany({
-      where: { employeeId, date: dateValue },
-      select: { id: true },
-      take: 2,
-    });
-    if (existing.length > 1) {
-      throw new AttendanceDailyPersistenceError("Multiple daily attendance rows exist for this employee and date.");
-    }
-
-    const approvedCorrection = existing[0]
-      ? await loadApprovedCorrectionValues(transaction, existing[0].id)
-      : undefined;
-    const calculated = await calculateForEmployeeDay(transaction, employeeId, date, approvedCorrection);
-    const attendanceDaily = existing[0]
-      ? await transaction.attendanceDaily.update({ where: { id: existing[0].id }, data: calculated.data })
-      : await transaction.attendanceDaily.create({ data: calculated.data });
-
-    return { calculation: calculated.calculation, attendanceDaily };
-  });
+  return database.$transaction((transaction) =>
+    calculateAndPersistDailyAttendanceInTransaction(transaction, employeeId, date),
+  );
 }
 
 export async function applyApprovedAttendanceCorrection(

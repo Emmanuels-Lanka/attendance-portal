@@ -34,8 +34,14 @@ function createHarness(
   shiftOverrides: ShiftOverrides = {},
   isOrganizationHoliday = false,
   existingDaily = false,
-  approvedCorrections: Array<{ requestedValues: unknown }> = [],
+  approvedCorrections: Array<{ requestedValues: unknown; status?: string; sessionId?: string | null }> = [],
   approvedSessionMode: "OFFICE" | "WFH" = "WFH",
+  effectiveSessions?: Array<{
+    id: string;
+    mode: "OFFICE" | "WFH";
+    startAt: Date;
+    endAt: Date | null;
+  }>,
 ) {
   let sessionMode = approvedSessionMode;
   let sessionModeWrites = 0;
@@ -51,6 +57,7 @@ function createHarness(
       employee: {
         findUnique: async () => ({
           id: "employee-1",
+          userId: "user-1",
           user: { timeZone: "Asia/Colombo", countryCode: "LK" },
           shift: { ...configuredShift, ...shiftOverrides },
         }),
@@ -58,14 +65,22 @@ function createHarness(
       attendanceRaw: {
         findMany: async () => raw,
       },
-      attendanceCorrectionRequest: {
-        findMany: async () => approvedCorrections,
-      },
       workSession: {
+        findMany: async () => effectiveSessions ?? (raw.length > 0 ? [{
+          id: "session-1",
+          mode: sessionMode,
+          startAt: raw.find(({ punchType }) => punchType === "IN")?.timestamp
+            ?? new Date("2026-06-15T03:00:00.000Z"),
+          endAt: [...raw].reverse().find(({ punchType }) => punchType === "OUT")?.timestamp ?? null,
+        }] : []),
         update: async ({ data }: { data: { mode: "OFFICE" | "WFH" } }) => {
           sessionModeWrites += 1;
           sessionMode = data.mode;
         },
+      },
+      attendanceCorrectionRequest: {
+        findMany: async ({ where }: { where: { status: string } }) => approvedCorrections
+          .filter(({ status }) => (status ?? "APPROVED") === where.status),
       },
       holiday: {
         findFirst: async ({ where }: { where: { branch: string; applicableEmployeeGroups: { isEmpty: boolean } } }) => (
@@ -225,7 +240,12 @@ describe("attendance engine persistence boundary", () => {
     const approvedCorrections = [{
       requestedValues: { firstIn: "2026-06-15T03:20:00.000Z" },
     }];
-    const harness = createHarness(raw, {}, false, true, approvedCorrections);
+    const harness = createHarness(raw, {}, false, true, approvedCorrections, "WFH", [{
+      id: "session-1",
+      mode: "WFH",
+      startAt: new Date("2026-06-15T03:20:00.000Z"),
+      endAt: new Date("2026-06-15T12:00:00.000Z"),
+    }]);
     const result = await calculateAndPersistDailyAttendance("employee-1", "2026-06-15", harness.database);
 
     assert.equal(result.calculation.firstIn?.toISOString(), "2026-06-15T03:20:00.000Z");
@@ -457,9 +477,66 @@ describe("attendance engine persistence boundary", () => {
       { id: "out", timestamp: new Date("2026-06-15T12:00:00.000Z"), punchType: "OUT" },
     ], {}, false, true, [], "WFH");
 
-    await calculateAndPersistDailyAttendance("employee-1", "2026-06-15", harness.database);
+    const result = await calculateAndPersistDailyAttendance("employee-1", "2026-06-15", harness.database);
 
     assert.equal(harness.sessionMode, "WFH");
     assert.equal(harness.sessionModeWrites, 0);
+    assert.equal(result.calculation.mode, "WFH");
+    assert.equal(result.attendanceDaily.mode, "WFH");
+  });
+
+  it("applies approved mode-only and timestamp-plus-mode corrections when no effective session exists", async () => {
+    const raw = [
+      { id: "in", timestamp: new Date("2026-06-15T03:00:00.000Z"), punchType: "IN" as const },
+      { id: "out", timestamp: new Date("2026-06-15T12:00:00.000Z"), punchType: "OUT" as const },
+    ];
+    const modeOnly = createHarness(raw, {}, false, true, [{
+      requestedValues: { requestedMode: "WFH" },
+    }], "OFFICE", []);
+    const modeResult = await calculateAndPersistDailyAttendance("employee-1", "2026-06-15", modeOnly.database);
+    assert.equal(modeResult.calculation.mode, "WFH");
+    assert.equal(modeResult.attendanceDaily.mode, "WFH");
+
+    const timestampAndMode = createHarness(raw, {}, false, true, [{
+      requestedValues: {
+        firstIn: "2026-06-15T03:20:00.000Z",
+        requestedMode: "WFH",
+      },
+    }], "OFFICE", []);
+    const combinedResult = await calculateAndPersistDailyAttendance("employee-1", "2026-06-15", timestampAndMode.database);
+    assert.equal(combinedResult.calculation.mode, "WFH");
+    assert.equal(combinedResult.calculation.firstIn?.toISOString(), "2026-06-15T03:20:00.000Z");
+  });
+
+  it("does not use pending or rejected correction modes during recalculation", async () => {
+    for (const status of ["PENDING", "REJECTED"]) {
+      const harness = createHarness([], {}, false, true, [{
+        requestedValues: { requestedMode: "WFH" },
+        status,
+      }], "OFFICE", []);
+
+      const result = await calculateAndPersistDailyAttendance("employee-1", "2026-06-15", harness.database);
+
+      assert.equal(result.calculation.mode, null, `${status} must not affect calculated mode`);
+      assert.equal(result.attendanceDaily.mode, null, `${status} must not be persisted as the daily mode`);
+    }
+  });
+
+  it("stores MIXED when multiple effective sessions use different work modes", async () => {
+    const raw = [
+      { id: "in-office", timestamp: new Date("2026-06-15T03:00:00.000Z"), punchType: "IN" as const },
+      { id: "out-office", timestamp: new Date("2026-06-15T05:00:00.000Z"), punchType: "OUT" as const },
+      { id: "in-wfh", timestamp: new Date("2026-06-15T07:00:00.000Z"), punchType: "IN" as const },
+      { id: "out-wfh", timestamp: new Date("2026-06-15T12:00:00.000Z"), punchType: "OUT" as const },
+    ];
+    const harness = createHarness(raw, {}, false, false, [], "OFFICE", [
+      { id: "office-session", mode: "OFFICE", startAt: raw[0].timestamp, endAt: raw[1].timestamp },
+      { id: "wfh-session", mode: "WFH", startAt: raw[2].timestamp, endAt: raw[3].timestamp },
+    ]);
+
+    const result = await calculateAndPersistDailyAttendance("employee-1", "2026-06-15", harness.database);
+
+    assert.equal(result.calculation.mode, "MIXED");
+    assert.equal(result.attendanceDaily.mode, "MIXED");
   });
 });

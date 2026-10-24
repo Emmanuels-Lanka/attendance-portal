@@ -160,6 +160,7 @@ export async function listCalculatedDailyAttendance(
     select: {
       id: true,
       date: true,
+      mode: true,
       firstIn: true,
       lastOut: true,
       workingHours: true,

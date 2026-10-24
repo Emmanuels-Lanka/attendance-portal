@@ -1,5 +1,5 @@
 import { fromZonedTime } from "date-fns-tz";
-import type { AttendancePunchType } from "@prisma/client";
+import type { AttendancePunchType, DailyAttendanceMode } from "@prisma/client";
 import { getEmployeeLocalDayWindow } from "./timezone";
 import { assessAttendanceArrival } from "./schedule";
 
@@ -31,6 +31,7 @@ export type AttendanceEngineShift = {
 export type AttendanceEngineResult = {
   employeeId: string;
   date: string;
+  mode: DailyAttendanceMode | null;
   shiftId: string | null;
   firstIn: Date | null;
   lastOut: Date | null;
@@ -77,6 +78,7 @@ export function calculateDailyAttendance(input: {
   employeeId: string;
   date: string;
   timeZone: string;
+  mode?: DailyAttendanceMode | null;
   shift: AttendanceEngineShift | null;
   punches: readonly RawAttendancePunch[];
   correction?: DailyAttendanceCorrectionValues;
@@ -94,6 +96,7 @@ export function calculateDailyAttendance(input: {
       return {
         employeeId,
         date,
+        mode: input.mode ?? null,
         shiftId: null,
         firstIn: null,
         lastOut: null,
@@ -305,6 +308,7 @@ export function calculateDailyAttendance(input: {
   return {
     employeeId,
     date,
+    mode: input.mode ?? null,
     shiftId: shift.id,
     firstIn,
     lastOut,

@@ -32,7 +32,7 @@ type TestSession = {
     email: string;
     role: Role;
     isActive: boolean;
-    employee: { departmentId: string; supervisor: { userId: string | null } };
+    employee: { id?: string; departmentId: string; supervisor: { userId: string | null } };
   } };
 };
 
@@ -71,11 +71,18 @@ function createDatabase(
     failConditionalUpdate?: boolean;
     managerDepartmentId?: string | null;
     managerDepartmentName?: string;
+    hasRawPunchEvidence?: boolean;
   } = {},
 ) {
   const sessionById = new Map(sessions.map((session) => [session.id, session]));
   const employeeRows = [...new Map(sessions.map((session) => [session.record.employee.id, session.record.employee])).values()];
-  const calls: { findWhere?: unknown; employeeSelect?: unknown; updateData?: Record<string, unknown>; auditData?: Record<string, unknown> } = {};
+  const calls: {
+    findWhere?: unknown;
+    rawWhere?: unknown;
+    employeeSelect?: unknown;
+    updateData?: Record<string, unknown>;
+    auditData?: Record<string, unknown>;
+  } = {};
   const workSession = {
     findMany: async (args: { where: unknown; include: unknown }) => {
       calls.findWhere = args.where;
@@ -108,7 +115,7 @@ function createDatabase(
       if (session && select) return {
         record: {
           employeeId: session.record.employee.id,
-          employee: { employee: { id: `employee-record-${session.record.employee.id}` } },
+          employee: { employee: { id: session.record.employee.employee.id } },
         },
       };
       return session ? { ...session } : null;
@@ -187,6 +194,12 @@ function createDatabase(
       }),
     },
     workSession,
+    attendanceRaw: {
+      findMany: async ({ where }: { where: unknown }) => {
+        calls.rawWhere = where;
+        return options.hasRawPunchEvidence ? [{ id: "raw-punch" }] : [];
+      },
+    },
     attendanceAuditLog: {
       create: async ({ data }: { data: Record<string, unknown> }) => { calls.auditData = data; return data; },
     },
@@ -269,6 +282,107 @@ describe("admin attendance access and corrections", () => {
       mode: "OFFICE",
       startAt: "2026-06-15T02:30:00.000Z",
       endAt: null,
+    });
+
+    it("recalculates the daily result from an effective direct correction without rewriting raw punches", async () => {
+      const session = {
+        id: "direct-recalc",
+        recordId: "record-1",
+        mode: "OFFICE" as const,
+        startAt: new Date("2026-06-15T03:00:00.000Z"),
+        endAt: new Date("2026-06-15T12:00:00.000Z"),
+        record: {
+          employeeId: "user-1",
+          employee: {
+            id: "user-1",
+            name: "Alex Employee",
+            email: "employee@example.invalid",
+            employeeCode: "E-1",
+            countryCode: "LK",
+            timeZone: "Asia/Colombo",
+            role: Role.EMPLOYEE,
+            isActive: true,
+            employee: {
+              id: "employee-record-1",
+              departmentId: "engineering-dept",
+              supervisor: { userId: "supervisor-user" },
+            },
+          },
+        },
+      };
+      const rawPunches = [
+        { id: "raw-in", timestamp: session.startAt, punchType: "IN" as const, workMode: "OFFICE" as const },
+        { id: "raw-out", timestamp: session.endAt, punchType: "OUT" as const, workMode: "OFFICE" as const },
+      ];
+      const rawBefore = structuredClone(rawPunches);
+      const dailyRows: Array<Record<string, unknown> & { id: string }> = [];
+      const transaction = {
+        $queryRaw: async () => [],
+        workSession: {
+          findUnique: async () => structuredClone(session),
+          updateMany: async ({ data }: { data: Partial<typeof session> }) => {
+            Object.assign(session, data);
+            return { count: 1 };
+          },
+          findMany: async () => [{
+            id: session.id,
+            mode: session.mode,
+            startAt: session.startAt,
+            endAt: session.endAt,
+          }],
+        },
+        employee: {
+          findUnique: async () => ({
+            id: "employee-record-1",
+            userId: "user-1",
+            user: { timeZone: "Asia/Colombo", countryCode: "LK" },
+            shift: {
+              id: "shift-1",
+              startTime: new Date("1970-01-01T08:30:00.000Z"),
+              endTime: new Date("1970-01-01T17:30:00.000Z"),
+              gracePeriodMinutes: 10,
+              lateThresholdMinutes: 0,
+              earlyDepartureThresholdMinutes: 0,
+              breakDurationMinutes: 0,
+              minimumWorkingHours: "8",
+              overtimeEligible: false,
+              roundingRules: null,
+            },
+            shiftAssignments: [],
+          }),
+        },
+        attendanceRaw: { findMany: async () => rawPunches },
+        attendanceDaily: {
+          findMany: async () => dailyRows.map(({ id }) => ({ id })),
+          create: async ({ data }: { data: Record<string, unknown> }) => {
+            const row = { id: "daily-1", ...data };
+            dailyRows.push(row);
+            return row;
+          },
+          update: async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+            Object.assign(dailyRows.find(({ id }) => id === where.id)!, data);
+            return dailyRows.find(({ id }) => id === where.id);
+          },
+        },
+        attendanceCorrectionRequest: { findMany: async () => [] },
+        holiday: { findFirst: async () => null },
+        attendanceAuditLog: { create: async () => ({ id: "audit-1" }) },
+      };
+      const database = {
+        $transaction: async <T>(operation: (tx: typeof transaction) => Promise<T>) => operation(transaction),
+      } as never;
+
+      await correctAdminAttendance(admin, session.id, {
+        startAt: "2026-06-15T08:45",
+        endAt: "2026-06-15T17:15",
+        mode: "WFH",
+        reason: "Verified corrected session values.",
+      }, database);
+
+      assert.equal(dailyRows[0]?.mode, "WFH");
+      assert.equal((dailyRows[0]?.firstIn as Date).toISOString(), "2026-06-15T03:15:00.000Z");
+      assert.equal((dailyRows[0]?.lastOut as Date).toISOString(), "2026-06-15T11:45:00.000Z");
+      assert.deepEqual(rawPunches, rawBefore);
     });
     assert.deepEqual(stub.calls.auditData?.newValues, {
       mode: "OFFICE",
@@ -646,15 +760,16 @@ describe("admin attendance access and corrections", () => {
     await assert.rejects(correctAdminAttendance(admin, "missing", { endAt: "", reason: "Fix missing session" }, stub.database), AdminAttendanceNotFoundError);
   });
 
-  it("rejects moving a session onto another employee-local attendance day without changing history", async () => {
+  it("rejects moving a session across employee-local dates without changing history", async () => {
     const first = makeSession("first-day");
-    const second = { ...makeSession("second-day"), record: first.record, startAt: new Date("2026-06-16T02:30:00.000Z") };
-    const stub = createDatabase([first, second]);
+    first.record.employee.employee.id = "employee-record-first-day";
+    const stub = createDatabase([first], undefined, { hasRawPunchEvidence: true });
 
     await assert.rejects(
       correctAdminAttendance(admin, "first-day", { startAt: "2026-06-16T08:15", reason: "Fix incorrect date" }, stub.database),
-      /already exists on that employee-local day/,
+      /cannot move to another employee-local date while raw punch evidence exists/,
     );
+    assert.deepEqual((stub.calls.rawWhere as { employeeId: string }).employeeId, "employee-record-first-day");
     assert.equal(stub.sessionById.get("first-day")?.startAt.toISOString(), "2026-06-15T02:30:00.000Z");
     assert.equal(stub.calls.auditData, undefined);
   });

@@ -44,6 +44,13 @@ function hoursLabel(value: { toString(): string } | null) {
   return value ? `${value.toString()} h` : "—";
 }
 
+function modeLabel(mode: "OFFICE" | "WFH" | "MIXED" | null) {
+  if (mode === "OFFICE") return "Office";
+  if (mode === "WFH") return "WFH";
+  if (mode === "MIXED") return "Mixed";
+  return "Unknown";
+}
+
 export default async function DailyAttendancePage({
   searchParams,
 }: {
@@ -280,6 +287,7 @@ export default async function DailyAttendancePage({
                   <th className="px-4 py-3 font-semibold">Department</th>
                   <th className="px-4 py-3 font-semibold">Date</th>
                   <th className="px-4 py-3 font-semibold">Shift</th>
+                  <th className="px-4 py-3 font-semibold">Mode</th>
                   <th className="px-4 py-3 font-semibold">First In</th>
                   <th className="px-4 py-3 font-semibold">Last Out</th>
                   <th className="px-4 py-3 font-semibold">Working Hours</th>
@@ -301,6 +309,7 @@ export default async function DailyAttendancePage({
                       <td className="px-4 py-3 text-[var(--muted)]">{record.employee.department?.name ?? "—"}</td>
                       <td className="px-4 py-3 tabular-nums">{record.date.toISOString().slice(0, 10)}</td>
                       <td className="px-4 py-3 text-[var(--muted)]">{record.shift?.name ?? "—"}</td>
+                      <td className="px-4 py-3 text-[var(--muted)]">{modeLabel(record.mode)}</td>
                       <td className="px-4 py-3 tabular-nums">{timeLabel(record.firstIn, record.employee.user?.timeZone ?? null)}</td>
                       <td className="px-4 py-3 tabular-nums">{timeLabel(record.lastOut, record.employee.user?.timeZone ?? null)}</td>
                       <td className="px-4 py-3 tabular-nums">{hoursLabel(record.workingHours)}</td>
@@ -333,6 +342,7 @@ export default async function DailyAttendancePage({
                   </div>
                   <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
                     <span className="text-[var(--muted)]">Shift: <span className="text-[var(--ink)]">{record.shift?.name ?? "—"}</span></span>
+                    <span className="text-[var(--muted)]">Mode: <span className="text-[var(--ink)]">{modeLabel(record.mode)}</span></span>
                     <span className="text-[var(--muted)]">Working: <span className="text-[var(--ink)]">{hoursLabel(record.workingHours)}</span></span>
                     <span className="text-[var(--muted)]">First In: <span className="text-[var(--ink)]">{timeLabel(record.firstIn, record.employee.user?.timeZone ?? null)}</span></span>
                     <span className="text-[var(--muted)]">Last Out: <span className="text-[var(--ink)]">{timeLabel(record.lastOut, record.employee.user?.timeZone ?? null)}</span></span>
