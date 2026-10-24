@@ -247,6 +247,151 @@ function createDatabase(
 
 const admin = { id: "admin-user", role: Role.ADMIN };
 
+function createCrossDateCorrectionDatabase(input: {
+  mode?: "OFFICE" | "WFH";
+  startAt: Date;
+  endAt: Date | null;
+  dailyDates: string[];
+  rawPunches?: Array<{ timestamp: Date; punchType: "IN" | "OUT"; workMode: "OFFICE" | "WFH" }>;
+}) {
+  const userId = "cross-date-user";
+  const employeeId = "cross-date-employee";
+  const session = {
+    id: "cross-date-session",
+    recordId: "cross-date-record",
+    mode: input.mode ?? "OFFICE" as const,
+    startAt: input.startAt,
+    endAt: input.endAt,
+    record: {
+      employeeId: userId,
+      employee: {
+        id: userId,
+        name: "Cross Date Employee",
+        email: "cross-date@example.invalid",
+        employeeCode: "CROSS-1",
+        countryCode: "LK",
+        timeZone: "Asia/Colombo",
+        role: Role.EMPLOYEE,
+        isActive: true,
+        employee: {
+          id: employeeId,
+          departmentId: "engineering-dept",
+          supervisor: { userId: "supervisor-user" },
+        },
+      },
+    },
+  };
+  const rawPunches = input.rawPunches ?? [];
+  const rawBefore = structuredClone(rawPunches);
+  const dailyRows = input.dailyDates.map((date, index) => ({
+    id: `daily-${date}`,
+    employeeId,
+    date: new Date(`${date}T00:00:00.000Z`),
+    mode: "OFFICE" as const,
+    firstIn: new Date(`${date}T02:30:00.000Z`),
+    lastOut: new Date(`${date}T12:00:00.000Z`),
+    status: `UNCHANGED-${index}`,
+  }));
+  const recalculatedDates: string[] = [];
+  const transaction = {
+    $queryRaw: async () => [],
+    workSession: {
+      findUnique: async ({ where, select }: { where: { id: string }; select?: unknown }) => {
+        if (where.id !== session.id) return null;
+        if (select) return { record: { employeeId: userId } };
+        return structuredClone(session);
+      },
+      updateMany: async ({ where, data }: {
+        where: { id: string; mode: "OFFICE" | "WFH"; startAt: Date; endAt: Date | null };
+        data: { mode?: "OFFICE" | "WFH"; startAt?: Date; endAt?: Date | null };
+      }) => {
+        if (
+          where.id !== session.id
+          || where.mode !== session.mode
+          || where.startAt.getTime() !== session.startAt.getTime()
+          || where.endAt?.getTime() !== session.endAt?.getTime()
+        ) return { count: 0 };
+        if (data.mode) session.mode = data.mode;
+        if (data.startAt) session.startAt = data.startAt;
+        if (data.endAt !== undefined) session.endAt = data.endAt;
+        return { count: 1 };
+      },
+      findMany: async ({ where }: {
+        where: {
+          record: { employeeId: string };
+          OR: Array<{ startAt?: { gte: Date; lt: Date }; endAt?: { gte: Date; lt: Date } }>;
+        };
+      }) => {
+        if (where.record.employeeId !== userId) return [];
+        const matches = where.OR.some((condition) =>
+          (condition.startAt && session.startAt >= condition.startAt.gte && session.startAt < condition.startAt.lt)
+          || (condition.endAt && session.endAt
+            && session.endAt >= condition.endAt.gte && session.endAt < condition.endAt.lt));
+        return matches
+          ? [{ id: session.id, mode: session.mode, startAt: session.startAt, endAt: session.endAt }]
+          : [];
+      },
+    },
+    employee: {
+      findUnique: async () => ({
+        id: employeeId,
+        userId,
+        user: { timeZone: "Asia/Colombo", countryCode: "LK" },
+        shift: {
+          id: "shift-1",
+          startTime: new Date("1970-01-01T08:30:00.000Z"),
+          endTime: new Date("1970-01-01T17:30:00.000Z"),
+          gracePeriodMinutes: 10,
+          lateThresholdMinutes: 0,
+          earlyDepartureThresholdMinutes: 0,
+          breakDurationMinutes: 0,
+          minimumWorkingHours: "8",
+          overtimeEligible: false,
+          roundingRules: null,
+          workingDays: ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"],
+        },
+        shiftAssignments: [],
+      }),
+    },
+    attendanceRaw: {
+      findMany: async ({ where }: {
+        where: { employeeId: string; timestamp: { gte: Date; lt: Date } };
+      }) => {
+        if (where.employeeId !== employeeId) return [];
+        return rawPunches.filter(({ timestamp }) =>
+          timestamp >= where.timestamp.gte && timestamp < where.timestamp.lt);
+      },
+    },
+    attendanceDaily: {
+      findMany: async ({ where }: { where: { employeeId: string; date: Date } }) => {
+        const date = where.date.toISOString().slice(0, 10);
+        recalculatedDates.push(date);
+        return dailyRows.filter((row) =>
+          row.employeeId === where.employeeId && row.date.getTime() === where.date.getTime())
+          .map(({ id }) => ({ id }));
+      },
+      create: async ({ data }: { data: Record<string, unknown> }) => {
+        const row = { id: `created-${dailyRows.length}`, ...data } as typeof dailyRows[number];
+        dailyRows.push(row);
+        return row;
+      },
+      update: async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+        const row = dailyRows.find(({ id }) => id === where.id);
+        if (!row) throw new Error("Expected matching daily fixture.");
+        Object.assign(row, data);
+        return row;
+      },
+    },
+    attendanceCorrectionRequest: { findMany: async () => [] },
+    holiday: { findFirst: async () => null },
+    attendanceAuditLog: { create: async () => ({ id: "audit-1" }) },
+  };
+  const database = {
+    $transaction: async <T>(operation: (tx: typeof transaction) => Promise<T>) => operation(transaction),
+  } as never;
+  return { database, session, rawPunches, rawBefore, dailyRows, recalculatedDates };
+}
+
 describe("admin attendance access and corrections", () => {
   it("rejects non-admin and unauthenticated attendance reads", async () => {
     const stub = createDatabase();
@@ -767,10 +912,67 @@ describe("admin attendance access and corrections", () => {
 
     await assert.rejects(
       correctAdminAttendance(admin, "first-day", { startAt: "2026-06-16T08:15", reason: "Fix incorrect date" }, stub.database),
-      /cannot move to another employee-local date while raw punch evidence exists/,
+      /cannot move an effective endpoint to another employee-local date while raw punch evidence exists/,
     );
     assert.deepEqual((stub.calls.rawWhere as { employeeId: string }).employeeId, "employee-record-first-day");
     assert.equal(stub.sessionById.get("first-day")?.startAt.toISOString(), "2026-06-15T02:30:00.000Z");
     assert.equal(stub.calls.auditData, undefined);
+  });
+
+  it("recalculates original and updated endpoint dates when a session's OUT date changes", async () => {
+    const startAt = new Date("2026-06-16T02:30:00.000Z");
+    const originalEndAt = new Date("2026-06-17T02:30:00.000Z");
+    const rawPunches = [
+      { timestamp: startAt, punchType: "IN" as const, workMode: "OFFICE" as const },
+    ];
+    const stub = createCrossDateCorrectionDatabase({
+      startAt,
+      endAt: originalEndAt,
+      dailyDates: ["2026-06-16", "2026-06-17", "2026-06-18", "2026-06-19"],
+      rawPunches,
+    });
+    const unrelatedBefore = structuredClone(stub.dailyRows[3]);
+
+    const corrected = await correctAdminAttendance(admin, "cross-date-session", {
+      endAt: "2026-06-18T09:00",
+      reason: "Correct the recorded departure date.",
+    }, stub.database);
+
+    assert.equal(corrected.endAt?.toISOString(), "2026-06-18T03:30:00.000Z");
+    assert.deepEqual(stub.recalculatedDates, ["2026-06-16", "2026-06-17", "2026-06-18"]);
+    assert.equal(stub.dailyRows[0].mode, "OFFICE");
+    assert.equal(stub.dailyRows[1].mode, null);
+    assert.equal(stub.dailyRows[1].lastOut, null);
+    assert.equal(stub.dailyRows[2].mode, "OFFICE");
+    assert.equal(stub.dailyRows[2].lastOut?.toISOString(), "2026-06-18T03:30:00.000Z");
+    assert.deepEqual(stub.dailyRows[3], unrelatedBefore);
+    assert.deepEqual(stub.rawPunches, stub.rawBefore);
+  });
+
+  it("recalculates each local date for a mode correction spanning two dates", async () => {
+    const startAt = new Date("2026-06-16T02:30:00.000Z");
+    const endAt = new Date("2026-06-17T02:30:00.000Z");
+    const rawPunches = [
+      { timestamp: startAt, punchType: "IN" as const, workMode: "OFFICE" as const },
+      { timestamp: endAt, punchType: "OUT" as const, workMode: "OFFICE" as const },
+    ];
+    const stub = createCrossDateCorrectionDatabase({
+      startAt,
+      endAt,
+      dailyDates: ["2026-06-16", "2026-06-17", "2026-06-18"],
+      rawPunches,
+    });
+    const unrelatedBefore = structuredClone(stub.dailyRows[2]);
+
+    await correctAdminAttendance(admin, "cross-date-session", {
+      mode: "WFH",
+      reason: "Correct the effective work mode.",
+    }, stub.database);
+
+    assert.deepEqual(stub.recalculatedDates, ["2026-06-16", "2026-06-17"]);
+    assert.equal(stub.dailyRows[0].mode, "WFH");
+    assert.equal(stub.dailyRows[1].mode, "WFH");
+    assert.deepEqual(stub.dailyRows[2], unrelatedBefore);
+    assert.deepEqual(stub.rawPunches, stub.rawBefore);
   });
 });

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { calculateAndPersistDailyAttendance, type EngineDatabase } from "./engine-service";
+import {
+  AttendanceDailyPersistenceError,
+  calculateAndPersistDailyAttendance,
+  type EngineDatabase,
+} from "./engine-service";
 
 const configuredShift = {
   id: "shift-1",
@@ -33,7 +37,7 @@ function createHarness(
   raw: Array<{ id: string; timestamp: Date; punchType: "IN" | "OUT" }>,
   shiftOverrides: ShiftOverrides = {},
   isOrganizationHoliday = false,
-  existingDaily = false,
+  existingDaily: boolean | number = false,
   approvedCorrections: Array<{ requestedValues: unknown; status?: string; sessionId?: string | null }> = [],
   approvedSessionMode: "OFFICE" | "WFH" = "WFH",
   effectiveSessions?: Array<{
@@ -46,9 +50,14 @@ function createHarness(
   let sessionMode = approvedSessionMode;
   let sessionModeWrites = 0;
   const rawBefore = raw.map(({ id, timestamp, punchType }) => [id, timestamp.toISOString(), punchType]);
-  const dailyRows: Array<Record<string, unknown> & { id: string }> = existingDaily
-    ? [{ id: "daily-existing", employeeId: "employee-1" }]
-    : [];
+  const existingDailyCount = typeof existingDaily === "number" ? existingDaily : Number(existingDaily);
+  const dailyRows: Array<Record<string, unknown> & { id: string }> = Array.from(
+    { length: existingDailyCount },
+    (_, index) => ({
+      id: existingDailyCount === 1 ? "daily-existing" : `daily-existing-${index + 1}`,
+      employeeId: "employee-1",
+    }),
+  );
   let creates = 0;
   let updates = 0;
   const database = {
@@ -469,6 +478,22 @@ describe("attendance engine persistence boundary", () => {
     assert.equal(first.attendanceDaily.id, second.attendanceDaily.id);
     assert.deepEqual(first.calculation, second.calculation);
     assert.deepEqual(harness.raw.map(({ id, timestamp, punchType }) => [id, timestamp.toISOString(), punchType]), harness.rawBefore);
+  });
+
+  it("fails safely when multiple daily rows exist for the same employee and date", async () => {
+    const harness = createHarness([
+      { id: "in", timestamp: new Date("2026-06-15T03:00:00.000Z"), punchType: "IN" },
+      { id: "out", timestamp: new Date("2026-06-15T12:00:00.000Z"), punchType: "OUT" },
+    ], {}, false, 2);
+
+    await assert.rejects(
+      calculateAndPersistDailyAttendance("employee-1", "2026-06-15", harness.database),
+      AttendanceDailyPersistenceError,
+    );
+
+    assert.equal(harness.creates, 0);
+    assert.equal(harness.updates, 0);
+    assert.equal(harness.dailyRows.length, 2);
   });
 
   it("keeps an approved session work-mode correction intact during daily recalculation", async () => {
