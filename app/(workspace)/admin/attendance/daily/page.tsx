@@ -5,18 +5,18 @@ import { redirect } from "next/navigation";
 import { AttendanceMapLink } from "@/components/attendance-map-link";
 import { AttendanceLocationAccuracy, AttendanceLocationPunchLabel } from "@/components/attendance-location-values";
 import {
-  dailyAttendanceFiltersSchema,
+  clearDailyAttendanceFiltersHref,
+  dailyAttendanceDateInTimeZone,
+  dailyAttendanceHref,
   listCalculatedDailyAttendance,
+  parseDailyAttendancePageFilters,
 } from "@/lib/attendance/daily-read";
 import { listAttendanceLocations } from "@/lib/attendance/location-service";
 import { canReadScopedAttendance, hasPermission } from "@/lib/auth/permissions";
+import { getDefaultTimeZone } from "@/lib/attendance/settings";
 import { requirePageUser } from "@/lib/auth/session";
 
 type SearchParams = Record<string, string | string[] | undefined>;
-
-function single(value: string | string[] | undefined) {
-  return typeof value === "string" ? value : "";
-}
 
 function statusPresentation(status: string | null) {
   switch (status) {
@@ -44,22 +44,6 @@ function hoursLabel(value: { toString(): string } | null) {
   return value ? `${value.toString()} h` : "—";
 }
 
-function attendanceHref(filters: {
-  date: string;
-  employeeId: string;
-  departmentId: string;
-  status: string;
-}, page: number) {
-  const query = new URLSearchParams();
-  if (filters.date) query.set("date", filters.date);
-  if (filters.employeeId) query.set("employeeId", filters.employeeId);
-  if (filters.departmentId) query.set("departmentId", filters.departmentId);
-  if (filters.status !== "ALL") query.set("status", filters.status);
-  if (page > 1) query.set("page", String(page));
-  const search = query.toString();
-  return `/admin/attendance/daily${search ? `?${search}` : ""}`;
-}
-
 export default async function DailyAttendancePage({
   searchParams,
 }: {
@@ -74,13 +58,8 @@ export default async function DailyAttendancePage({
     : actor.role === "DEPARTMENT_MANAGER" ? "Department attendance"
       : actor.role === "SUPERVISOR" ? "Assigned attendance" : "Administration";
   const params = await searchParams;
-  const filterResult = dailyAttendanceFiltersSchema.safeParse({
-    date: single(params.date),
-    employeeId: single(params.employeeId),
-    departmentId: single(params.departmentId),
-    status: single(params.status) || "ALL",
-    page: single(params.page) || "1",
-  });
+  const defaultDate = dailyAttendanceDateInTimeZone(new Date(), await getDefaultTimeZone());
+  const filterResult = parseDailyAttendancePageFilters(params, defaultDate);
 
   if (!filterResult.success) {
     return (
@@ -93,7 +72,7 @@ export default async function DailyAttendancePage({
           <p role="alert" className="text-sm text-[var(--danger)]">
             {filterResult.error.issues[0]?.message ?? "One or more filters are invalid."}
           </p>
-          <Link href="/admin/attendance/daily" className="mt-4 inline-flex h-10 items-center rounded-md border border-[var(--line)] px-4 text-sm font-medium hover:bg-zinc-50">
+          <Link href={clearDailyAttendanceFiltersHref(defaultDate)} className="mt-4 inline-flex h-10 items-center rounded-md border border-[var(--line)] px-4 text-sm font-medium hover:bg-zinc-50">
             Clear filters
           </Link>
         </section>
@@ -208,7 +187,7 @@ export default async function DailyAttendancePage({
           <button type="submit" className="h-10 rounded-md bg-[var(--action)] px-3.5 text-sm font-medium text-white hover:bg-[var(--action-hover)]">
             Apply filters
           </button>
-          <Link href="/admin/attendance/daily" className="inline-flex h-10 items-center rounded-md border border-[var(--line)] px-3.5 text-sm font-medium hover:bg-zinc-50">
+          <Link href={clearDailyAttendanceFiltersHref(defaultDate)} className="inline-flex h-10 items-center rounded-md border border-[var(--line)] px-3.5 text-sm font-medium hover:bg-zinc-50">
             Clear
           </Link>
         </div>
@@ -369,8 +348,8 @@ export default async function DailyAttendancePage({
             <nav aria-label="Calculated attendance pages" className="flex items-center justify-between border-t border-[var(--line)] px-4 py-3 text-sm">
               <span className="text-[var(--muted)]">Page {result.page} of {result.pageCount}</span>
               <div className="flex gap-2">
-                {result.page > 1 && <Link href={attendanceHref(filters, result.page - 1)} className="rounded-md border border-[var(--line)] px-3 py-1.5 hover:bg-zinc-50">Previous</Link>}
-                {result.page < result.pageCount && <Link href={attendanceHref(filters, result.page + 1)} className="rounded-md border border-[var(--line)] px-3 py-1.5 hover:bg-zinc-50">Next</Link>}
+                {result.page > 1 && <Link href={dailyAttendanceHref(filters, result.page - 1)} className="rounded-md border border-[var(--line)] px-3 py-1.5 hover:bg-zinc-50">Previous</Link>}
+                {result.page < result.pageCount && <Link href={dailyAttendanceHref(filters, result.page + 1)} className="rounded-md border border-[var(--line)] px-3 py-1.5 hover:bg-zinc-50">Next</Link>}
               </div>
             </nav>
           )}

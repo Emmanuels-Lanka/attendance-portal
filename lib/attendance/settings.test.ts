@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Role } from "@prisma/client";
-import { getCompanyName, SettingAuthorizationError, SettingValidationError, updateOrganizationSetting } from "./settings";
+import {
+  getCompanyName,
+  getDefaultTimeZone,
+  SettingAuthorizationError,
+  SettingValidationError,
+  updateOrganizationSetting,
+} from "./settings";
 
 function createDatabase(initialValue = "Asia/Colombo") {
   const settings = new Map<string, { key: string; value: string; category: string; isAdminOnly: boolean; updatedById: string }>([
@@ -41,6 +47,21 @@ function createDatabase(initialValue = "Asia/Colombo") {
 const admin = { id: "admin-1", role: Role.ADMIN };
 
 describe("organization setting controls", () => {
+  it("loads the configured business timezone and falls back to the documented default", async () => {
+    const stub = createDatabase("Asia/Dhaka");
+    assert.equal(await getDefaultTimeZone(stub.database), "Asia/Dhaka");
+    stub.settings.delete("defaultTimeZone");
+    assert.equal(await getDefaultTimeZone(stub.database), "Asia/Colombo");
+    stub.settings.set("defaultTimeZone", {
+      key: "defaultTimeZone",
+      value: "Mars/Olympus",
+      category: "ATTENDANCE",
+      isAdminOnly: true,
+      updatedById: "admin-1",
+    });
+    await assert.rejects(getDefaultTimeZone(stub.database), SettingValidationError);
+  });
+
   it("uses the saved company name and falls back to the documented default", async () => {
     const stub = createDatabase();
     assert.equal(await getCompanyName(stub.database), "Emmanuel's Lanka Pvt Ltd");

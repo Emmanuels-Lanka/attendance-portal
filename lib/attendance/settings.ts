@@ -36,6 +36,16 @@ export async function getCompanyName(database: CompanyNameDatabase = prisma) {
   return setting?.value.trim() || settingDefaults.companyName;
 }
 
+export async function getDefaultTimeZone(database: CompanyNameDatabase = prisma) {
+  const setting = await database.appSetting.findUnique({
+    where: { key: "defaultTimeZone" },
+    select: { value: true },
+  });
+  const timeZone = setting?.value.trim() || settingDefaults.defaultTimeZone;
+  if (!isIanaTimeZone(timeZone)) throw new SettingValidationError("Use a valid IANA timezone.");
+  return timeZone;
+}
+
 export async function updateOrganizationSetting(
   actor: SettingActor,
   input: { key: string; value?: string; intent?: string; confirmReset?: boolean },

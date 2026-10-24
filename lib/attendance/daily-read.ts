@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { Prisma, PrismaClient, Role } from "@prisma/client";
+import { formatInTimeZone } from "date-fns-tz";
 import { z } from "zod";
 import { hasPermission } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
@@ -34,6 +35,39 @@ export const dailyAttendanceFiltersSchema = z.object({
 });
 
 export type DailyAttendanceFilters = z.infer<typeof dailyAttendanceFiltersSchema>;
+
+export function dailyAttendanceDateInTimeZone(now: Date, timeZone: string) {
+  return formatInTimeZone(now, timeZone, "yyyy-MM-dd");
+}
+
+export function parseDailyAttendancePageFilters(
+  params: Record<string, string | string[] | undefined>,
+  defaultDate: string,
+) {
+  const single = (value: string | string[] | undefined) => typeof value === "string" ? value : "";
+  const date = params.date === undefined || params.date === "" ? defaultDate : params.date;
+  return dailyAttendanceFiltersSchema.safeParse({
+    date,
+    employeeId: single(params.employeeId),
+    departmentId: single(params.departmentId),
+    status: single(params.status) || "ALL",
+    page: single(params.page) || "1",
+  });
+}
+
+export function dailyAttendanceHref(filters: DailyAttendanceFilters, page: number) {
+  const query = new URLSearchParams();
+  query.set("date", filters.date);
+  if (filters.employeeId) query.set("employeeId", filters.employeeId);
+  if (filters.departmentId) query.set("departmentId", filters.departmentId);
+  if (filters.status !== "ALL") query.set("status", filters.status);
+  if (page > 1) query.set("page", String(page));
+  return `/admin/attendance/daily?${query.toString()}`;
+}
+
+export function clearDailyAttendanceFiltersHref(today: string) {
+  return `/admin/attendance/daily?date=${encodeURIComponent(today)}`;
+}
 
 type DailyAttendanceActor = { id?: string; role: Role } | null;
 type DailyAttendanceDatabase = Pick<PrismaClient, "attendanceDaily" | "employee" | "department">;

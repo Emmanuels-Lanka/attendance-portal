@@ -2,8 +2,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Role } from "@prisma/client";
 import {
+  clearDailyAttendanceFiltersHref,
+  dailyAttendanceDateInTimeZone,
+  dailyAttendanceHref,
   DailyAttendanceAuthorizationError,
   listCalculatedDailyAttendance,
+  parseDailyAttendancePageFilters,
 } from "./daily-read";
 
 const persistedRecord = {
@@ -59,6 +63,73 @@ function makeDatabase(total = 1, records = [persistedRecord]) {
 const admin = { role: Role.ADMIN };
 
 describe("calculated daily attendance read service", () => {
+  it("defaults a missing page date to the business-timezone calendar date", () => {
+    const today = dailyAttendanceDateInTimeZone(new Date("2026-10-23T20:00:00.000Z"), "Asia/Colombo");
+    const result = parseDailyAttendancePageFilters({}, today);
+
+    assert.equal(today, "2026-10-24");
+    assert.equal(result.success, true);
+    if (result.success) {
+      assert.equal(result.data.date, "2026-10-24");
+      assert.equal(result.data.status, "ALL");
+    }
+  });
+
+  it("preserves an explicitly selected historical date and uses it as the visible filter value", () => {
+    const result = parseDailyAttendancePageFilters({ date: "2026-06-15" }, "2026-10-24");
+
+    assert.equal(result.success, true);
+    if (result.success) assert.equal(result.data.date, "2026-06-15");
+  });
+
+  it("rejects an invalid page date rather than allowing an unfiltered read", () => {
+    const result = parseDailyAttendancePageFilters({ date: "2026-02-30" }, "2026-10-24");
+
+    assert.equal(result.success, false);
+  });
+
+  it("clears all optional filters to the business-timezone current date and resets pagination", () => {
+    const href = clearDailyAttendanceFiltersHref("2026-10-24");
+    const parsed = parseDailyAttendancePageFilters(
+      Object.fromEntries(new URL(`https://example.test${href}`).searchParams.entries()),
+      "2026-10-25",
+    );
+
+    assert.equal(href, "/admin/attendance/daily?date=2026-10-24");
+    assert.equal(parsed.success, true);
+    if (parsed.success) {
+      assert.deepEqual(parsed.data, {
+        date: "2026-10-24",
+        employeeId: "",
+        departmentId: "",
+        status: "ALL",
+        page: 1,
+      });
+    }
+  });
+
+  it("preserves the selected date and other active filters in pagination links", () => {
+    const parsed = parseDailyAttendancePageFilters({
+      date: "2026-06-15",
+      employeeId: "employee-1",
+      departmentId: "department-1",
+      status: "LATE",
+    }, "2026-10-24");
+    assert.equal(parsed.success, true);
+    if (!parsed.success) return;
+
+    const href = dailyAttendanceHref(parsed.data, 2);
+    const nextPage = parseDailyAttendancePageFilters(
+      Object.fromEntries(new URL(`https://example.test${href}`).searchParams.entries()),
+      "2026-10-24",
+    );
+
+    assert.equal(nextPage.success, true);
+    if (nextPage.success) {
+      assert.deepEqual(nextPage.data, { ...parsed.data, page: 2 });
+    }
+  });
+
   it("returns persisted calculated fields and the stored status", async () => {
     const stub = makeDatabase();
     const result = await listCalculatedDailyAttendance(admin, {}, stub.database);
@@ -76,12 +147,13 @@ describe("calculated daily attendance read service", () => {
   });
 
   it("applies employee, date, department, and implemented-status filters", async () => {
-    const stub = makeDatabase();
-    await listCalculatedDailyAttendance(admin, {
+    const stub = makeDatabase(51);
+    const result = await listCalculatedDailyAttendance(admin, {
       date: "2026-10-05",
       employeeId: "employee-1",
       departmentId: "department-1",
       status: "LATE",
+      page: 2,
     }, stub.database);
 
     const expectedWhere = {
@@ -91,7 +163,16 @@ describe("calculated daily attendance read service", () => {
       status: "LATE",
     };
     assert.deepEqual(stub.calls.count, { where: expectedWhere });
-    assert.deepEqual((stub.calls.findMany as { where: unknown }).where, expectedWhere);
+    const findMany = stub.calls.findMany as {
+      where: unknown;
+      skip: number;
+      take: number;
+    };
+    assert.deepEqual(findMany.where, expectedWhere);
+    assert.equal(findMany.skip, 50);
+    assert.equal(findMany.take, 50);
+    assert.equal(result.page, 2);
+    assert.equal(result.pageCount, 2);
   });
 
   it("allows HR to read employee attendance and scopes both choices and records away from privileged accounts", async () => {
@@ -169,6 +250,62 @@ describe("calculated daily attendance read service", () => {
       where: { employees: { some: assignedEmployeeScope } },
       select: { id: true, name: true },
       orderBy: { name: "asc" },
+    });
+  });
+
+  it("applies the page-default date without widening every authorized role's employee scope", async () => {
+    const parsed = parseDailyAttendancePageFilters({}, "2026-10-24");
+    assert.equal(parsed.success, true);
+    if (!parsed.success) return;
+
+    const actors = [
+      { actor: admin, expectedEmployee: undefined },
+      { actor: { role: Role.HR_ADMINISTRATOR }, expectedEmployee: { AND: [{ user: { is: { role: "EMPLOYEE" } } }] } },
+      {
+        actor: { id: "manager-1", role: Role.DEPARTMENT_MANAGER },
+        expectedEmployee: { AND: [{ departmentId: "department-1", user: { is: { role: "EMPLOYEE" } } }] },
+      },
+      {
+        actor: { id: "supervisor-1", role: Role.SUPERVISOR },
+        expectedEmployee: {
+          AND: [{
+            supervisor: { userId: "supervisor-1", user: { role: "SUPERVISOR", isActive: true } },
+            user: { is: { role: "EMPLOYEE" } },
+          }],
+        },
+      },
+    ] as const;
+
+    for (const { actor, expectedEmployee } of actors) {
+      const stub = makeDatabase();
+      await listCalculatedDailyAttendance(actor, parsed.data, stub.database);
+      assert.deepEqual(stub.calls.count, {
+        where: {
+          date: new Date("2026-10-24T00:00:00.000Z"),
+          ...(expectedEmployee ? { employee: expectedEmployee } : {}),
+        },
+      });
+      assert.deepEqual(
+        (stub.calls.findMany as { where: unknown }).where,
+        (stub.calls.count as { where: unknown }).where,
+      );
+    }
+  });
+
+  it("returns an approved correction's final calculated row once without reading correction requests", async () => {
+    const correctedRecord = {
+      ...persistedRecord,
+      firstIn: new Date("2026-10-05T03:21:00.000Z"),
+      lastOut: new Date("2026-10-05T12:00:00.000Z"),
+    };
+    const stub = makeDatabase(1, [correctedRecord]);
+    const result = await listCalculatedDailyAttendance(admin, { date: "2026-10-05" }, stub.database);
+
+    assert.equal(result.records.length, 1);
+    assert.equal(result.records[0].firstIn?.toISOString(), "2026-10-05T03:21:00.000Z");
+    assert.equal(result.records[0].lastOut?.toISOString(), "2026-10-05T12:00:00.000Z");
+    assert.deepEqual((stub.calls.findMany as { where: unknown }).where, {
+      date: new Date("2026-10-05T00:00:00.000Z"),
     });
   });
 
