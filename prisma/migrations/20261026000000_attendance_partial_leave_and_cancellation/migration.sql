@@ -36,6 +36,6 @@ ON "LeaveRequest"("cancellationStatus", "cancellationApprovalStage", "cancellati
 ALTER TABLE "Shift"
 ADD COLUMN "breakStartTime" TIME(0);
 
-ALTER TABLE "AttendanceDaily"
+ALTER TABLE "attendance_daily"
 ADD COLUMN "leaveMinutes" INTEGER,
 ADD COLUMN "statusReason" TEXT;
