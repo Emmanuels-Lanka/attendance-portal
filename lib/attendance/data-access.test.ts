@@ -145,7 +145,7 @@ describe("employee attendance data access", () => {
     assert.deepEqual(result.day, { date: "2026-06-16", sessions: [], totalWorkedMs: 0 });
   });
 
-  it("does not assign a session ending today to today when it started yesterday locally", async () => {
+  it("does not treat a previous-local-day session ending today as a completed session today", async () => {
     const now = new Date("2026-06-16T03:00:00Z");
     const employee = { id: "session-user-17", timeZone: "Asia/Colombo" };
     const yesterdaySession = session("yesterday-ended-today", "2026-06-15T02:30:00Z", "2026-06-15T20:00:00Z");
@@ -155,6 +155,19 @@ describe("employee attendance data access", () => {
 
     assert.equal(result.date, "2026-06-16");
     assert.deepEqual(result.day, { date: "2026-06-16", sessions: [], totalWorkedMs: 0 });
+    assert.equal(result.completedSessionToday, false);
+  });
+
+  it("treats a session that started and ended today as completed attendance today", async () => {
+    const now = new Date("2026-06-16T03:00:00Z");
+    const employee = { id: "session-user-17", timeZone: "Asia/Colombo" };
+    const sameDaySession = session("completed-today", "2026-06-16T02:30:00Z", "2026-06-16T03:00:00Z");
+    const stub = dashboardDatabase(null, [sameDaySession]);
+
+    const result = await getEmployeeAttendanceDashboard(employee, now, stub.database);
+
+    assert.equal(result.date, "2026-06-16");
+    assert.equal(result.day.sessions.length, 1);
     assert.equal(result.completedSessionToday, true);
   });
 

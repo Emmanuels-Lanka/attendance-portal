@@ -19,10 +19,15 @@ export async function performAttendanceAction(input: unknown): Promise<Attendanc
       return { ok: false, error: "A valid location is required before recording attendance." };
     }
 
-    await applyAttendanceAction(user.id, parsed.data.action, parsed.data.location);
+    const result = await applyAttendanceAction(user.id, parsed.data.action, parsed.data.location);
     revalidatePath("/dashboard");
     revalidatePath("/attendance");
-    return { ok: true, message: "Attendance updated." };
+    return {
+      ok: true,
+      message: result.calculationWarning
+        ? `Attendance updated. ${result.calculationWarning}`
+        : "Attendance updated.",
+    };
   } catch (error) {
     if (error instanceof AuthenticationError) return { ok: false, error: error.message };
     if (error instanceof AttendanceStateError) return { ok: false, error: error.message };

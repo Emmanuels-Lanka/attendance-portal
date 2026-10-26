@@ -167,7 +167,7 @@ export function AttendanceToday({
           ) : hasCompletedSession ? (
             <p className="mt-5 max-w-md text-sm leading-6 text-[var(--muted)]">
               {day.sessions.length === 0
-                ? "A session started on an earlier local date ended today. New attendance actions will be available tomorrow."
+                ? "Today's completed attendance could not be summarized. Contact HR to review the attendance record."
                 : "You have already completed attendance for your local day. New attendance actions will be available tomorrow."}
             </p>
           ) : (
@@ -203,7 +203,7 @@ export function AttendanceToday({
           {hasCompletedSession && !sessionToEnd && (
             <p className="text-sm font-medium text-[var(--mint-ink)]">
               {day.sessions.length === 0
-                ? "A previous-day session ended within today's attendance window."
+                ? "Today's completed attendance could not be summarized. Contact HR to review the attendance record."
                 : "Attendance is already completed for today."}
             </p>
           )}

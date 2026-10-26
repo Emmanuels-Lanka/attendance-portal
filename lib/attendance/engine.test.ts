@@ -100,6 +100,16 @@ describe("deterministic attendance engine foundation", () => {
     assert.equal(result.status, "MISSING_PUNCH");
   });
 
+  it("continues to reject unsupported overnight Shift calculations", () => {
+    assert.throws(
+      () => calculate([], {
+        startTime: new Date("1970-01-01T20:00:00.000Z"),
+        endTime: new Date("1970-01-01T08:00:00.000Z"),
+      }),
+      /The SRS does not define overnight Shift calculation/,
+    );
+  });
+
   it("flags exact duplicates and repeated-direction sequences without choosing a pairing", () => {
     const duplicate = calculate([
       punch("in-1", "IN", "08:30"),

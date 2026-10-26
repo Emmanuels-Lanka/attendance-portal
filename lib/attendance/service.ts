@@ -2,6 +2,10 @@ import "server-only";
 
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import {
+  calculateAndPersistDailyAttendanceInTransaction,
+} from "@/lib/attendance/engine-service";
+import { AttendanceEngineConfigurationError } from "@/lib/attendance/engine";
 import { attendanceLocationSchema, type AttendanceAction, type AttendanceLocation } from "@/lib/attendance/validation";
 import { classifySessionForShiftAssignments, groupSessionsByEmployeeLocalDay } from "@/lib/attendance/history";
 import type { WorkSessionTiming } from "@/lib/attendance/schedule";
@@ -26,6 +30,40 @@ export async function lockAttendanceEmployee(tx: Prisma.TransactionClient, emplo
 type AttendanceWriteDatabase = Pick<typeof prisma, "$transaction">;
 
 const attendanceCaptureSource = "WEB";
+
+type AppliedAttendanceAction = {
+  session: {
+    id: string;
+    mode: "OFFICE" | "WFH";
+    startAt: Date;
+    endAt: Date | null;
+  };
+  calculationWarning: string | null;
+};
+
+async function recalculateAttendanceDays(
+  tx: Prisma.TransactionClient,
+  employeeRecordId: string,
+  timeZone: string,
+  session: AppliedAttendanceAction["session"],
+) {
+  const dates = new Set([
+    getEmployeeLocalDayWindow(session.startAt, timeZone).date,
+    ...(session.endAt ? [getEmployeeLocalDayWindow(session.endAt, timeZone).date] : []),
+  ]);
+  const warnings: string[] = [];
+
+  for (const date of dates) {
+    try {
+      await calculateAndPersistDailyAttendanceInTransaction(tx, employeeRecordId, date);
+    } catch (error) {
+      if (!(error instanceof AttendanceEngineConfigurationError)) throw error;
+      warnings.push(`Daily attendance for ${date} was not recalculated: ${error.message}`);
+    }
+  }
+
+  return warnings.length > 0 ? warnings.join(" ") : null;
+}
 
 export async function applyAttendanceAction(
   employeeId: string,
@@ -76,10 +114,7 @@ export async function applyAttendanceAction(
       const todaysSession = await tx.workSession.findFirst({
         where: {
           record: { employeeId },
-          OR: [
-            { startAt: { gte: startAt, lt: endAt } },
-            { endAt: { gte: startAt, lt: endAt } },
-          ],
+          startAt: { gte: startAt, lt: endAt },
         },
         select: { id: true },
       });
@@ -108,7 +143,11 @@ export async function applyAttendanceAction(
         },
         select: { id: true },
       });
-      return record.sessions[0];
+      const session = record.sessions[0];
+      return {
+        session,
+        calculationWarning: await recalculateAttendanceDays(tx, employeeRecord.id, employee.timeZone, session),
+      } satisfies AppliedAttendanceAction;
     }
 
     if (!activeSession) {
@@ -139,7 +178,10 @@ export async function applyAttendanceAction(
       },
       select: { id: true },
     });
-    return updatedSession;
+    return {
+      session: updatedSession,
+      calculationWarning: await recalculateAttendanceDays(tx, employeeRecord.id, employee.timeZone, updatedSession),
+    } satisfies AppliedAttendanceAction;
   });
 }
 
@@ -210,7 +252,7 @@ export async function getEmployeeAttendanceDashboard(
   const previousDayActiveSessionTiming = activeSession && activeSession.startAt < startAt
     ? sessionTiming(activeSession)
     : null;
-  const completedSessionToday = sessions.some((session) => session.endAt && session.endAt >= startAt && session.endAt < endAt);
+  const completedSessionToday = todaySessions.some((session) => session.endAt !== null);
   return {
     date,
     employeeRecordFound: shiftResolution.employeeRecordFound,

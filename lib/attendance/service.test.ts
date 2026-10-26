@@ -13,6 +13,19 @@ type StoredSession = {
 };
 
 const testLocation: AttendanceLocation = { latitude: 6.9271, longitude: 79.8612, accuracy: 12.5 };
+const testShift = {
+  id: "shift-1",
+  startTime: new Date("1970-01-01T08:30:00.000Z"),
+  endTime: new Date("1970-01-01T17:30:00.000Z"),
+  gracePeriodMinutes: 10,
+  lateThresholdMinutes: 30,
+  earlyDepartureThresholdMinutes: 0,
+  breakDurationMinutes: 0,
+  minimumWorkingHours: "8",
+  overtimeEligible: false,
+  roundingRules: {},
+  workingDays: ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"],
+};
 
 function applyAttendanceAction(
   employeeId: string,
@@ -27,6 +40,7 @@ function createDatabase(
   initialSessions: StoredSession[] = [],
   timeZone = "Asia/Colombo",
   hasEmployeeRecord = true,
+  hasShift = true,
 ) {
   const sessions = [...initialSessions];
   const rawPunches: Array<{
@@ -39,18 +53,27 @@ function createDatabase(
     deviceId: null;
     location: AttendanceLocation;
   }> = [];
+  const dailyRows: Array<Record<string, unknown> & { id: string; employeeId: string; date: Date }> = [];
   let nextId = 1;
   let nextRawId = 1;
+  let nextDailyId = 1;
   let lockTail: Promise<void> = Promise.resolve();
 
   const database = {
     $transaction: async (operation: (transaction: never) => Promise<unknown>) => {
       let releaseLock = () => {};
+      let hasLock = false;
+      let linkedUserId = "employee-1";
+      const acquireLock = async () => {
+        if (hasLock) return;
+        hasLock = true;
+        const previousLock = lockTail;
+        lockTail = new Promise<void>((resolve) => { releaseLock = resolve; });
+        await previousLock;
+      };
       const transaction = {
         $queryRaw: async () => {
-          const previousLock = lockTail;
-          lockTail = new Promise<void>((resolve) => { releaseLock = resolve; });
-          await previousLock;
+          await acquireLock();
           return [];
         },
         workSession: {
@@ -64,6 +87,13 @@ function createDatabase(
             if (where.startAt) return matches.find((session) => session.startAt >= where.startAt!.gte && session.startAt < where.startAt!.lt) ?? null;
             return null;
           },
+          findMany: async ({ where }: { where: { record: { employeeId: string }; OR: Array<{ startAt?: { gte: Date; lt: Date }; endAt?: { gte: Date; lt: Date } }> } }) =>
+            sessions.filter((session) =>
+              session.employeeId === where.record.employeeId
+              && where.OR.some((condition) => condition.startAt
+                ? session.startAt >= condition.startAt.gte && session.startAt < condition.startAt.lt
+                : session.endAt !== null && session.endAt >= condition.endAt!.gte && session.endAt < condition.endAt!.lt),
+            ),
           update: async ({ where, data }: { where: { id: string }; data: { endAt: Date } }) => {
             const session = sessions.find((item) => item.id === where.id);
             if (!session) throw new Error("Missing session.");
@@ -85,6 +115,12 @@ function createDatabase(
           },
         },
         attendanceRaw: {
+          findMany: async ({ where }: { where: { employeeId: string; timestamp: { gte: Date; lt: Date } } }) =>
+            rawPunches.filter((punch) =>
+              punch.employeeId === where.employeeId
+              && punch.timestamp >= where.timestamp.gte
+              && punch.timestamp < where.timestamp.lt,
+            ),
           create: async ({ data }: { data: Omit<(typeof rawPunches)[number], "id"> & { location: unknown } }) => {
             const punch = {
               id: `raw-${nextRawId++}`,
@@ -96,7 +132,43 @@ function createDatabase(
           },
         },
         employee: {
-          findUnique: async () => hasEmployeeRecord ? { id: "employee-record-1" } : null,
+          findUnique: async ({ where }: { where: { userId?: string; id?: string } }) => {
+            if (!hasEmployeeRecord) return null;
+            if (where.userId) {
+              linkedUserId = where.userId;
+              return { id: "employee-record-1" };
+            }
+            return {
+              id: "employee-record-1",
+              userId: linkedUserId,
+              user: { timeZone, countryCode: "LK" },
+              shift: hasShift ? testShift : null,
+              shiftAssignments: [],
+            };
+          },
+        },
+        attendanceCorrectionRequest: {
+          findMany: async () => [],
+        },
+        attendanceDaily: {
+          findMany: async ({ where }: { where: { employeeId: string; date: Date } }) =>
+            dailyRows.filter((row) =>
+              row.employeeId === where.employeeId && row.date.getTime() === where.date.getTime(),
+            ).map(({ id }) => ({ id })),
+          create: async ({ data }: { data: { employeeId: string; date: Date } & Record<string, unknown> }) => {
+            const row = { id: `daily-${nextDailyId++}`, ...data };
+            dailyRows.push(row);
+            return row;
+          },
+          update: async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+            const row = dailyRows.find((item) => item.id === where.id);
+            if (!row) throw new Error("Missing daily attendance.");
+            Object.assign(row, data);
+            return row;
+          },
+        },
+        holiday: {
+          findFirst: async () => null,
         },
         user: {
           findUnique: async () => ({ timeZone }),
@@ -111,11 +183,16 @@ function createDatabase(
     },
   };
 
-  return { database: database as never, sessions, rawPunches };
+  return { database: database as never, sessions, rawPunches, dailyRows };
 }
 
 function activeSession(id: string): StoredSession {
   return { id, employeeId: "employee-1", mode: "OFFICE", startAt: new Date("2026-06-15T02:30:00.000Z"), endAt: null };
+}
+
+function dailyTimestamp(row: Record<string, unknown> | undefined, key: string) {
+  const value = row?.[key];
+  return value instanceof Date ? value.toISOString() : null;
 }
 
 describe("employee attendance transitions", () => {
@@ -161,8 +238,8 @@ describe("employee attendance transitions", () => {
     const acceptedInPunch = structuredClone(stub.rawPunches[0]);
     const ended = await applyAttendanceActionWithLocation("user-1", "OUT", outLocation, stub.database, endedAt);
 
-    assert.equal(started.startAt.toISOString(), startedAt.toISOString());
-    assert.equal(ended.endAt?.toISOString(), endedAt.toISOString());
+    assert.equal(started.session.startAt.toISOString(), startedAt.toISOString());
+    assert.equal(ended.session.endAt?.toISOString(), endedAt.toISOString());
     assert.deepEqual(stub.rawPunches[0], acceptedInPunch);
     assert.deepEqual(stub.rawPunches.map(({ employeeId, timestamp, punchType, workMode, source, deviceId, location }) => ({
       employeeId,
@@ -233,7 +310,7 @@ describe("employee attendance transitions", () => {
     const started = await applyAttendanceAction("hr-session-user", "IN", stub.database);
 
     assert.equal(stub.sessions[0].employeeId, "hr-session-user");
-    assert.equal(started.id, stub.sessions[0].id);
+    assert.equal(started.session.id, stub.sessions[0].id);
     assert.equal(stub.rawPunches[0].employeeId, "employee-record-1");
     assert.equal(stub.rawPunches[0].punchType, "IN");
   });
@@ -251,6 +328,17 @@ describe("employee attendance transitions", () => {
     await assert.rejects(applyAttendanceAction("employee-1", "IN", duplicateStart.database), AttendanceStateError);
     await assert.rejects(applyAttendanceAction("employee-1", "WFH_OUT", duplicateStart.database), /different work mode/);
     assert.deepEqual(duplicateStart.rawPunches, []);
+  });
+
+  it("keeps a valid punch when daily calculation is unavailable and exposes the configuration warning", async () => {
+    const stub = createDatabase([], "Asia/Colombo", true, false);
+
+    const result = await applyAttendanceAction("employee-1", "IN", stub.database, new Date("2026-06-15T02:30:00.000Z"));
+
+    assert.equal(stub.sessions.length, 1);
+    assert.equal(stub.rawPunches.length, 1);
+    assert.match(result.calculationWarning ?? "", /Daily attendance for 2026-06-15 was not recalculated/);
+    assert.equal(stub.dailyRows.length, 0);
   });
 
   it("rejects missing or invalid coordinates before opening a database transaction", async () => {
@@ -359,20 +447,76 @@ describe("employee attendance transitions", () => {
     assert.equal(getEmployeeLocalDayWindow(boundaryUtc, "Asia/Dhaka").date, "2026-06-16");
   });
 
-  it("blocks a new local-day start after an overnight session ends today", async () => {
+  it("allows a new local-day start after a prior-local-day session ends today", async () => {
     const overnight = {
       id: "overnight",
       employeeId: "employee-1",
       mode: "OFFICE" as const,
       startAt: new Date("2026-06-15T17:45:00.000Z"),
-      endAt: new Date("2026-06-15T18:15:00.000Z"),
+      endAt: new Date("2026-06-15T18:35:00.000Z"),
     };
     const stub = createDatabase([overnight], "Asia/Colombo");
 
-    await assert.rejects(
-      applyAttendanceAction("employee-1", "WFH_IN", stub.database, new Date("2026-06-15T18:20:00.000Z")),
-      /already completed attendance for your local day/,
-    );
+    const now = new Date("2026-06-15T18:40:00.000Z");
+    const started = await applyAttendanceAction("employee-1", "WFH_IN", stub.database, now);
+
+    assert.equal(started.session.mode, "WFH");
+    assert.equal(started.session.startAt.toISOString(), now.toISOString());
+    assert.equal(stub.sessions.length, 2);
+    assert.equal(stub.sessions[0].startAt.toISOString(), overnight.startAt.toISOString());
+    assert.equal(stub.sessions[0].endAt?.toISOString(), overnight.endAt?.toISOString());
+    assert.equal(stub.sessions[1].id, started.session.id);
+    assert.equal(stub.dailyRows.length, 1);
+    const currentDay = stub.dailyRows.find(({ date }) => date.toISOString().slice(0, 10) === "2026-06-16");
+    assert.equal(dailyTimestamp(currentDay, "firstIn"), now.toISOString());
+    assert.equal(dailyTimestamp(currentDay, "lastOut"), overnight.endAt?.toISOString());
+    assert.equal(currentDay?.mode, "MIXED");
+    assert.equal(currentDay?.status, "MISSING_PUNCH");
+    assert.equal(stub.rawPunches.length, 1);
+    assert.equal(stub.rawPunches[0].timestamp.toISOString(), now.toISOString());
+    assert.equal(stub.rawPunches[0].workMode, "WFH");
+  });
+
+  it("closes a previous-local-day session and starts a separate session today with recalculated dates", async () => {
+    const yesterdayStart = new Date("2026-06-15T10:00:00.000Z");
+    const todayEnd = new Date("2026-06-15T19:00:00.000Z");
+    const todayStart = new Date("2026-06-15T20:00:00.000Z");
+    const stub = createDatabase();
+
+    const firstStart = await applyAttendanceAction("employee-1", "IN", stub.database, yesterdayStart);
+    const firstSessionId = firstStart.session.id;
+    await applyAttendanceAction("employee-1", "OUT", stub.database, todayEnd);
+    const secondStart = await applyAttendanceAction("employee-1", "WFH_IN", stub.database, todayStart);
+
+    assert.equal(stub.sessions.length, 2);
+    assert.equal(stub.sessions[0].id, firstSessionId);
+    assert.equal(stub.sessions[0].mode, "OFFICE");
+    assert.equal(stub.sessions[0].startAt.toISOString(), yesterdayStart.toISOString());
+    assert.equal(stub.sessions[0].endAt?.toISOString(), todayEnd.toISOString());
+    assert.notEqual(stub.sessions[1].id, firstSessionId);
+    assert.equal(stub.sessions[1].id, secondStart.session.id);
+    assert.equal(stub.sessions[1].mode, "WFH");
+    assert.equal(stub.sessions[1].startAt.toISOString(), todayStart.toISOString());
+    assert.equal(stub.sessions[1].endAt, null);
+    assert.deepEqual(stub.rawPunches.map(({ timestamp, punchType, workMode }) => ({
+      timestamp: timestamp.toISOString(),
+      punchType,
+      workMode,
+    })), [
+      { timestamp: yesterdayStart.toISOString(), punchType: "IN", workMode: "OFFICE" },
+      { timestamp: todayEnd.toISOString(), punchType: "OUT", workMode: "OFFICE" },
+      { timestamp: todayStart.toISOString(), punchType: "IN", workMode: "WFH" },
+    ]);
+    assert.equal(stub.dailyRows.length, 2);
+    const previousDay = stub.dailyRows.find(({ date }) => date.toISOString().slice(0, 10) === "2026-06-15");
+    const currentDay = stub.dailyRows.find(({ date }) => date.toISOString().slice(0, 10) === "2026-06-16");
+    assert.equal(dailyTimestamp(previousDay, "firstIn"), yesterdayStart.toISOString());
+    assert.equal(dailyTimestamp(previousDay, "lastOut"), null);
+    assert.equal(previousDay?.status, "MISSING_PUNCH");
+    assert.equal(dailyTimestamp(currentDay, "firstIn"), todayStart.toISOString());
+    assert.equal(dailyTimestamp(currentDay, "lastOut"), todayEnd.toISOString());
+    assert.equal(currentDay?.mode, "MIXED");
+    assert.equal(currentDay?.status, "MISSING_PUNCH");
   });
 
   it("uses the supplied timestamp when closing a session", async () => {
