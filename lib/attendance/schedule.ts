@@ -1,4 +1,4 @@
-import { fromZonedTime } from "date-fns-tz";
+import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { getEmployeeLocalDayWindow } from "./timezone";
 
 export type AttendancePunch = "IN" | "OUT" | "WFH_IN" | "WFH_OUT";
@@ -74,6 +74,61 @@ export function assessAttendanceArrival(
   return {
     classification: "LATE" as const,
     lateMinutes: Math.ceil(lateDuration / 60_000),
+  };
+}
+
+export function assessDirector08Arrival(
+  actualAt: Date,
+  timeZone: string,
+  shift: AttendanceShiftSchedule | null,
+  monthlyGraceAllowancesUsed: number,
+) {
+  if (!shift || !Number.isFinite(actualAt.getTime())) {
+    return { classification: "UNDETERMINED" as const, lateMinutes: null, consumesGraceAllowance: false };
+  }
+
+  const { date } = getEmployeeLocalDayWindow(actualAt, timeZone);
+  const isWorkingDay = scheduledWorkingDay(date, shift);
+  if (isWorkingDay === false) {
+    return { classification: "NON_WORKING_DAY" as const, lateMinutes: null, consumesGraceAllowance: false };
+  }
+  if (isWorkingDay === null || timeOfDay(shift.startTime) !== "08:00") {
+    return { classification: "UNDETERMINED" as const, lateMinutes: null, consumesGraceAllowance: false };
+  }
+
+  const [hour, minute, second] = formatInTimeZone(actualAt, timeZone, "HH:mm:ss.SSS").split(":");
+  const [wholeSecond, millisecond] = second.split(".");
+  const timeSinceMidnight = Number(hour) * 60 * 60_000
+    + Number(minute) * 60_000
+    + Number(wholeSecond) * 1_000
+    + Number(millisecond);
+  const eightThirty = 8 * 60 * 60_000 + 30 * 60_000;
+  const eightForty = eightThirty + 10 * 60_000;
+  const nineThirty = 9 * 60 * 60_000 + 30 * 60_000;
+
+  if (timeSinceMidnight < 8 * 60 * 60_000) {
+    return { classification: "EARLY_ARRIVAL" as const, lateMinutes: 0, consumesGraceAllowance: false };
+  }
+  if (timeSinceMidnight <= eightThirty) {
+    return { classification: "ON_TIME" as const, lateMinutes: 0, consumesGraceAllowance: false };
+  }
+  if (timeSinceMidnight <= eightForty) {
+    if (monthlyGraceAllowancesUsed < 2) {
+      return { classification: "ON_TIME" as const, lateMinutes: 0, consumesGraceAllowance: true };
+    }
+    return {
+      classification: "LATE" as const,
+      lateMinutes: Math.ceil((timeSinceMidnight - eightThirty) / 60_000),
+      consumesGraceAllowance: false,
+    };
+  }
+  if (timeSinceMidnight <= nineThirty) {
+    return { classification: "UNDETERMINED" as const, lateMinutes: null, consumesGraceAllowance: false };
+  }
+  return {
+    classification: "LATE" as const,
+    lateMinutes: Math.ceil((timeSinceMidnight - nineThirty) / 60_000),
+    consumesGraceAllowance: false,
   };
 }
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { groupSessionsByEmployeeLocalDay, type AttendanceSession } from "./history";
+import { groupSessionsByEmployeeLocalDay, monthlyGraceAllowancesUsedBeforeEachDate, type AttendanceSession } from "./history";
 import type { EffectiveShiftAssignment } from "./shift-assignment";
 
 function session(id: string, mode: AttendanceSession["mode"], startAt: string, endAt: string | null): AttendanceSession {
@@ -33,6 +33,70 @@ const assignments: EffectiveShiftAssignment[] = [
 ];
 
 describe("employee-local attendance history", () => {
+  it("counts one shared monthly allowance per local workday across assigned 08:00 shifts", () => {
+    const shiftAssignments: EffectiveShiftAssignment[] = [
+      {
+        effectiveFrom: "2026-01-01",
+        effectiveTo: null,
+        shift: {
+          id: "weekday",
+          startTime: new Date("1970-01-01T08:00:00.000Z"),
+          endTime: new Date("1970-01-01T17:30:00.000Z"),
+          gracePeriodMinutes: 41,
+          workingDays: ["MONDAY", "TUESDAY"],
+        },
+      },
+      {
+        effectiveFrom: "2026-01-01",
+        effectiveTo: null,
+        shift: {
+          id: "alternate-08",
+          startTime: new Date("1970-01-01T08:00:00.000Z"),
+          endTime: new Date("1970-01-01T18:00:00.000Z"),
+          gracePeriodMinutes: 10,
+          workingDays: ["WEDNESDAY", "THURSDAY"],
+        },
+      },
+    ];
+    const sessions = [
+      session("monday-in", "OFFICE", "2026-06-15T03:05:00.000Z", null),
+      session("monday-reentry", "OFFICE", "2026-06-15T06:00:00.000Z", null),
+      session("tuesday-in", "WFH", "2026-06-16T03:05:00.000Z", null),
+      session("wednesday-in", "OFFICE", "2026-06-17T03:05:00.000Z", null),
+      session("thursday-in", "OFFICE", "2026-06-18T03:05:00.000Z", null),
+    ];
+
+    const allowances = monthlyGraceAllowancesUsedBeforeEachDate(sessions, "Asia/Colombo", shiftAssignments);
+
+    assert.equal(allowances.get("2026-06-15"), 0);
+    assert.equal(allowances.get("2026-06-16"), 1);
+    assert.equal(allowances.get("2026-06-17"), 2);
+    assert.equal(allowances.get("2026-06-18"), 2);
+  });
+
+  it("resets the monthly allowance count at the employee-local month boundary", () => {
+    const tokyoShift: EffectiveShiftAssignment[] = [{
+      effectiveFrom: "2026-01-01",
+      effectiveTo: null,
+      shift: {
+        id: "tokyo-08",
+        startTime: new Date("1970-01-01T08:00:00.000Z"),
+        endTime: new Date("1970-01-01T17:00:00.000Z"),
+        gracePeriodMinutes: 0,
+        workingDays: ["MONDAY", "TUESDAY", "WEDNESDAY"],
+      },
+    }];
+    const allowances = monthlyGraceAllowancesUsedBeforeEachDate([
+      session("june-first", "OFFICE", "2026-06-28T23:35:00.000Z", null),
+      session("june-second", "OFFICE", "2026-06-29T23:35:00.000Z", null),
+      session("july", "OFFICE", "2026-06-30T23:35:00.000Z", null),
+    ], "Asia/Tokyo", tokyoShift);
+
+    assert.equal(allowances.get("2026-06-29"), 0);
+    assert.equal(allowances.get("2026-06-30"), 1);
+    assert.equal(allowances.get("2026-07-01"), 0);
+  });
+
   it("groups every multiple and mixed Office/WFH session by employee-local start date", () => {
     const history = groupSessionsByEmployeeLocalDay([
       session("office-1", "OFFICE", "2026-06-15T02:30:00Z", "2026-06-15T06:30:00Z"),

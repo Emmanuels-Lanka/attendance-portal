@@ -11,6 +11,8 @@ import {
   type DailyAttendanceCorrectionValues,
 } from "./engine";
 import { getEmployeeLocalDayWindow } from "./timezone";
+import { getEmployeeLocalMonthWindow } from "./timezone";
+import { monthlyGraceAllowancesUsedBeforeEachDate } from "./history";
 import { isOptionalSriLankanSaturday, resolveShiftForDate } from "./shift-assignment";
 
 export type EngineDatabase = Pick<PrismaClient, "$transaction">;
@@ -144,6 +146,7 @@ async function calculateForEmployeeDay(
     fromZonedTime(`${date}T12:00:00.000`, employee.user.timeZone),
     employee.user.timeZone,
   );
+  const monthWindow = getEmployeeLocalMonthWindow(date, employee.user.timeZone);
   const punches = await transaction.attendanceRaw.findMany({
     where: { employeeId, timestamp: { gte: startAt, lt: endAt } },
     orderBy: [{ timestamp: "asc" }, { id: "asc" }],
@@ -162,6 +165,16 @@ async function calculateForEmployeeDay(
         orderBy: [{ startAt: "asc" }, { id: "asc" }],
       })
     : [];
+    const monthSessions = employee.userId
+      ? await transaction.workSession.findMany({
+          where: {
+            record: { employeeId: employee.userId },
+            startAt: { gte: monthWindow.startAt, lt: endAt },
+          },
+          select: { id: true, mode: true, startAt: true, endAt: true },
+          orderBy: [{ startAt: "asc" }, { id: "asc" }],
+        })
+      : [];
   // Sessions hold correction-aware values; raw punches remain immutable calculation evidence.
   if (optionalSaturday && resolution.kind === "NON_WORKING_DAY" && punches.length > 0) {
     throw new AttendanceEngineConfigurationError(
@@ -204,6 +217,11 @@ async function calculateForEmployeeDay(
   const mode: DailyAttendanceMode | null = modes.size > 1
     ? "MIXED"
     : modes.values().next().value ?? null;
+  const monthlyGraceAllowancesUsed = monthlyGraceAllowancesUsedBeforeEachDate(
+    monthSessions,
+    employee.user.timeZone,
+    assignments,
+  ).get(date);
   const sessionStarts = sessions
     .map(({ startAt }) => startAt)
     .filter((value) => value >= startAt && value < endAt)
@@ -231,6 +249,7 @@ async function calculateForEmployeeDay(
         }
       : null,
     punches,
+    monthlyGraceAllowancesUsed,
     correction: Object.keys(effectiveCorrection).length > 0 ? effectiveCorrection : undefined,
     holiday: holiday !== null,
     optionalWorkday: optionalSaturday,
@@ -279,6 +298,96 @@ export async function calculateAndPersistDailyAttendanceInTransaction(
     : await transaction.attendanceDaily.create({ data: calculated.data });
 
   return { calculation: calculated.calculation, attendanceDaily };
+}
+
+export async function recalculateAttendanceMonthsFromDatesInTransaction(
+  transaction: EngineTransaction,
+  input: {
+    employeeRecordId: string;
+    employeeUserId: string;
+    timeZone: string;
+    affectedDates: readonly string[];
+    excludeDates?: readonly string[];
+  },
+) {
+  const earliestDateByMonth = new Map<string, string>();
+  for (const date of input.affectedDates) {
+    const month = date.slice(0, 7);
+    const current = earliestDateByMonth.get(month);
+    if (!current || date < current) earliestDateByMonth.set(month, date);
+  }
+
+  const recalculated: Array<{
+    date: string;
+    result: Awaited<ReturnType<typeof calculateAndPersistDailyAttendanceInTransaction>>;
+  }> = [];
+  const excludedDates = new Set(input.excludeDates ?? []);
+  for (const [month, fromDate] of [...earliestDateByMonth].sort(([left], [right]) => left.localeCompare(right))) {
+    const monthStartDate = `${month}-01`;
+    const nextMonth = new Date(`${monthStartDate}T00:00:00.000Z`);
+    nextMonth.setUTCMonth(nextMonth.getUTCMonth() + 1);
+    const nextMonthDate = nextMonth.toISOString().slice(0, 10);
+    const monthWindow = getEmployeeLocalMonthWindow(fromDate, input.timeZone);
+    const [dailyRows, rawPunches, sessions] = await Promise.all([
+      transaction.attendanceDaily.findMany({
+        where: {
+          employeeId: input.employeeRecordId,
+          date: {
+            gte: new Date(`${monthStartDate}T00:00:00.000Z`),
+            lt: new Date(`${nextMonthDate}T00:00:00.000Z`),
+          },
+        },
+        select: { date: true },
+      }),
+      transaction.attendanceRaw.findMany({
+        where: {
+          employeeId: input.employeeRecordId,
+          timestamp: { gte: monthWindow.startAt, lt: monthWindow.endAt },
+        },
+        select: { timestamp: true },
+      }),
+      transaction.workSession.findMany({
+        where: {
+          record: { employeeId: input.employeeUserId },
+          OR: [
+            { startAt: { gte: monthWindow.startAt, lt: monthWindow.endAt } },
+            { endAt: { gte: monthWindow.startAt, lt: monthWindow.endAt } },
+          ],
+        },
+        select: { startAt: true, endAt: true },
+      }),
+    ]);
+
+    const dates = new Set<string>([fromDate]);
+    for (const row of dailyRows) {
+      const date = row.date.toISOString().slice(0, 10);
+      if (date >= fromDate) dates.add(date);
+    }
+    for (const punch of rawPunches) {
+      const date = getEmployeeLocalDayWindow(punch.timestamp, input.timeZone).date;
+      if (date >= fromDate) dates.add(date);
+    }
+    for (const session of sessions) {
+      for (const endpoint of [session.startAt, session.endAt]) {
+        if (!endpoint) continue;
+        const date = getEmployeeLocalDayWindow(endpoint, input.timeZone).date;
+        if (date >= fromDate) dates.add(date);
+      }
+    }
+
+    for (const date of [...dates].sort()) {
+      if (excludedDates.has(date)) continue;
+      recalculated.push({
+        date,
+        result: await calculateAndPersistDailyAttendanceInTransaction(
+          transaction,
+          input.employeeRecordId,
+          date,
+        ),
+      });
+    }
+  }
+  return recalculated;
 }
 
 export async function calculateAndPersistDailyAttendance(

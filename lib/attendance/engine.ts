@@ -1,7 +1,7 @@
 import { fromZonedTime } from "date-fns-tz";
 import type { AttendancePunchType, DailyAttendanceMode } from "@prisma/client";
 import { getEmployeeLocalDayWindow } from "./timezone";
-import { assessAttendanceArrival } from "./schedule";
+import { assessAttendanceArrival, assessDirector08Arrival } from "./schedule";
 
 export type RawAttendancePunch = {
   id: string;
@@ -82,6 +82,7 @@ export function calculateDailyAttendance(input: {
   shift: AttendanceEngineShift | null;
   punches: readonly RawAttendancePunch[];
   correction?: DailyAttendanceCorrectionValues;
+  monthlyGraceAllowancesUsed?: number;
   holiday?: boolean;
   optionalWorkday?: boolean;
 }): AttendanceEngineResult {
@@ -238,7 +239,11 @@ export function calculateDailyAttendance(input: {
   const workingHours = totalWorkingMs === null ? null : totalWorkingMs / 3_600_000;
 
   const scheduledEnd = endTime ? fromZonedTime(`${date}T${endTime}`, timeZone) : null;
-  const arrivalAssessment = firstIn ? assessAttendanceArrival(firstIn, timeZone, shift) : null;
+  const arrivalAssessment = firstIn
+    ? input.monthlyGraceAllowancesUsed !== undefined && startTime?.slice(0, 5) === "08:00"
+      ? assessDirector08Arrival(firstIn, timeZone, shift, input.monthlyGraceAllowancesUsed)
+      : assessAttendanceArrival(firstIn, timeZone, shift)
+    : null;
   const earlyDuration = lastOut && scheduledEnd ? scheduledEnd.getTime() - lastOut.getTime() : null;
   const lateMinutes = arrivalAssessment?.lateMinutes ?? null;
   const earlyMinutes = earlyDuration === null

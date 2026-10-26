@@ -1,6 +1,7 @@
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { hasPermission } from "@/lib/auth/permissions";
 import { AttendanceEngineConfigurationError, calculateDailyAttendance, type AttendanceEngineShift } from "@/lib/attendance/engine";
+import { monthlyGraceAllowancesUsedBeforeEachDate } from "@/lib/attendance/history";
 import { prisma } from "@/lib/prisma";
 import type { Prisma, PrismaClient, Role } from "@prisma/client";
 import { isOptionalSriLankanSaturday, resolveShiftForDate, type EffectiveShiftAssignment } from "./shift-assignment";
@@ -537,6 +538,11 @@ export async function getEmployeeMonthlyReport(
           }]
         : []
     : [];
+  const monthlyGraceAllowancesUsedByDate = monthlyGraceAllowancesUsedBeforeEachDate(
+    sessions,
+    employee.timeZone,
+    shiftAssignments,
+  );
   if (employeeRecord) {
     for (let timestamp = dateStart.getTime(); timestamp < dateEnd.getTime(); timestamp += 86_400_000) {
       const date = new Date(timestamp).toISOString().slice(0, 10);
@@ -573,6 +579,7 @@ export async function getEmployeeMonthlyReport(
             ...selectedShift,
           },
           punches: dayPunches,
+          monthlyGraceAllowancesUsed: monthlyGraceAllowancesUsedByDate.get(date),
           holiday: isHoliday,
         });
         filteredDailySummaries.push({

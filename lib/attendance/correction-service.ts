@@ -21,6 +21,7 @@ import {
   calculateAndPersistDailyAttendanceInTransaction,
   applyApprovedAttendanceCorrection,
   AttendanceCorrectionEngineConflictError,
+  recalculateAttendanceMonthsFromDatesInTransaction,
 } from "@/lib/attendance/engine-service";
 
 type AttendanceCorrectionActor = { id: string; role: Role } | null;
@@ -1401,6 +1402,7 @@ export async function decideDailyAttendanceCorrection(
       },
     });
     if (!correction) throw new DailyAttendanceCorrectionTargetNotFoundError();
+    await transaction.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${correction.employeeId} FOR UPDATE`;
     if (
       correction.status !== AttendanceCorrectionStatus.PENDING
       || (correction.currentApprovalStage !== AttendanceCorrectionApprovalStage.SUPERVISOR
@@ -1707,6 +1709,13 @@ export async function decideDailyAttendanceCorrection(
                 }
               : null,
           });
+            await recalculateAttendanceMonthsFromDatesInTransaction(transaction, {
+              employeeRecordId: employee.id,
+              employeeUserId: correction.employeeId,
+              timeZone: owner.timeZone,
+              affectedDates: [correction.attendanceDate.toISOString().slice(0, 10)],
+              excludeDates: [correction.attendanceDate.toISOString().slice(0, 10)],
+            });
           finalizedValues = {
             attendanceDate: correction.attendanceDate.toISOString().slice(0, 10),
             attendance: applied.attendance,
@@ -1755,6 +1764,15 @@ export async function decideDailyAttendanceCorrection(
           expectedLastOut: attendance.lastOut,
           correction: correctionValues,
         });
+        if (requested.firstIn !== undefined) {
+          await recalculateAttendanceMonthsFromDatesInTransaction(transaction, {
+            employeeRecordId: attendance.employee.id,
+            employeeUserId: correction.employeeId,
+            timeZone: owner.timeZone,
+            affectedDates: [attendance.date.toISOString().slice(0, 10)],
+            excludeDates: [attendance.date.toISOString().slice(0, 10)],
+          });
+        }
         const calculation = applied.calculation;
         finalizedValues = {
           firstIn: calculation.firstIn?.toISOString() ?? null,

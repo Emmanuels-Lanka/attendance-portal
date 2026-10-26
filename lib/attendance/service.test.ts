@@ -41,6 +41,7 @@ function createDatabase(
   timeZone = "Asia/Colombo",
   hasEmployeeRecord = true,
   hasShift = true,
+  shiftOverrides: Partial<typeof testShift> = {},
 ) {
   const sessions = [...initialSessions];
   const rawPunches: Array<{
@@ -87,12 +88,20 @@ function createDatabase(
             if (where.startAt) return matches.find((session) => session.startAt >= where.startAt!.gte && session.startAt < where.startAt!.lt) ?? null;
             return null;
           },
-          findMany: async ({ where }: { where: { record: { employeeId: string }; OR: Array<{ startAt?: { gte: Date; lt: Date }; endAt?: { gte: Date; lt: Date } }> } }) =>
+          findMany: async ({ where }: {
+            where: {
+              record: { employeeId: string };
+              startAt?: { gte: Date; lt: Date };
+              OR?: Array<{ startAt?: { gte: Date; lt: Date }; endAt?: { gte: Date; lt: Date } }>;
+            };
+          }) =>
             sessions.filter((session) =>
               session.employeeId === where.record.employeeId
-              && where.OR.some((condition) => condition.startAt
-                ? session.startAt >= condition.startAt.gte && session.startAt < condition.startAt.lt
-                : session.endAt !== null && session.endAt >= condition.endAt!.gte && session.endAt < condition.endAt!.lt),
+              && (where.startAt
+                ? session.startAt >= where.startAt.gte && session.startAt < where.startAt.lt
+                : where.OR?.some((condition) => condition.startAt
+                  ? session.startAt >= condition.startAt.gte && session.startAt < condition.startAt.lt
+                  : session.endAt !== null && session.endAt >= condition.endAt!.gte && session.endAt < condition.endAt!.lt) ?? false),
             ),
           update: async ({ where, data }: { where: { id: string }; data: { endAt: Date } }) => {
             const session = sessions.find((item) => item.id === where.id);
@@ -142,7 +151,7 @@ function createDatabase(
               id: "employee-record-1",
               userId: linkedUserId,
               user: { timeZone, countryCode: "LK" },
-              shift: hasShift ? testShift : null,
+              shift: hasShift ? { ...testShift, ...shiftOverrides } : null,
               shiftAssignments: [],
             };
           },
@@ -196,6 +205,26 @@ function dailyTimestamp(row: Record<string, unknown> | undefined, key: string) {
 }
 
 describe("employee attendance transitions", () => {
+  it("persists the third qualifying local workday arrival as late", async () => {
+    const priorSessions: StoredSession[] = [
+      { id: "grace-one", employeeId: "employee-1", mode: "OFFICE", startAt: new Date("2026-06-15T03:05:00.000Z"), endAt: new Date("2026-06-15T11:00:00.000Z") },
+      { id: "grace-two", employeeId: "employee-1", mode: "WFH", startAt: new Date("2026-06-16T03:05:00.000Z"), endAt: new Date("2026-06-16T11:00:00.000Z") },
+    ];
+    const shiftStart = new Date("1970-01-01T08:00:00.000Z");
+    const stub = createDatabase(priorSessions, "Asia/Colombo", true, true, {
+      startTime: shiftStart,
+      gracePeriodMinutes: 41,
+    });
+    const startedAt = new Date("2026-06-17T03:05:00.000Z");
+
+    await applyAttendanceAction("employee-1", "IN", stub.database, startedAt);
+
+    const daily = stub.dailyRows.find((row) => row.date.toISOString().slice(0, 10) === "2026-06-17");
+    assert.equal(daily?.lateMinutes, 5);
+    assert.equal(daily?.status, "MISSING_PUNCH");
+    assert.equal(stub.sessions.length, 3);
+  });
+
   it("serializes concurrent IN actions so only one open session is created", async () => {
     const stub = createDatabase();
     const results = await Promise.allSettled([

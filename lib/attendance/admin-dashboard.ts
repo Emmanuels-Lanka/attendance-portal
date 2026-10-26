@@ -6,8 +6,12 @@ import { hasPermission } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
 import { adminEmployeeSelect, AdminAttendanceAuthorizationError } from "@/lib/attendance/admin-service";
 import { adminAttendanceFilterSchema } from "@/lib/attendance/admin-validation";
-import { formatWorkedDuration, groupSessionsByEmployeeLocalDay } from "@/lib/attendance/history";
-import { getEmployeeLocalDayWindow } from "@/lib/attendance/timezone";
+import {
+  formatWorkedDuration,
+  groupSessionsByEmployeeLocalDay,
+  monthlyGraceAllowancesUsedBeforeEachDate,
+} from "@/lib/attendance/history";
+import { getEmployeeLocalDayWindow, getEmployeeLocalMonthWindow } from "@/lib/attendance/timezone";
 import { resolveAttendanceEmployees } from "@/lib/attendance/employee-link";
 import { isOptionalSriLankanSaturday } from "./shift-assignment";
 
@@ -81,8 +85,13 @@ export async function getAdminAttendanceSummary(
     const endAt = nextLocalDay(date, employee.timeZone);
     return { record: { employeeId: employee.id }, startAt: { gte: startAt, lt: endAt } };
   });
+  const policyRanges = employeesWithRecords.map((employee) => {
+    const monthWindow = getEmployeeLocalMonthWindow(date, employee.timeZone);
+    const endAt = nextLocalDay(date, employee.timeZone);
+    return { record: { employeeId: employee.id }, startAt: { gte: monthWindow.startAt, lt: endAt } };
+  });
   const modeFilter = mode === "ALL" ? {} : { mode };
-  const [daySessions, openSessions] = await Promise.all([
+  const [daySessions, openSessions, policySessions] = await Promise.all([
     database.workSession.findMany({
       where: { OR: localRanges, ...modeFilter },
       include: { record: { select: { employee: { select: adminEmployeeSelect } } } },
@@ -91,6 +100,11 @@ export async function getAdminAttendanceSummary(
     database.workSession.findMany({
       where: { endAt: null, record: { employeeId: { in: employeeIds } }, ...modeFilter },
       select: { mode: true, startAt: true, record: { select: { employeeId: true } } },
+    }),
+    database.workSession.findMany({
+      where: { OR: policyRanges },
+      select: { id: true, mode: true, startAt: true, endAt: true, record: { select: { employeeId: true } } },
+      orderBy: { startAt: "asc" },
     }),
   ]);
   const daySessionsWithEmployeeRecords = daySessions.map((session) => ({
@@ -111,13 +125,26 @@ export async function getAdminAttendanceSummary(
     rows.push(session);
     sessionsByEmployee.set(id, rows);
   }
+  const policySessionsByEmployee = new Map<string, typeof policySessions>();
+  for (const session of policySessions) {
+    const id = session.record.employeeId;
+    const rows = policySessionsByEmployee.get(id) ?? [];
+    rows.push(session);
+    policySessionsByEmployee.set(id, rows);
+  }
   const activeEmployeeIds = new Set(openSessions.map((session) => session.record.employeeId));
   const summaries = employeesWithRecords.map((employee) => {
+    const monthlyGraceAllowancesUsedByDate = monthlyGraceAllowancesUsedBeforeEachDate(
+      policySessionsByEmployee.get(employee.id) ?? [],
+      employee.timeZone,
+      employee.employeeRecord?.shiftAssignments ?? [],
+    );
     const grouped = groupSessionsByEmployeeLocalDay(
       sessionsByEmployee.get(employee.id) ?? [],
       employee.timeZone,
       employee.employeeRecord?.shiftAssignments ?? [],
       employee.countryCode,
+      monthlyGraceAllowancesUsedByDate,
     );
     const day = grouped.days.find((entry) => entry.date === date) ?? { date, sessions: [], totalWorkedMs: 0 };
     return {

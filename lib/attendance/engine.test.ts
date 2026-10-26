@@ -42,6 +42,54 @@ function calculate(punches: readonly RawAttendancePunch[], overrides: Partial<At
 }
 
 describe("deterministic attendance engine foundation", () => {
+  it("uses the monthly grace allowance and late-minute windows for the 08:00 policy", () => {
+    const directorShift = {
+      ...shift,
+      startTime: new Date("1970-01-01T08:00:00.000Z"),
+      endTime: new Date("1970-01-01T17:30:00.000Z"),
+      gracePeriodMinutes: 41,
+    };
+    const allowanceAvailable = calculateDailyAttendance({
+      employeeId: "employee-1",
+      date: "2026-06-15",
+      timeZone: "Asia/Colombo",
+      shift: directorShift,
+      punches: [punch("in", "IN", "08:35"), punch("out", "OUT", "17:30")],
+      monthlyGraceAllowancesUsed: 1,
+    });
+    const allowancesExhausted = calculateDailyAttendance({
+      employeeId: "employee-1",
+      date: "2026-06-15",
+      timeZone: "Asia/Colombo",
+      shift: directorShift,
+      punches: [punch("in", "IN", "08:35"), punch("out", "OUT", "17:30")],
+      monthlyGraceAllowancesUsed: 2,
+    });
+    const unresolvedWindow = calculateDailyAttendance({
+      employeeId: "employee-1",
+      date: "2026-06-15",
+      timeZone: "Asia/Colombo",
+      shift: directorShift,
+      punches: [punch("in", "IN", "09:00"), punch("out", "OUT", "17:30")],
+      monthlyGraceAllowancesUsed: 2,
+    });
+    const afterLateBoundary = calculateDailyAttendance({
+      employeeId: "employee-1",
+      date: "2026-06-15",
+      timeZone: "Asia/Colombo",
+      shift: directorShift,
+      punches: [punch("in", "IN", "09:30:01"), punch("out", "OUT", "17:30")],
+      monthlyGraceAllowancesUsed: 0,
+    });
+
+    assert.equal(allowanceAvailable.lateMinutes, 0);
+    assert.equal(allowancesExhausted.lateMinutes, 5);
+    assert.equal(allowancesExhausted.status, "LATE");
+    assert.equal(unresolvedWindow.lateMinutes, null);
+    assert.equal(unresolvedWindow.status, "UNDETERMINED");
+    assert.equal(afterLateBoundary.lateMinutes, 1);
+  });
+
   it("calculates one complete IN/OUT period without applying unspecified rounding", () => {
     const result = calculate([
       punch("in", "IN", "08:30"),

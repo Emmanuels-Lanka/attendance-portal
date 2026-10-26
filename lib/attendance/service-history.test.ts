@@ -39,7 +39,7 @@ function createReadDatabase(startAt: Date, endAt: Date | null) {
 describe("employee attendance history shift data flow", () => {
   it("loads effective assignments and classifies historical WFH sessions by their local date", async () => {
     const stub = createReadDatabase(
-      new Date("2026-06-15T02:40:01.000Z"),
+      new Date("2026-06-15T04:01:00.001Z"),
       new Date("2026-06-15T12:30:00.000Z"),
     );
     const history = await getEmployeeAttendanceHistory({ id: "user-1", timeZone: "Asia/Colombo" }, stub.database);

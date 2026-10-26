@@ -23,6 +23,7 @@ describe("Admin attendance session details", () => {
       mode: "OFFICE",
       startAt: new Date("2026-10-23T18:35:00.000Z"),
       endAt: new Date("2026-10-23T22:00:00.000Z"),
+      monthlyGraceAllowancesUsed: 0,
       createdAt: new Date("2026-10-23T18:35:00.000Z"),
       updatedAt: new Date("2026-10-23T22:00:00.000Z"),
       record: {

@@ -27,3 +27,26 @@ export function getEmployeeLocalDayWindow(now: Date, timeZone: string) {
     endAt: fromZonedTime(`${nextDate}T00:00:00.000`, timeZone),
   };
 }
+
+export function getEmployeeLocalMonthWindow(date: string, timeZone: string) {
+  const parsedDate = new Date(`${date}T00:00:00.000Z`);
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(date)
+    || !Number.isFinite(parsedDate.getTime())
+    || parsedDate.toISOString().slice(0, 10) !== date
+  ) {
+    throw new RangeError("Attendance date must be a valid YYYY-MM-DD calendar date.");
+  }
+  if (!isIanaTimeZone(timeZone)) {
+    throw new RangeError(`Unsupported IANA timezone: ${timeZone}`);
+  }
+
+  const monthStart = `${date.slice(0, 7)}-01`;
+  const nextMonth = new Date(`${monthStart}T00:00:00.000Z`);
+  nextMonth.setUTCMonth(nextMonth.getUTCMonth() + 1);
+  const nextMonthStart = nextMonth.toISOString().slice(0, 10);
+  return {
+    startAt: fromZonedTime(`${monthStart}T00:00:00.000`, timeZone),
+    endAt: fromZonedTime(`${nextMonthStart}T00:00:00.000`, timeZone),
+  };
+}

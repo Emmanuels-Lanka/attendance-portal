@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { getEmployeeAttendanceDashboard, getEmployeeAttendanceHistory } from "./service";
-import { getEmployeeLocalDayWindow } from "./timezone";
+import { getEmployeeLocalDayWindow, getEmployeeLocalMonthWindow } from "./timezone";
 
 type TestSession = {
   id: string;
@@ -70,7 +70,7 @@ describe("employee attendance data access", () => {
 
     assert.equal(dashboard.employeeRecordFound, false);
     assert.deepEqual(lookups, [{ userId: hrUser.id }, { userId: hrUser.id }]);
-    assert.equal(filters.length, 3);
+    assert.equal(filters.length, 4);
     for (const filter of filters) {
       assert.deepEqual(filter.record, { employeeId: hrUser.id });
     }
@@ -97,7 +97,7 @@ describe("employee attendance data access", () => {
     await getEmployeeAttendanceHistory(employee, database);
 
     assert.equal(dashboard.employeeRecordFound, true);
-    assert.equal(filters.length, 3);
+    assert.equal(filters.length, 4);
     for (const filter of filters) {
       assert.deepEqual(filter.record, { employeeId: employee.id });
     }
@@ -109,6 +109,9 @@ describe("employee attendance data access", () => {
       { endAt: { gte: window.startAt, lt: window.endAt } },
     ]);
     assert.deepEqual(filters[0], { record: { employeeId: employee.id }, endAt: null });
+    assert.deepEqual(filters[2]?.record, { employeeId: employee.id });
+    const monthWindow = getEmployeeLocalMonthWindow(window.date, employee.timeZone);
+    assert.deepEqual(filters[2]?.OR, [{ startAt: { gte: monthWindow.startAt, lt: monthWindow.endAt } }]);
   });
 
   it("selects today's active session and attendance entries by local start date", async () => {

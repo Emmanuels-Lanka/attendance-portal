@@ -28,6 +28,7 @@ export function sessionView(session: AdminAttendanceSession) {
       employee.timeZone,
       employee.employeeRecord?.shiftAssignments ?? [],
       employee.countryCode,
+      session.monthlyGraceAllowancesUsed,
     );
     arrival = timing.arrival;
     if (session.endAt && endValid && !reversed) {

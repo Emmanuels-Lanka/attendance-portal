@@ -151,8 +151,9 @@ function createHarness(options: {
     },
     attendanceDaily: {
       findFirst: async () => daily,
-      findMany: async ({ select }: { select?: { firstIn?: boolean } }) => {
+      findMany: async ({ select }: { select?: { firstIn?: boolean; date?: boolean } }) => {
         if (!daily) return [];
+        if (select?.date && !select.firstIn) return [{ date: daily.date }];
         return select?.firstIn ? [daily] : [{ id: daily.id }];
       },
       findUnique: async ({ where }: { where: { id: string } }) => daily?.id === where.id ? daily : null,

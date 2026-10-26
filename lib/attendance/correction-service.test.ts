@@ -204,7 +204,15 @@ function createDatabase(options: {
       },
     },
     attendanceDaily: {
-      findMany: async () => daily ? [{ id: daily.id }] : [],
+      findMany: async ({ where }: { where?: { employeeId?: string; date?: Date | { gte: Date; lt: Date } } }) => {
+        if (where?.date instanceof Date) return daily ? [{ id: daily.id }] : [];
+        if (where?.date) {
+          return daily && daily.date >= where.date.gte && daily.date < where.date.lt
+            ? [{ date: daily.date }]
+            : [];
+        }
+        return daily ? [{ id: daily.id }] : [];
+      },
       create: async ({ data }: { data: Record<string, unknown> }) => {
         const created = { ...structuredClone(originalDaily), ...data, id: "daily-created" } as TestDaily;
         return created;

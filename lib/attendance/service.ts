@@ -1,16 +1,21 @@
 import "server-only";
 
 import { Prisma } from "@prisma/client";
+import { formatInTimeZone } from "date-fns-tz";
 import { prisma } from "@/lib/prisma";
 import {
   calculateAndPersistDailyAttendanceInTransaction,
 } from "@/lib/attendance/engine-service";
 import { AttendanceEngineConfigurationError } from "@/lib/attendance/engine";
 import { attendanceLocationSchema, type AttendanceAction, type AttendanceLocation } from "@/lib/attendance/validation";
-import { classifySessionForShiftAssignments, groupSessionsByEmployeeLocalDay } from "@/lib/attendance/history";
+import {
+  classifySessionForShiftAssignments,
+  groupSessionsByEmployeeLocalDay,
+  monthlyGraceAllowancesUsedBeforeEachDate,
+} from "@/lib/attendance/history";
 import type { WorkSessionTiming } from "@/lib/attendance/schedule";
 import type { EffectiveShiftAssignment } from "@/lib/attendance/shift-assignment";
-import { getEmployeeLocalDayWindow } from "@/lib/attendance/timezone";
+import { getEmployeeLocalDayWindow, getEmployeeLocalMonthWindow } from "@/lib/attendance/timezone";
 
 export class AttendanceStateError extends Error {
   constructor(message: string) {
@@ -224,6 +229,7 @@ export async function getEmployeeAttendanceDashboard(
   database: AttendanceReadDatabase = prisma,
 ) {
   const { date, startAt, endAt } = getEmployeeLocalDayWindow(now, employee.timeZone);
+  const monthWindow = getEmployeeLocalMonthWindow(date, employee.timeZone);
   const employeeFilter = { record: { employeeId: employee.id } };
   const [activeSession, sessions, shiftResolution] = await Promise.all([
     database.workSession.findFirst({
@@ -243,10 +249,43 @@ export async function getEmployeeAttendanceDashboard(
     employeeShiftAssignments(employee.id, database),
   ]);
 
+  const policyMonthWindows = [monthWindow];
+  if (activeSession && activeSession.startAt < startAt && Number.isFinite(activeSession.startAt.getTime())) {
+    const activeMonthWindow = getEmployeeLocalMonthWindow(
+      formatInTimeZone(activeSession.startAt, employee.timeZone, "yyyy-MM-dd"),
+      employee.timeZone,
+    );
+    if (activeMonthWindow.startAt < monthWindow.startAt) policyMonthWindows.push(activeMonthWindow);
+  }
+  const policySessions = await database.workSession.findMany({
+    where: {
+      ...employeeFilter,
+      OR: policyMonthWindows.map((window) => ({ startAt: { gte: window.startAt, lt: window.endAt } })),
+    },
+    orderBy: { startAt: "asc" },
+  });
+  const monthlyGraceAllowancesUsedByDate = monthlyGraceAllowancesUsedBeforeEachDate(
+    policySessions,
+    employee.timeZone,
+    shiftResolution.assignments,
+  );
   const todaySessions = sessions.filter((session) => session.startAt >= startAt && session.startAt < endAt);
-  const grouped = groupSessionsByEmployeeLocalDay(todaySessions, employee.timeZone, shiftResolution.assignments, employee.countryCode);
+  const grouped = groupSessionsByEmployeeLocalDay(
+    todaySessions,
+    employee.timeZone,
+    shiftResolution.assignments,
+    employee.countryCode,
+    monthlyGraceAllowancesUsedByDate,
+  );
   const sessionTiming = (session: NonNullable<typeof activeSession>): WorkSessionTiming => {
-    return classifySessionForShiftAssignments(session, employee.timeZone, shiftResolution.assignments, employee.countryCode);
+    const sessionDate = formatInTimeZone(session.startAt, employee.timeZone, "yyyy-MM-dd");
+    return classifySessionForShiftAssignments(
+      session,
+      employee.timeZone,
+      shiftResolution.assignments,
+      employee.countryCode,
+      monthlyGraceAllowancesUsedByDate.get(sessionDate),
+    );
   };
   const activeSessionTiming = activeSession ? sessionTiming(activeSession) : null;
   const previousDayActiveSessionTiming = activeSession && activeSession.startAt < startAt
@@ -281,5 +320,16 @@ export async function getEmployeeAttendanceHistory(
     }),
     employeeShiftAssignments(employee.id, database),
   ]);
-  return groupSessionsByEmployeeLocalDay(sessions, employee.timeZone, shiftResolution.assignments, employee.countryCode);
+  const monthlyGraceAllowancesUsedByDate = monthlyGraceAllowancesUsedBeforeEachDate(
+    sessions,
+    employee.timeZone,
+    shiftResolution.assignments,
+  );
+  return groupSessionsByEmployeeLocalDay(
+    sessions,
+    employee.timeZone,
+    shiftResolution.assignments,
+    employee.countryCode,
+    monthlyGraceAllowancesUsedByDate,
+  );
 }

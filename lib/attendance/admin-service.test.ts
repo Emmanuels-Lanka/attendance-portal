@@ -85,7 +85,7 @@ function createDatabase(
   } = {};
   const workSession = {
     findMany: async (args: { where: unknown; include: unknown }) => {
-      calls.findWhere = args.where;
+      if (args.include) calls.findWhere = args.where;
       const where = args.where as {
         mode?: "OFFICE" | "WFH";
         endAt?: null | { not: null };
@@ -253,6 +253,7 @@ function createCrossDateCorrectionDatabase(input: {
   endAt: Date | null;
   dailyDates: string[];
   rawPunches?: Array<{ timestamp: Date; punchType: "IN" | "OUT"; workMode: "OFFICE" | "WFH" }>;
+  shiftStartTime?: string;
 }) {
   const userId = "cross-date-user";
   const employeeId = "cross-date-employee";
@@ -319,14 +320,17 @@ function createCrossDateCorrectionDatabase(input: {
       findMany: async ({ where }: {
         where: {
           record: { employeeId: string };
-          OR: Array<{ startAt?: { gte: Date; lt: Date }; endAt?: { gte: Date; lt: Date } }>;
+          OR?: Array<{ startAt?: { gte: Date; lt: Date }; endAt?: { gte: Date; lt: Date } }>;
+          startAt?: { gte: Date; lt: Date };
         };
       }) => {
         if (where.record.employeeId !== userId) return [];
-        const matches = where.OR.some((condition) =>
-          (condition.startAt && session.startAt >= condition.startAt.gte && session.startAt < condition.startAt.lt)
-          || (condition.endAt && session.endAt
-            && session.endAt >= condition.endAt.gte && session.endAt < condition.endAt.lt));
+        const matches = where.startAt
+          ? session.startAt >= where.startAt.gte && session.startAt < where.startAt.lt
+          : where.OR?.some((condition) =>
+              (condition.startAt && session.startAt >= condition.startAt.gte && session.startAt < condition.startAt.lt)
+              || (condition.endAt && session.endAt
+                && session.endAt >= condition.endAt.gte && session.endAt < condition.endAt.lt)) ?? false;
         return matches
           ? [{ id: session.id, mode: session.mode, startAt: session.startAt, endAt: session.endAt }]
           : [];
@@ -339,7 +343,7 @@ function createCrossDateCorrectionDatabase(input: {
         user: { timeZone: "Asia/Colombo", countryCode: "LK" },
         shift: {
           id: "shift-1",
-          startTime: new Date("1970-01-01T08:30:00.000Z"),
+          startTime: new Date(`1970-01-01T${input.shiftStartTime ?? "08:30"}:00.000Z`),
           endTime: new Date("1970-01-01T17:30:00.000Z"),
           gracePeriodMinutes: 10,
           lateThresholdMinutes: 0,
@@ -363,12 +367,21 @@ function createCrossDateCorrectionDatabase(input: {
       },
     },
     attendanceDaily: {
-      findMany: async ({ where }: { where: { employeeId: string; date: Date } }) => {
-        const date = where.date.toISOString().slice(0, 10);
-        recalculatedDates.push(date);
+      findMany: async ({ where }: { where: { employeeId: string; date: Date | { gte: Date; lt: Date } } }) => {
+        const dateFilter = where.date;
+        if (dateFilter instanceof Date) {
+          const date = dateFilter.toISOString().slice(0, 10);
+          recalculatedDates.push(date);
+          return dailyRows.filter((row) =>
+            row.employeeId === where.employeeId && row.date.getTime() === dateFilter.getTime())
+            .map(({ id }) => ({ id }));
+        }
+        if (!dateFilter) return [];
         return dailyRows.filter((row) =>
-          row.employeeId === where.employeeId && row.date.getTime() === where.date.getTime())
-          .map(({ id }) => ({ id }));
+          row.employeeId === where.employeeId
+          && row.date >= dateFilter.gte
+          && row.date < dateFilter.lt,
+        ).map(({ date }) => ({ date }));
       },
       create: async ({ data }: { data: Record<string, unknown> }) => {
         const row = { id: `created-${dailyRows.length}`, ...data } as typeof dailyRows[number];
@@ -946,6 +959,31 @@ describe("admin attendance access and corrections", () => {
     assert.equal(stub.dailyRows[2].mode, "OFFICE");
     assert.equal(stub.dailyRows[2].lastOut?.toISOString(), "2026-06-18T03:30:00.000Z");
     assert.deepEqual(stub.dailyRows[3], unrelatedBefore);
+    assert.deepEqual(stub.rawPunches, stub.rawBefore);
+  });
+
+  it("recalculates later same-month attendance after an effective IN correction", async () => {
+    const startAt = new Date("2026-06-16T02:25:00.000Z");
+    const endAt = new Date("2026-06-16T12:00:00.000Z");
+    const rawPunches = [
+      { timestamp: startAt, punchType: "IN" as const, workMode: "OFFICE" as const },
+      { timestamp: endAt, punchType: "OUT" as const, workMode: "OFFICE" as const },
+    ];
+    const stub = createCrossDateCorrectionDatabase({
+      startAt,
+      endAt,
+      dailyDates: ["2026-06-16", "2026-06-17", "2026-06-18"],
+      rawPunches,
+      shiftStartTime: "08:00",
+    });
+
+    const corrected = await correctAdminAttendance(admin, "cross-date-session", {
+      startAt: "2026-06-16T08:35",
+      reason: "Correct the effective IN time.",
+    }, stub.database);
+
+    assert.equal(corrected.startAt.toISOString(), "2026-06-16T03:05:00.000Z");
+    assert.deepEqual(stub.recalculatedDates, ["2026-06-16", "2026-06-17", "2026-06-18"]);
     assert.deepEqual(stub.rawPunches, stub.rawBefore);
   });
 

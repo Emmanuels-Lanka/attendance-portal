@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { fromZonedTime } from "date-fns-tz";
-import { assessAttendanceArrival, classifyAttendancePunch, type AttendanceShiftSchedule } from "./schedule";
+import { assessAttendanceArrival, assessDirector08Arrival, classifyAttendancePunch, type AttendanceShiftSchedule } from "./schedule";
 
 function zonedInstant(date: string, time: string, timeZone: string) {
   const [clock, milliseconds = "000"] = time.split(".");
@@ -23,6 +23,47 @@ const sriLankaSaturday = shift("08:30", "13:30", ["SATURDAY"]);
 const bangladeshShift = shift("08:00", "18:00", ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "SATURDAY", "SUNDAY"]);
 
 describe("configured shift attendance rules", () => {
+  it("applies the director 08:00 arrival windows and monthly grace allowance boundary", () => {
+    const cases = [
+      ["07:30:00", 0, "EARLY_ARRIVAL", 0, false],
+      ["08:00:00", 0, "ON_TIME", 0, false],
+      ["08:30:00", 0, "ON_TIME", 0, false],
+      ["08:30:00.001", 0, "ON_TIME", 0, true],
+      ["08:35:00", 1, "ON_TIME", 0, true],
+      ["08:40:00", 2, "LATE", 10, false],
+      ["08:40:00.001", 0, "UNDETERMINED", null, false],
+      ["09:30:00", 0, "UNDETERMINED", null, false],
+      ["09:30:00.001", 0, "LATE", 1, false],
+    ] as const;
+
+    for (const [time, used, classification, lateMinutes, consumesGraceAllowance] of cases) {
+      assert.deepEqual(
+        assessDirector08Arrival(zonedInstant("2026-06-15", time, "Asia/Colombo"), "Asia/Colombo", sriLankaWeekday, used),
+        { classification, lateMinutes, consumesGraceAllowance },
+        time,
+      );
+    }
+  });
+
+  it("keeps the 08:00 policy bounded to shifts that start at 08:00", () => {
+    const weekendArrival = zonedInstant("2026-06-20", "08:35:00", "Asia/Colombo");
+
+    assert.equal(
+      assessDirector08Arrival(weekendArrival, "Asia/Colombo", sriLankaSaturday, 2).classification,
+      "UNDETERMINED",
+    );
+  });
+
+  it("uses local wall-clock time on daylight-saving transition dates", () => {
+    const sundayShift = { ...sriLankaWeekday, workingDays: ["SUNDAY"] };
+    const arrival = zonedInstant("2026-03-08", "09:30:00.001", "America/New_York");
+
+    assert.deepEqual(
+      assessDirector08Arrival(arrival, "America/New_York", sundayShift, 0),
+      { classification: "LATE", lateMinutes: 1, consumesGraceAllowance: false },
+    );
+  });
+
   it("applies the full start/grace boundary table for an 08:00 shift", () => {
     const expected = new Map([
       ["07:59:59", "EARLY_ARRIVAL"],

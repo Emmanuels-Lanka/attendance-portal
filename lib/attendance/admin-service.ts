@@ -4,10 +4,16 @@ import type { Prisma, PrismaClient, Role } from "@prisma/client";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { hasPermission } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
-import { getEmployeeLocalDayWindow } from "@/lib/attendance/timezone";
-import { groupSessionsByEmployeeLocalDay } from "@/lib/attendance/history";
+import { getEmployeeLocalDayWindow, getEmployeeLocalMonthWindow } from "@/lib/attendance/timezone";
+import {
+  groupSessionsByEmployeeLocalDay,
+  monthlyGraceAllowancesUsedBeforeEachDate,
+} from "@/lib/attendance/history";
 import { lockAttendanceEmployee } from "@/lib/attendance/service";
-import { calculateAndPersistDailyAttendanceInTransaction } from "@/lib/attendance/engine-service";
+import {
+  calculateAndPersistDailyAttendanceInTransaction,
+  recalculateAttendanceMonthsFromDatesInTransaction,
+} from "@/lib/attendance/engine-service";
 import { resolveAttendanceEmployees } from "@/lib/attendance/employee-link";
 import { lockEmployeeForApproval, getActiveManagerDepartmentScope, lockActiveManagerDepartmentScope } from "@/lib/organization/manager-scope";
 import { adminAttendanceCorrectionSchema, adminAttendanceFilterSchema, type AdminAttendanceFilters } from "@/lib/attendance/admin-validation";
@@ -128,14 +134,9 @@ async function loadAdminAttendance(
     ...(filters.status === "ACTIVE" ? { endAt: null } : filters.status === "COMPLETED" ? { endAt: { not: null } } : {}),
     ...(dateRanges ? { OR: dateRanges } : { record: { employeeId: { in: employeesWithRecords.map((employee) => employee.id) } } }),
   };
-
   const sessions = await database.workSession.findMany({
     where,
-    include: {
-      record: {
-        select: { employee: { select: adminEmployeeSelect } },
-      },
-    },
+    include: { record: { select: { employee: { select: adminEmployeeSelect } } } },
     orderBy: { startAt: "desc" },
     take: 500,
   });
@@ -150,8 +151,60 @@ async function loadAdminAttendance(
     },
   }));
 
-  const sessionsByEmployee = new Map<string, typeof sessionsWithEmployeeRecords>();
+  const policyRanges = new Map<string, Prisma.WorkSessionWhereInput>();
   for (const session of sessionsWithEmployeeRecords) {
+    const employee = session.record.employee;
+    if (!Number.isFinite(session.startAt.getTime())) continue;
+    const date = formatInTimeZone(session.startAt, employee.timeZone, "yyyy-MM-dd");
+    const monthWindow = getEmployeeLocalMonthWindow(date, employee.timeZone);
+    policyRanges.set(`${employee.id}:${date.slice(0, 7)}`, {
+      record: { employeeId: employee.id },
+      startAt: { gte: monthWindow.startAt, lt: monthWindow.endAt },
+    });
+  }
+  const policySessions = policyRanges.size > 0
+    ? await database.workSession.findMany({
+        where: { OR: [...policyRanges.values()] },
+        select: {
+          id: true,
+          mode: true,
+          startAt: true,
+          endAt: true,
+          record: { select: { employeeId: true } },
+        },
+        orderBy: [{ startAt: "asc" }, { id: "asc" }],
+      })
+    : [];
+  const policySessionsByEmployee = new Map<string, typeof policySessions>();
+  for (const session of policySessions) {
+    const employeeId = session.record.employeeId;
+    const rows = policySessionsByEmployee.get(employeeId) ?? [];
+    rows.push(session);
+    policySessionsByEmployee.set(employeeId, rows);
+  }
+  const monthlyGraceAllowancesByEmployee = new Map(
+    employeesWithRecords.map((employee) => [
+      employee.id,
+      monthlyGraceAllowancesUsedBeforeEachDate(
+        policySessionsByEmployee.get(employee.id) ?? [],
+        employee.timeZone,
+        employee.employeeRecord?.shiftAssignments ?? [],
+      ),
+    ]),
+  );
+  const sessionsWithPolicyCounts = sessionsWithEmployeeRecords.map((session) => {
+    const employee = session.record.employee;
+    const date = Number.isFinite(session.startAt.getTime())
+      ? formatInTimeZone(session.startAt, employee.timeZone, "yyyy-MM-dd")
+      : "";
+    return {
+      ...session,
+      monthlyGraceAllowancesUsed: monthlyGraceAllowancesByEmployee.get(employee.id)?.get(date),
+    };
+  });
+
+  const sessionsByEmployee = new Map<string, typeof sessionsWithPolicyCounts>();
+  for (const session of sessionsWithPolicyCounts) {
     const employeeId = session.record.employee.id;
     const employeeSessions = sessionsByEmployee.get(employeeId) ?? [];
     employeeSessions.push(session);
@@ -165,10 +218,11 @@ async function loadAdminAttendance(
       employee.timeZone,
       employee.employeeRecord?.shiftAssignments ?? [],
       employee.countryCode,
+      monthlyGraceAllowancesByEmployee.get(employee.id),
     ).days.map((day) => ({ employee, day }));
   }).sort((left, right) => right.day.date.localeCompare(left.day.date) || left.employee.name.localeCompare(right.employee.name));
 
-  return { employees: employeesWithRecords, sessions: sessionsWithEmployeeRecords, dailySummaries, filters };
+  return { employees: employeesWithRecords, sessions: sessionsWithPolicyCounts, dailySummaries, filters };
 }
 
 export async function listAdminAttendance(
@@ -366,7 +420,20 @@ export async function correctAdminAttendance(
       select: { id: true, employeeId: true, sessionId: true, actorId: true, actionType: true, previousValues: true, newValues: true, reason: true, createdAt: true },
     });
     if (targetEmployeeRecordId) {
+      const startChanged = startAt.getTime() !== current.startAt.getTime();
+      if (startChanged) {
+        await recalculateAttendanceMonthsFromDatesInTransaction(transaction, {
+          employeeRecordId: targetEmployeeRecordId,
+          employeeUserId: employeeId,
+          timeZone,
+          affectedDates: [oldStartDate, newStartDate],
+        });
+      }
+      const startChangeMonths = startChanged
+        ? new Set([oldStartDate.slice(0, 7), newStartDate.slice(0, 7)])
+        : new Set<string>();
       for (const date of datesToRecalculate) {
+        if (startChangeMonths.has(date.slice(0, 7))) continue;
         await calculateAndPersistDailyAttendanceInTransaction(transaction, targetEmployeeRecordId, date);
       }
     }
