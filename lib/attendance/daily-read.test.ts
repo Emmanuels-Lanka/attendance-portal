@@ -342,8 +342,10 @@ describe("calculated daily attendance read service", () => {
         workingHours: true,
         lateMinutes: true,
         earlyMinutes: true,
+        leaveMinutes: true,
         overtimeHours: true,
         status: true,
+        statusReason: true,
         employee: {
           select: {
             id: true,

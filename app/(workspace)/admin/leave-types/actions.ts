@@ -34,12 +34,18 @@ export async function saveLeaveTypeAction(
     await prisma.$transaction(async (tx) => {
       if (id) {
         const before = await getLeaveType(admin, id, tx);
-        const updated = await updateLeaveType(admin, id, { name: formData.get("name") }, tx);
-        if (before.name !== updated.name) {
+        const updated = await updateLeaveType(admin, id, {
+          name: formData.get("name"),
+          durationMode: formData.get("durationMode"),
+        }, tx);
+        if (before.name !== updated.name || before.durationMode !== updated.durationMode) {
           await writeLeaveTypeAuditEvent(tx, { leaveTypeId: id, actorId: admin.id, operation: "UPDATED" });
         }
       } else {
-        const created = await createLeaveType(admin, { name: formData.get("name") }, tx);
+        const created = await createLeaveType(admin, {
+          name: formData.get("name"),
+          durationMode: formData.get("durationMode"),
+        }, tx);
         await writeLeaveTypeAuditEvent(tx, { leaveTypeId: created.id, actorId: admin.id, operation: "CREATED" });
       }
     });

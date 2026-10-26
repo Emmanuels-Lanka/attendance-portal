@@ -50,6 +50,7 @@ export const shiftRecordSchema = z.object({
   name: organizationNameSchema,
   startTime: nullableTimeSchema.default(null),
   endTime: nullableTimeSchema.default(null),
+  breakStartTime: nullableTimeSchema.default(null),
   breakDurationMinutes: nullableIntegerSchema.default(null),
   gracePeriodMinutes: nullableIntegerSchema.default(null),
   lateThresholdMinutes: nullableIntegerSchema.default(null),
@@ -61,6 +62,16 @@ export const shiftRecordSchema = z.object({
     (days) => new Set(days).size === days.length,
     "Select each working day only once.",
   ),
+}).refine((shift) => {
+  if (!shift.breakStartTime) return true;
+  if (!shift.startTime || !shift.endTime || !shift.breakDurationMinutes || shift.breakDurationMinutes < 0) return false;
+  const start = shift.startTime.getTime();
+  const end = shift.endTime.getTime();
+  const breakStart = shift.breakStartTime.getTime();
+  return end > start && breakStart >= start && breakStart + shift.breakDurationMinutes * 60_000 <= end;
+}, {
+  path: ["breakStartTime"],
+  message: "Break start and duration must fit within the configured shift.",
 });
 export const shiftIdSchema = organizationIdSchema;
 export { organizationListQuerySchema as shiftListQuerySchema };

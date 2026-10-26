@@ -55,7 +55,7 @@ export async function listLeaveTypes(
       orderBy: [{ name: "asc" }, { id: "asc" }],
       skip: (page - 1) * pageSize,
       take: pageSize,
-      select: { id: true, name: true, createdAt: true, updatedAt: true },
+      select: { id: true, name: true, durationMode: true, createdAt: true, updatedAt: true },
     }),
     database.leaveType.count({ where }),
   ]);
@@ -66,7 +66,7 @@ export async function getLeaveType(admin: LeaveTypeAdmin, id: string, database: 
   assertAdmin(admin);
   const leaveType = await database.leaveType.findUnique({
     where: { id },
-    select: { id: true, name: true, createdAt: true, updatedAt: true },
+    select: { id: true, name: true, durationMode: true, createdAt: true, updatedAt: true },
   });
   if (!leaveType) throw new LeaveTypeNotFoundError();
   return leaveType;
@@ -78,8 +78,8 @@ export async function createLeaveType(
   database: LeaveTypeDatabase = prisma,
 ) {
   assertAdmin(admin);
-  const { name } = leaveTypeRecordSchema.parse(input);
-  return database.leaveType.create({ data: { name }, select: { id: true, name: true } });
+  const { name, durationMode } = leaveTypeRecordSchema.parse(input);
+  return database.leaveType.create({ data: { name, durationMode }, select: { id: true, name: true, durationMode: true } });
 }
 
 export async function updateLeaveType(
@@ -89,9 +89,9 @@ export async function updateLeaveType(
   database: LeaveTypeDatabase = prisma,
 ) {
   assertAdmin(admin);
-  const { name } = leaveTypeRecordSchema.parse(input);
+  const { name, durationMode } = leaveTypeRecordSchema.parse(input);
   try {
-    return await database.leaveType.update({ where: { id }, data: { name }, select: { id: true, name: true } });
+    return await database.leaveType.update({ where: { id }, data: { name, durationMode }, select: { id: true, name: true, durationMode: true } });
   } catch (error) {
     translateLeaveTypeError(error);
   }
@@ -114,7 +114,7 @@ export async function writeLeaveTypeAuditEvent(
     operation: "CREATED" | "UPDATED" | "DELETED";
   },
 ) {
-  const changedFields = input.operation === "DELETED" ? ["id"] : ["name"];
+  const changedFields = input.operation === "DELETED" ? ["id"] : ["name", "durationMode"];
   await database.attendanceAuditLog.create({
     data: {
       actorId: input.actorId,

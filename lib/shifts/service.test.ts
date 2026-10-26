@@ -26,6 +26,7 @@ type Item = {
   name: string;
   startTime: Date | null;
   endTime: Date | null;
+  breakStartTime: Date | null;
   breakDurationMinutes: number | null;
   gracePeriodMinutes: number | null;
   lateThresholdMinutes: number | null;
@@ -41,6 +42,7 @@ type Item = {
 const emptyConfiguration = {
   startTime: null,
   endTime: null,
+  breakStartTime: null,
   breakDurationMinutes: null,
   gracePeriodMinutes: null,
   lateThresholdMinutes: null,
@@ -202,6 +204,24 @@ describe("shift validation", () => {
     for (const invalid of invalidRecords) {
       assert.equal(shiftRecordSchema.safeParse({ name: "Day", ...invalid }).success, false);
     }
+  });
+
+  it("accepts break timing only when its duration and interval fit inside the shift", () => {
+    const valid = shiftRecordSchema.parse({
+      name: "Day",
+      startTime: "08:00",
+      endTime: "17:30",
+      breakStartTime: "12:00",
+      breakDurationMinutes: "60",
+    });
+    assert.equal(valid.breakStartTime?.toISOString(), "1970-01-01T12:00:00.000Z");
+    assert.equal(shiftRecordSchema.safeParse({
+      name: "Day",
+      startTime: "08:00",
+      endTime: "17:30",
+      breakStartTime: "17:00",
+      breakDurationMinutes: "60",
+    }).success, false);
   });
 
   it("rejects invalid Shift names before database access", async () => {

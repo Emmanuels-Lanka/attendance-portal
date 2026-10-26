@@ -28,9 +28,11 @@ type PdfSummary = {
   lateDays?: number | null;
   earlyOutDays?: number | null;
   approvedLeaveDays?: number | null;
+  approvedLeaveHours?: number | null;
   holidayDays?: number | null;
   unmatchedScopedHolidayDates?: number;
   missingPunchDays?: number | null;
+  invalidDays?: number | null;
   weekendDays?: number | null;
   undeterminedDays?: number | null;
   totalCalculatedDays?: number;
@@ -65,7 +67,7 @@ export function attendanceStatusSummaryText(summary: PdfSummary) {
   const scopedHolidays = summary.unmatchedScopedHolidayDates
     ? `; potential scoped holiday dates not applied ${summary.unmatchedScopedHolidayDates}`
     : "";
-  return `Attendance days: scheduled ${summary.totalWorkingDays ?? "Unavailable"}; present ${summary.presentDays ?? "Not calculated"}; late ${summary.lateDays ?? "Not calculated"}; early out ${summary.earlyOutDays ?? "Not calculated"}; approved leave ${summary.approvedLeaveDays ?? "Unavailable"}; WFH ${summary.workFromHomeDays ?? 0}; holidays ${summary.holidayDays ?? 0}${scopedHolidays}; absent ${absent}; missing punch ${summary.missingPunchDays ?? "Not calculated"}; weekend ${summary.weekendDays ?? "Not calculated"}; undetermined ${summary.undeterminedDays ?? "Not calculated"}; calculated dates ${summary.totalCalculatedDays ?? 0}; approved leave excludes dates with attendance records`;
+  return `Attendance days: scheduled ${summary.totalWorkingDays ?? "Unavailable"}; present ${summary.presentDays ?? "Not calculated"}; late ${summary.lateDays ?? "Not calculated"}; early out ${summary.earlyOutDays ?? "Not calculated"}; approved leave ${summary.approvedLeaveDays ?? "Unavailable"} days / ${summary.approvedLeaveHours?.toFixed(2) ?? "Unavailable"} hours; WFH ${summary.workFromHomeDays ?? 0}; holidays ${summary.holidayDays ?? 0}${scopedHolidays}; absent ${absent}; missing punch ${summary.missingPunchDays ?? "Not calculated"}; invalid ${summary.invalidDays ?? "Not calculated"}; weekend ${summary.weekendDays ?? "Not calculated"}; undetermined ${summary.undeterminedDays ?? "Not calculated"}; calculated dates ${summary.totalCalculatedDays ?? 0}; approved leave is reported separately from worked time`;
 }
 
 function safeCell(value: string, width: number, fontSize = 8) {

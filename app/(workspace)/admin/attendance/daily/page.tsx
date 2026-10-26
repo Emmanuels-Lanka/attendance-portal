@@ -25,6 +25,7 @@ function statusPresentation(status: string | null) {
     case "EARLY_OUT": return { label: "Early Out", className: "bg-orange-50 text-orange-800" };
     case "ABSENT": return { label: "Absent", className: "bg-rose-50 text-rose-800" };
     case "LEAVE": return { label: "Leave", className: "bg-[var(--mint)] text-[var(--mint-ink)]" };
+    case "INVALID": return { label: "Invalid", className: "bg-rose-50 text-rose-800" };
     case "WFH": return { label: "WFH", className: "bg-sky-50 text-sky-800" };
     case "MISSING_PUNCH": return { label: "Missing Punch", className: "bg-rose-50 text-rose-800" };
     case "WEEKEND": return { label: "Weekend", className: "bg-slate-100 text-slate-700" };
@@ -291,6 +292,7 @@ export default async function DailyAttendancePage({
                   <th className="px-4 py-3 font-semibold">First In</th>
                   <th className="px-4 py-3 font-semibold">Last Out</th>
                   <th className="px-4 py-3 font-semibold">Working Hours</th>
+                  <th className="px-4 py-3 font-semibold">Leave Minutes</th>
                   <th className="px-4 py-3 font-semibold">Late Minutes</th>
                   <th className="px-4 py-3 font-semibold">Early Minutes</th>
                   <th className="px-4 py-3 font-semibold">OT Hours</th>
@@ -313,11 +315,13 @@ export default async function DailyAttendancePage({
                       <td className="px-4 py-3 tabular-nums">{timeLabel(record.firstIn, record.employee.user?.timeZone ?? null)}</td>
                       <td className="px-4 py-3 tabular-nums">{timeLabel(record.lastOut, record.employee.user?.timeZone ?? null)}</td>
                       <td className="px-4 py-3 tabular-nums">{hoursLabel(record.workingHours)}</td>
+                      <td className="px-4 py-3 tabular-nums">{record.leaveMinutes ?? "—"}</td>
                       <td className="px-4 py-3 tabular-nums">{record.lateMinutes ?? "—"}</td>
                       <td className="px-4 py-3 tabular-nums">{record.earlyMinutes ?? "—"}</td>
                       <td className="px-4 py-3 tabular-nums">{hoursLabel(record.overtimeHours)}</td>
                       <td className="px-4 py-3">
                         <span className={`inline-flex rounded-sm px-2 py-1 text-xs font-medium ${status.className}`}>{status.label}</span>
+                        {record.statusReason && <p className="mt-1 max-w-sm text-xs text-[var(--muted)]">{record.statusReason}</p>}
                       </td>
                     </tr>
                   );
@@ -344,12 +348,14 @@ export default async function DailyAttendancePage({
                     <span className="text-[var(--muted)]">Shift: <span className="text-[var(--ink)]">{record.shift?.name ?? "—"}</span></span>
                     <span className="text-[var(--muted)]">Mode: <span className="text-[var(--ink)]">{modeLabel(record.mode)}</span></span>
                     <span className="text-[var(--muted)]">Working: <span className="text-[var(--ink)]">{hoursLabel(record.workingHours)}</span></span>
+                    <span className="text-[var(--muted)]">Leave: <span className="text-[var(--ink)]">{record.leaveMinutes ?? "—"} min</span></span>
                     <span className="text-[var(--muted)]">First In: <span className="text-[var(--ink)]">{timeLabel(record.firstIn, record.employee.user?.timeZone ?? null)}</span></span>
                     <span className="text-[var(--muted)]">Last Out: <span className="text-[var(--ink)]">{timeLabel(record.lastOut, record.employee.user?.timeZone ?? null)}</span></span>
                     <span className="text-[var(--muted)]">Late: <span className="text-[var(--ink)]">{record.lateMinutes ?? "—"} min</span></span>
                     <span className="text-[var(--muted)]">Early: <span className="text-[var(--ink)]">{record.earlyMinutes ?? "—"} min</span></span>
                     <span className="text-[var(--muted)]">OT: <span className="text-[var(--ink)]">{hoursLabel(record.overtimeHours)}</span></span>
                   </div>
+                  {record.statusReason && <p className="text-xs text-[var(--muted)]">{record.statusReason}</p>}
                 </li>
               );
             })}

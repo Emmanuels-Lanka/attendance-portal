@@ -20,6 +20,7 @@ type ShiftFormProps = {
   name?: string;
   startTime?: string;
   endTime?: string;
+  breakStartTime?: string | null;
   breakDurationMinutes?: number | null;
   gracePeriodMinutes?: number | null;
   lateThresholdMinutes?: number | null;
@@ -35,6 +36,7 @@ export function ShiftForm({
   name,
   startTime,
   endTime,
+  breakStartTime,
   breakDurationMinutes,
   gracePeriodMinutes,
   lateThresholdMinutes,
@@ -60,6 +62,7 @@ export function ShiftForm({
           <label htmlFor="shift-start-time" className="text-sm font-medium">Start time<input id="shift-start-time" name="startTime" type="time" defaultValue={startTime ?? ""} className="mt-1.5 h-10 w-full rounded-md border border-[var(--line)] bg-white px-3 font-normal" /></label>
           <label htmlFor="shift-end-time" className="text-sm font-medium">End time<input id="shift-end-time" name="endTime" type="time" defaultValue={endTime ?? ""} className="mt-1.5 h-10 w-full rounded-md border border-[var(--line)] bg-white px-3 font-normal" /></label>
           <label htmlFor="shift-break-duration" className="text-sm font-medium">Break duration (minutes)<input id="shift-break-duration" name="breakDurationMinutes" type="number" step="1" defaultValue={breakDurationMinutes ?? ""} className="mt-1.5 h-10 w-full rounded-md border border-[var(--line)] bg-white px-3 font-normal" /></label>
+          <label htmlFor="shift-break-start" className="text-sm font-medium">Break start time (required for half-day leave)<input id="shift-break-start" name="breakStartTime" type="time" defaultValue={breakStartTime ?? ""} className="mt-1.5 h-10 w-full rounded-md border border-[var(--line)] bg-white px-3 font-normal" /></label>
           <label htmlFor="shift-grace-period" className="text-sm font-medium">Grace period (minutes)<input id="shift-grace-period" name="gracePeriodMinutes" type="number" step="1" defaultValue={gracePeriodMinutes ?? ""} className="mt-1.5 h-10 w-full rounded-md border border-[var(--line)] bg-white px-3 font-normal" /></label>
           <label htmlFor="shift-late-threshold" className="text-sm font-medium">Late threshold (minutes)<input id="shift-late-threshold" name="lateThresholdMinutes" type="number" step="1" defaultValue={lateThresholdMinutes ?? ""} className="mt-1.5 h-10 w-full rounded-md border border-[var(--line)] bg-white px-3 font-normal" /></label>
           <label htmlFor="shift-early-departure-threshold" className="text-sm font-medium">Early departure threshold (minutes)<input id="shift-early-departure-threshold" name="earlyDepartureThresholdMinutes" type="number" step="1" defaultValue={earlyDepartureThresholdMinutes ?? ""} className="mt-1.5 h-10 w-full rounded-md border border-[var(--line)] bg-white px-3 font-normal" /></label>

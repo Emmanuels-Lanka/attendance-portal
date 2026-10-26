@@ -48,8 +48,8 @@ function createEntitlementDatabaseStub() {
     employee: {
       findMany: async () => [{ id: "employee-1", name: "Ravi Employee", employeeId: "EMP-1", department: { name: "People" } }],
       findUnique: async ({ where }: { where: { id?: string; userId?: string } }) => {
-        if (where.id) return employeeIds.has(where.id) ? { id: where.id, name: "Ravi Employee", employeeId: "EMP-1", userId: "employee-user", user: { role: employeeRoles.get(where.id) ?? Role.EMPLOYEE }, department: { name: "People" }, shift: { workingDays: ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"] } } : null;
-        if (where.userId === "employee-user") return { id: "employee-1", userId: "employee-user", shift: { workingDays: ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"] } };
+        if (where.id) return employeeIds.has(where.id) ? { id: where.id, name: "Ravi Employee", employeeId: "EMP-1", userId: "employee-user", user: { role: employeeRoles.get(where.id) ?? Role.EMPLOYEE, timeZone: "Asia/Colombo", countryCode: "LK" }, department: { name: "People" }, shift: { id: "shift-1", startTime: new Date("1970-01-01T08:00:00.000Z"), endTime: new Date("1970-01-01T17:30:00.000Z"), gracePeriodMinutes: 10, breakDurationMinutes: 60, workingDays: ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"] } } : null;
+        if (where.userId === "employee-user") return { id: "employee-1", userId: "employee-user", user: { timeZone: "Asia/Colombo", countryCode: "LK" }, shift: { id: "shift-1", startTime: new Date("1970-01-01T08:00:00.000Z"), endTime: new Date("1970-01-01T17:30:00.000Z"), gracePeriodMinutes: 10, breakDurationMinutes: 60, workingDays: ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"] } };
         return null;
       },
     },
@@ -88,6 +88,10 @@ function createEntitlementDatabaseStub() {
         status: "APPROVED",
         startDate: new Date("2026-06-01T00:00:00.000Z"),
         endDate: new Date("2026-06-05T00:00:00.000Z"),
+        startTime: null,
+        endTime: null,
+        halfDayPeriod: null,
+        leaveType: { durationMode: "FULL_DAY" },
       }],
     },
     holiday: {

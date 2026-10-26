@@ -25,10 +25,12 @@ export default async function ReportsPage({
     { label: "Late arrivals", value: report.summary.lateDays ?? "Not calculated" },
     { label: "Early departures", value: report.summary.earlyOutDays ?? "Not calculated" },
     { label: "Approved leave", value: report.summary.approvedLeaveDays ?? "Unavailable" },
+    { label: "Approved leave hours", value: report.summary.approvedLeaveHours?.toFixed(2) ?? "Unavailable" },
       { label: "WFH days", value: report.summary.workFromHomeDays ?? 0 },
     { label: "Holidays", value: report.summary.holidayDays ?? 0 },
     { label: "Absent", value: report.summary.absentDays ?? "Not calculated" },
     { label: "Missing punch", value: report.summary.missingPunchDays ?? 0 },
+    { label: "Invalid attendance", value: report.summary.invalidDays ?? 0 },
     { label: "Weekend", value: report.summary.weekendDays ?? 0 },
     { label: "Undetermined", value: report.summary.undeterminedDays ?? 0 },
     { label: "Calculated dates", value: report.summary.totalCalculatedDays ?? 0 },
@@ -70,7 +72,7 @@ export default async function ReportsPage({
           ))}
         </div>
         {report.summary.absentDays === null && <p role="note" className="text-xs text-[var(--muted)]">Absence is shown only when an ABSENT status has been explicitly saved; missing attendance is not automatically classified as absence.</p>}
-        {report.summary.approvedLeaveDays !== null && report.summary.approvedLeaveDays !== undefined && <p role="note" className="text-xs text-[var(--muted)]">Approved leave counts scheduled workdays without attendance evidence; recorded attendance takes precedence for a date to prevent double-counting.</p>}
+        {report.summary.approvedLeaveDays !== null && report.summary.approvedLeaveDays !== undefined && <p role="note" className="text-xs text-[var(--muted)]">Approved leave is reported as day-equivalents and hours, separately from worked time.</p>}
         {report.summary.totalWorkingDays === null && <p role="note" className="text-xs text-[var(--muted)]">Scheduled workdays are unavailable because no Shift with working days is assigned.</p>}
         {(report.summary.totalCalculatedDays ?? 0) > 0 && <p className="text-xs text-[var(--muted)]">Status counts cover {report.summary.totalCalculatedDays} dates with saved or on-demand engine results; unpunched scheduled days are not inferred as absences.</p>}
         {report.summary.engineCalculatedDays !== undefined && report.summary.engineCalculatedDays > 0 && <p className="text-xs text-[var(--muted)]">Engine hours include {report.summary.engineCalculatedDays} date{report.summary.engineCalculatedDays === 1 ? "" : "s"} with stored daily calculations.</p>}

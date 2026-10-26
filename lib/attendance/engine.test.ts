@@ -124,6 +124,54 @@ describe("deterministic attendance engine foundation", () => {
     assert.equal(result.lastOut?.toISOString(), punch("out-2", "OUT", "17:32").timestamp.toISOString());
   });
 
+  it("preserves punch-derived worked hours when approved leave overlaps the recorded work period", () => {
+    const result = calculateDailyAttendance({
+      employeeId: "employee-1",
+      date: "2026-06-15",
+      timeZone: "Asia/Colombo",
+      shift: {
+        ...shift,
+        startTime: new Date("1970-01-01T08:00:00.000Z"),
+        endTime: new Date("1970-01-01T17:30:00.000Z"),
+        breakStartTime: new Date("1970-01-01T12:30:00.000Z"),
+        breakDurationMinutes: 60,
+        minimumWorkingHours: "8.5",
+      },
+      punches: [punch("in", "IN", "08:00"), punch("out", "OUT", "17:30")],
+      approvedLeavePeriods: [{
+        durationMode: "TIME_BASED",
+        startTime: new Date("1970-01-01T09:00:00.000Z"),
+        endTime: new Date("1970-01-01T10:00:00.000Z"),
+        halfDayPeriod: null,
+      }],
+    });
+
+    assert.equal(result.leaveMinutes, 60);
+    assert.equal(result.workingHours, 8.5);
+    assert.equal(result.workPeriods.length, 1);
+    assert.equal(result.status, "PRESENT");
+  });
+
+  it("resolves an otherwise unknown 08:31 through 08:40 arrival when approved leave covers the full delay", () => {
+    const result = calculateDailyAttendance({
+      employeeId: "employee-1",
+      date: "2026-06-15",
+      timeZone: "Asia/Colombo",
+      shift: { ...shift, startTime: new Date("1970-01-01T08:00:00.000Z") },
+      punches: [punch("in", "IN", "08:35"), punch("out", "OUT", "17:30")],
+      approvedLeavePeriods: [{
+        durationMode: "TIME_BASED",
+        startTime: new Date("1970-01-01T08:30:00.000Z"),
+        endTime: new Date("1970-01-01T08:35:00.000Z"),
+        halfDayPeriod: null,
+      }],
+    });
+
+    assert.equal(result.leaveMinutes, 5);
+    assert.equal(result.lateMinutes, 0);
+    assert.equal(result.status, "PRESENT");
+  });
+
   it("identifies a trailing IN with no OUT and calculates only complete known periods", () => {
     const result = calculate([
       punch("in-1", "IN", "08:30"),
@@ -187,19 +235,19 @@ describe("deterministic attendance engine foundation", () => {
     assert.equal(afterGrace.status, "LATE");
   });
 
-  it("marks one second beyond the grace endpoint late even when the late threshold is 30 minutes", () => {
+  it("marks one second beyond a non-director grace endpoint late even when the late threshold is 30 minutes", () => {
     const configuredShift = {
       ...shift,
-      startTime: new Date("1970-01-01T08:00:00.000Z"),
+      startTime: new Date("1970-01-01T08:30:00.000Z"),
       lateThresholdMinutes: 30,
       workingDays: ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"],
     };
     const exactlyAtGrace = calculate(
-      [punch("in-on-time", "IN", "08:10"), punch("out-on-time", "OUT", "17:30")],
+      [punch("in-on-time", "IN", "08:40"), punch("out-on-time", "OUT", "17:30")],
       configuredShift,
     );
     const oneSecondLate = calculate(
-      [punch("in-late", "IN", "08:10:01"), punch("out-late", "OUT", "17:30")],
+      [punch("in-late", "IN", "08:40:01"), punch("out-late", "OUT", "17:30")],
       configuredShift,
     );
 

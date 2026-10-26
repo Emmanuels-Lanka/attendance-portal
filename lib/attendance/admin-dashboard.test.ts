@@ -109,7 +109,7 @@ describe("admin attendance summary dashboard", () => {
       totalEmployees: 3,
       withAttendance: 2,
       withoutAttendance: 1,
-      lateArrivals: 2,
+      lateArrivals: 1,
       earlyDepartures: 1,
       completed: 2,
       activeNow: 1,

@@ -2,6 +2,7 @@ import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { hasPermission } from "@/lib/auth/permissions";
 import { AttendanceEngineConfigurationError, calculateDailyAttendance, type AttendanceEngineShift } from "@/lib/attendance/engine";
 import { monthlyGraceAllowancesUsedBeforeEachDate } from "@/lib/attendance/history";
+import { getTimeLeaveInterval, LeaveScheduleConfigurationError, scheduledWorkingMinutes } from "@/lib/leave/periods";
 import { prisma } from "@/lib/prisma";
 import type { Prisma, PrismaClient, Role } from "@prisma/client";
 import { isOptionalSriLankanSaturday, resolveShiftForDate, type EffectiveShiftAssignment } from "./shift-assignment";
@@ -37,10 +38,13 @@ export type MonthlyEmployeeReport = {
     lateDays?: number | null;
     earlyOutDays?: number | null;
     missingPunchDays?: number | null;
+    invalidDays?: number | null;
     weekendDays?: number | null;
     holidayDays?: number | null;
     unmatchedScopedHolidayDates?: number;
     approvedLeaveDays?: number | null;
+    approvedLeaveHours?: number | null;
+    leaveDays?: number | null;
     undeterminedDays?: number | null;
     totalCalculatedDays?: number;
     pendingExpectedOvertimeHours?: number;
@@ -63,6 +67,7 @@ export type MonthlyDailyStatus = {
   workingHours?: number | null;
   lateMinutes?: number | null;
   earlyMinutes?: number | null;
+  leaveMinutes?: number | null;
 };
 
 export type MonthlyOvertimeSummary = {
@@ -148,7 +153,7 @@ export function aggregateMonthlyOvertimeSummaries(summaries: Partial<MonthlyOver
 type EmployeeMonthlyReportDatabase = Pick<PrismaClient, "employee" | "workSession" | "attendanceDaily" | "attendanceRaw" | "holiday" | "leaveRequest" | "overtimeRequest" | "workFromHomeRequest">;
 
 function summarizeCalculatedDailyStatuses(dailySummaries: MonthlyDailyStatus[]) {
-  type CalculatedStatus = "PRESENT" | "LATE" | "EARLY_OUT" | "MISSING_PUNCH" | "WEEKEND" | "HOLIDAY" | "ABSENT" | "UNDETERMINED";
+  type CalculatedStatus = "PRESENT" | "LATE" | "EARLY_OUT" | "MISSING_PUNCH" | "WEEKEND" | "HOLIDAY" | "ABSENT" | "LEAVE" | "INVALID" | "UNDETERMINED";
   const statuses = new Set<CalculatedStatus>([
     "PRESENT",
     "LATE",
@@ -157,6 +162,8 @@ function summarizeCalculatedDailyStatuses(dailySummaries: MonthlyDailyStatus[]) 
     "WEEKEND",
     "HOLIDAY",
     "ABSENT",
+    "LEAVE",
+    "INVALID",
     "UNDETERMINED",
   ]);
   const counts = {
@@ -167,6 +174,8 @@ function summarizeCalculatedDailyStatuses(dailySummaries: MonthlyDailyStatus[]) 
     WEEKEND: 0,
     HOLIDAY: 0,
     ABSENT: 0,
+    LEAVE: 0,
+    INVALID: 0,
     UNDETERMINED: 0,
   } satisfies Record<CalculatedStatus, number>;
   const statusByDate = new Map<string, CalculatedStatus>();
@@ -186,6 +195,8 @@ function summarizeCalculatedDailyStatuses(dailySummaries: MonthlyDailyStatus[]) 
     lateDays: statusByDate.size > 0 ? counts.LATE : null,
     earlyOutDays: statusByDate.size > 0 ? counts.EARLY_OUT : null,
     missingPunchDays: statusByDate.size > 0 ? counts.MISSING_PUNCH : null,
+    invalidDays: statusByDate.size > 0 ? counts.INVALID : null,
+    leaveDays: statusByDate.size > 0 ? counts.LEAVE : null,
     weekendDays: statusByDate.size > 0 ? counts.WEEKEND : null,
     holidayDays: counts.HOLIDAY,
     undeterminedDays: statusByDate.size > 0 ? counts.UNDETERMINED : null,
@@ -213,6 +224,80 @@ function summarizeEngineWorkedTime(dailySummaries: MonthlyDailyStatus[]) {
     engineCalculatedDays += 1;
   }
   return { engineWorkedMs: engineCalculatedDays > 0 ? engineWorkedMs : null, engineCalculatedDays };
+}
+
+function sumApprovedLeaveMinutes(dailySummaries: MonthlyDailyStatus[]) {
+  const minutesByDate = new Map<string, number>();
+  for (const item of dailySummaries) {
+    if (item.leaveMinutes === null || item.leaveMinutes === undefined || !Number.isSafeInteger(item.leaveMinutes) || item.leaveMinutes < 0) continue;
+    minutesByDate.set(item.date, Math.max(minutesByDate.get(item.date) ?? 0, item.leaveMinutes));
+  }
+  return minutesByDate.size > 0 ? [...minutesByDate.values()].reduce((sum, minutes) => sum + minutes, 0) / 60 : null;
+}
+
+type MonthlyApprovedLeave = {
+  id: string;
+  startDate: Date;
+  endDate: Date;
+  startTime: Date | null;
+  endTime: Date | null;
+  halfDayPeriod: "MORNING" | "AFTERNOON" | null;
+  leaveType: { durationMode: "FULL_DAY" | "HALF_DAY" | "TIME_BASED" };
+};
+
+function calculateMonthlyApprovedLeaveUnits(
+  leaves: readonly MonthlyApprovedLeave[],
+  monthStart: string,
+  monthEnd: string,
+  timeZone: string,
+  assignments: readonly EffectiveShiftAssignment<AttendanceEngineShift>[],
+  holidays: ReadonlySet<string>,
+  countryCode = "",
+) {
+  if (assignments.length === 0) return null;
+  const fullDayRanges = mergeMonthlyDateRanges(leaves
+    .filter(({ leaveType }) => leaveType.durationMode === "FULL_DAY")
+    .map(({ startDate, endDate }) => ({
+      startDate: startDate.toISOString().slice(0, 10),
+      endDate: endDate.toISOString().slice(0, 10),
+    })), monthStart, monthEnd);
+  const fullDays = fullDayRanges.reduce((sum, range) => sum + countAssignedWorkdays(
+    range.startDate,
+    range.endDate,
+    assignments,
+    holidays,
+    countryCode,
+  ), 0);
+  let units = fullDays;
+  for (const leave of leaves) {
+    if (leave.leaveType.durationMode === "FULL_DAY") continue;
+    const date = leave.startDate.toISOString().slice(0, 10);
+    if (date < monthStart || date > monthEnd || holidays.has(date)) continue;
+    const resolution = resolveShiftForDate(assignments, date);
+    if (resolution.kind !== "ASSIGNED") return null;
+    if (leave.leaveType.durationMode === "HALF_DAY") {
+      if (!leave.halfDayPeriod) return null;
+      units += 0.5;
+      continue;
+    }
+    if (!leave.startTime || !leave.endTime) return null;
+    try {
+      getTimeLeaveInterval(
+        date,
+        timeZone,
+        resolution.shift,
+        leave.startTime.toISOString().slice(11, 16),
+        leave.endTime.toISOString().slice(11, 16),
+      );
+    } catch (error) {
+      if (error instanceof LeaveScheduleConfigurationError) return null;
+      throw error;
+    }
+    const requestedMinutes = (leave.endTime.getUTCHours() * 60 + leave.endTime.getUTCMinutes())
+      - (leave.startTime.getUTCHours() * 60 + leave.startTime.getUTCMinutes());
+    units += requestedMinutes / scheduledWorkingMinutes(resolution.shift);
+  }
+  return units;
 }
 
 export function buildMonthWindow(month: string, timeZone: string) {
@@ -282,11 +367,8 @@ function countAssignedWorkdays(
   let count = 0;
   for (let timestamp = Date.parse(`${startDate}T00:00:00.000Z`); timestamp <= Date.parse(`${endDate}T00:00:00.000Z`); timestamp += 86_400_000) {
     const date = new Date(timestamp).toISOString().slice(0, 10);
-    if (
-      !excludedDates.has(date)
-      && !isOptionalSriLankanSaturday(countryCode, date)
-      && resolveShiftForDate(assignments, date).kind === "ASSIGNED"
-    ) count += 1;
+    if (isOptionalSriLankanSaturday(countryCode, date)) continue;
+    if (!excludedDates.has(date) && resolveShiftForDate(assignments, date).kind === "ASSIGNED") count += 1;
   }
   return count;
 }
@@ -296,7 +378,7 @@ export function buildEmployeeMonthlyReport(
   month: string,
   sessions: MonthlySession[],
   dailySummaries: MonthlyDailyStatus[] = [],
-  monthlyTotals: { totalWorkingDays?: number | null; approvedLeaveDays?: number | null; holidayDays?: number | null; unmatchedScopedHolidayDates?: number; approvedWorkFromHomeDates?: readonly string[] } & Partial<MonthlyOvertimeSummary> = {},
+  monthlyTotals: { totalWorkingDays?: number | null; approvedLeaveDays?: number | null; approvedLeaveHours?: number | null; holidayDays?: number | null; unmatchedScopedHolidayDates?: number; approvedWorkFromHomeDates?: readonly string[] } & Partial<MonthlyOvertimeSummary> = {},
 ): MonthlyEmployeeReport {
   const window = buildMonthWindow(month, employee.timeZone);
   const filtered = sessions.filter((session) => {
@@ -355,6 +437,7 @@ export function buildEmployeeMonthlyReport(
       ...engineWorkedTime,
       totalWorkingDays: monthlyTotals.totalWorkingDays ?? null,
       approvedLeaveDays: monthlyTotals.approvedLeaveDays ?? null,
+      approvedLeaveHours: monthlyTotals.approvedLeaveHours ?? sumApprovedLeaveMinutes(dailySummaries.filter((day) => day.date.slice(0, 7) === month)),
       ...calculatedStatusSummary,
       ...(monthlyTotals.holidayDays !== undefined ? { holidayDays: monthlyTotals.holidayDays } : {}),
       ...(monthlyTotals.unmatchedScopedHolidayDates !== undefined ? { unmatchedScopedHolidayDates: monthlyTotals.unmatchedScopedHolidayDates } : {}),
@@ -392,6 +475,7 @@ export async function getEmployeeMonthlyReport(
           id: true,
           startTime: true,
           endTime: true,
+          breakStartTime: true,
           gracePeriodMinutes: true,
           lateThresholdMinutes: true,
           earlyDepartureThresholdMinutes: true,
@@ -411,6 +495,7 @@ export async function getEmployeeMonthlyReport(
               id: true,
               startTime: true,
               endTime: true,
+              breakStartTime: true,
               gracePeriodMinutes: true,
               lateThresholdMinutes: true,
               earlyDepartureThresholdMinutes: true,
@@ -451,6 +536,7 @@ export async function getEmployeeMonthlyReport(
         workingHours: true,
         lateMinutes: true,
         earlyMinutes: true,
+        leaveMinutes: true,
         overtimeHours: true,
       },
       orderBy: [{ date: "asc" }, { id: "asc" }],
@@ -471,7 +557,15 @@ export async function getEmployeeMonthlyReport(
         startDate: { lte: new Date(`${monthDateEnd}T00:00:00.000Z`) },
         endDate: { gte: new Date(`${monthDateStart}T00:00:00.000Z`) },
       },
-      select: { startDate: true, endDate: true },
+      select: {
+        id: true,
+        startDate: true,
+        endDate: true,
+        startTime: true,
+        endTime: true,
+        halfDayPeriod: true,
+        leaveType: { select: { durationMode: true } },
+      },
     }) : Promise.resolve([]),
     employeeRecord ? database.overtimeRequest.findMany({
       where: { employeeId: employeeRecord.id, date: { gte: dateStart, lt: dateEnd } },
@@ -501,6 +595,7 @@ export async function getEmployeeMonthlyReport(
     workingHours: row.workingHours !== null && row.workingHours !== undefined ? Number(row.workingHours) : null,
     lateMinutes: row.lateMinutes,
     earlyMinutes: row.earlyMinutes,
+    leaveMinutes: row.leaveMinutes,
   }));
   const sessionDates = new Set(sessions.map(({ startAt }) => formatInTimeZone(startAt, employee.timeZone, "yyyy-MM-dd")));
   const punchesByDate = new Map<string, typeof rawPunches>();
@@ -548,6 +643,9 @@ export async function getEmployeeMonthlyReport(
       const date = new Date(timestamp).toISOString().slice(0, 10);
       if (persistedDates.has(date)) continue;
       const dayPunches = punchesByDate.get(date) ?? [];
+      const approvedLeaveForDate = approvedLeaves.filter((leave) =>
+        leave.startDate.toISOString().slice(0, 10) <= date
+        && leave.endDate.toISOString().slice(0, 10) >= date);
       const isHoliday = holidayDates.has(date);
       const optionalSaturday = isOptionalSriLankanSaturday(countryCode, date);
       if (optionalSaturday && !hasSaturdayActivity(date)) continue;
@@ -557,7 +655,7 @@ export async function getEmployeeMonthlyReport(
         ? resolution.shift
         : null;
       const isConfiguredWeekend = resolution.kind === "NON_WORKING_DAY";
-      if (dayPunches.length === 0 && !isHoliday && !isConfiguredWeekend) continue;
+      if (dayPunches.length === 0 && approvedLeaveForDate.length === 0 && !isHoliday && !isConfiguredWeekend) continue;
       if (!selectedShift) {
         filteredDailySummaries.push({
           date,
@@ -580,14 +678,21 @@ export async function getEmployeeMonthlyReport(
           },
           punches: dayPunches,
           monthlyGraceAllowancesUsed: monthlyGraceAllowancesUsedByDate.get(date),
+          approvedLeavePeriods: approvedLeaveForDate.map((leave) => ({
+            durationMode: leave.leaveType.durationMode,
+            startTime: leave.startTime,
+            endTime: leave.endTime,
+            halfDayPeriod: leave.halfDayPeriod,
+          })),
           holiday: isHoliday,
         });
         filteredDailySummaries.push({
           date,
           status: calculation.status,
-          workingHours: dayPunches.length > 0 ? calculation.workingHours : null,
+          workingHours: dayPunches.length > 0 || calculation.status === "LEAVE" ? calculation.workingHours : null,
           lateMinutes: calculation.lateMinutes,
           earlyMinutes: calculation.earlyMinutes,
+          leaveMinutes: calculation.leaveMinutes,
         });
       } catch (error) {
         if (!(error instanceof AttendanceEngineConfigurationError)) throw error;
@@ -598,19 +703,16 @@ export async function getEmployeeMonthlyReport(
   const totalWorkingDays = shiftAssignments.length > 0
     ? countAssignedWorkdays(monthDateStart, monthDateEnd, shiftAssignments, holidayDates, countryCode)
     : null;
-  const approvedLeaveRanges = mergeMonthlyDateRanges(approvedLeaves.map(({ startDate, endDate }) => ({
-    startDate: startDate.toISOString().slice(0, 10),
-    endDate: endDate.toISOString().slice(0, 10),
-  })), monthDateStart, monthDateEnd);
-  const attendanceDates = new Set([
-    ...filteredDailySummaries.filter(({ status }) => status != null).map(({ date }) => date),
-    ...punchesByDate.keys(),
-    ...sessions.map(({ startAt }) => formatInTimeZone(startAt, employee.timeZone, "yyyy-MM-dd")),
-  ]);
-  const leaveExclusionDates = new Set([...holidayDates, ...attendanceDates]);
-  const approvedLeaveDays = shiftAssignments.length > 0
-    ? approvedLeaveRanges.reduce((sum, range) => sum + countAssignedWorkdays(range.startDate, range.endDate, shiftAssignments, leaveExclusionDates, countryCode), 0)
-    : null;
+  const approvedLeaveDays = calculateMonthlyApprovedLeaveUnits(
+    approvedLeaves,
+    monthDateStart,
+    monthDateEnd,
+    employee.timeZone,
+    shiftAssignments,
+    holidayDates,
+    countryCode,
+  );
+  const approvedLeaveHours = approvedLeaves.length === 0 ? 0 : sumApprovedLeaveMinutes(filteredDailySummaries);
   const overtimeSummary = buildMonthlyOvertimeSummary(
     month,
     overtimeRequests.map((request) => ({
@@ -637,6 +739,7 @@ export async function getEmployeeMonthlyReport(
     {
       totalWorkingDays,
       approvedLeaveDays,
+      approvedLeaveHours,
       holidayDays: holidayDates.size,
       unmatchedScopedHolidayDates: unmatchedScopedHolidayDates.size,
       approvedWorkFromHomeDates: approvedWorkFromHomeRequests.map(({ date }) => date.toISOString().slice(0, 10)),
@@ -839,7 +942,9 @@ export async function getMonthlyAttendanceSummaryReport(
       absentDays: sumCalculatedStatuses((report) => report.summary.absentDays),
       lateDays: sumCalculatedStatuses((report) => report.summary.lateDays),
       earlyOutDays: sumCalculatedStatuses((report) => report.summary.earlyOutDays),
+      invalidDays: sumCalculatedStatuses((report) => report.summary.invalidDays),
       approvedLeaveDays: sumWhenComplete((report) => report.summary.approvedLeaveDays ?? null),
+      approvedLeaveHours: sumWhenComplete((report) => report.summary.approvedLeaveHours ?? null),
       holidayDays: sum((report) => report.summary.holidayDays ?? 0),
       unmatchedScopedHolidayDates: rows.reduce((count, row) => Math.max(count, row.report.summary.unmatchedScopedHolidayDates ?? 0), 0),
       missingPunchDays: sumCalculatedStatuses((report) => report.summary.missingPunchDays),

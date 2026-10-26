@@ -164,7 +164,7 @@ describe("monthly attendance PDF export", () => {
       totalCalculatedDays: 12,
       workFromHomeDays: 1,
       unmatchedScopedHolidayDates: 2,
-    }), "Attendance days: scheduled 20; present 4; late 1; early out 0; approved leave 2; WFH 1; holidays 1; potential scoped holiday dates not applied 2; absent Not recorded; missing punch 1; weekend 4; undetermined 0; calculated dates 12; approved leave excludes dates with attendance records");
+    }), "Attendance days: scheduled 20; present 4; late 1; early out 0; approved leave 2 days / Unavailable hours; WFH 1; holidays 1; potential scoped holiday dates not applied 2; absent Not recorded; missing punch 1; invalid Not calculated; weekend 4; undetermined 0; calculated dates 12; approved leave is reported separately from worked time");
   });
 
   it("formats overtime estimates separately from recorded actual overtime", () => {

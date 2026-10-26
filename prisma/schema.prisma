@@ -36,6 +36,9 @@ model User {
   uploadedEmployeeDocuments EmployeeDocument[] @relation("EmployeeDocumentUploader")
   leaveRequestsToReview LeaveRequest[] @relation("LeaveRequestCurrentApprover")
   leaveRequestsReviewed LeaveRequest[] @relation("LeaveRequestReviewer")
+  leaveCancellationsRequested LeaveRequest[] @relation("LeaveCancellationRequester")
+  leaveCancellationsToReview LeaveRequest[] @relation("LeaveCancellationCurrentApprover")
+  leaveCancellationsReviewed LeaveRequest[] @relation("LeaveCancellationReviewer")
   overtimeRequestsToReview OvertimeRequest[] @relation("OvertimeRequestCurrentApprover")
   overtimeRequestsReviewed OvertimeRequest[] @relation("OvertimeRequestReviewer")
   workFromHomeRequestsToReview WorkFromHomeRequest[] @relation("WorkFromHomeRequestCurrentApprover")
@@ -85,7 +88,9 @@ model AttendanceDaily {
   workingHours  Decimal?  @db.Decimal(8, 2)
   lateMinutes   Int?
   earlyMinutes  Int?
+  leaveMinutes  Int?
   status        String?
+  statusReason  String?   @db.Text
   overtimeHours Decimal?  @db.Decimal(8, 2)
   employee      Employee  @relation(fields: [employeeId], references: [id], onDelete: Restrict)
   shift         Shift?    @relation(fields: [shiftId], references: [id], onDelete: Restrict)
@@ -352,6 +357,7 @@ model Shift {
   name      String
   startTime   DateTime?      @db.Time(0)
   endTime     DateTime?      @db.Time(0)
+  breakStartTime DateTime?   @db.Time(0)
   breakDurationMinutes          Int?
   gracePeriodMinutes            Int?
   lateThresholdMinutes          Int?
@@ -403,6 +409,7 @@ model Holiday {
 model LeaveType {
   id              String             @id @default(cuid())
   name            String
+  durationMode    LeaveDurationMode  @default(FULL_DAY)
   createdAt       DateTime           @default(now()) @db.Timestamptz(3)
   updatedAt       DateTime           @updatedAt @db.Timestamptz(3)
   entitlements    LeaveEntitlement[]
@@ -433,6 +440,9 @@ model LeaveRequest {
   leaveTypeId          String
   startDate            DateTime           @db.Date
   endDate              DateTime           @db.Date
+  startTime            DateTime?          @db.Time(0)
+  endTime              DateTime?          @db.Time(0)
+  halfDayPeriod         LeaveHalfDayPeriod?
   reason               String             @db.Text
   attachmentDocumentId String?
   status               LeaveRequestStatus @default(PENDING)
@@ -441,6 +451,14 @@ model LeaveRequest {
   decisionReason       String?            @db.Text
   reviewedById         String?
   reviewedAt           DateTime?          @db.Timestamptz(3)
+  cancellationStatus   LeaveCancellationStatus?
+  cancellationReason   String?            @db.Text
+  cancellationRequestedAt DateTime?       @db.Timestamptz(3)
+  cancellationApprovalStage String?
+  cancellationCurrentApproverId String?
+  cancellationReviewedById String?
+  cancellationReviewedAt DateTime?        @db.Timestamptz(3)
+  cancellationDecisionReason String?       @db.Text
   createdAt            DateTime           @default(now()) @db.Timestamptz(3)
   updatedAt            DateTime           @updatedAt @db.Timestamptz(3)
   employee             Employee           @relation(fields: [employeeId], references: [id], onDelete: Restrict)
@@ -448,11 +466,16 @@ model LeaveRequest {
   attachmentDocument   EmployeeDocument?  @relation(fields: [attachmentDocumentId], references: [id], onDelete: Restrict)
   currentApprover      User?              @relation("LeaveRequestCurrentApprover", fields: [currentApproverId], references: [id], onDelete: SetNull)
   reviewedBy           User?              @relation("LeaveRequestReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  cancellationRequestedBy User?           @relation("LeaveCancellationRequester", fields: [cancellationRequestedById], references: [id], onDelete: SetNull)
+  cancellationCurrentApprover User?       @relation("LeaveCancellationCurrentApprover", fields: [cancellationCurrentApproverId], references: [id], onDelete: SetNull)
+  cancellationReviewedBy User?            @relation("LeaveCancellationReviewer", fields: [cancellationReviewedById], references: [id], onDelete: SetNull)
+  cancellationRequestedById String?
 
   @@index([employeeId, status, createdAt])
   @@index([leaveTypeId, createdAt])
   @@index([status, createdAt])
   @@index([currentApproverId, status])
+  @@index([cancellationStatus, cancellationApprovalStage, cancellationCurrentApproverId])
 }
 
 model EmployeeProfile {
@@ -576,6 +599,23 @@ enum LeaveRequestStatus {
   REJECTED
   RETURNED
   CANCELLED
+}
+
+enum LeaveDurationMode {
+  FULL_DAY
+  HALF_DAY
+  TIME_BASED
+}
+
+enum LeaveHalfDayPeriod {
+  MORNING
+  AFTERNOON
+}
+
+enum LeaveCancellationStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 enum OvertimeRequestStatus {

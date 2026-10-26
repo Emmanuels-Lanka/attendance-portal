@@ -12,6 +12,7 @@ export const calculatedAttendanceStatuses = [
   "EARLY_OUT",
   "ABSENT",
   "LEAVE",
+  "INVALID",
   "WFH",
   "MISSING_PUNCH",
   "WEEKEND",
@@ -166,8 +167,10 @@ export async function listCalculatedDailyAttendance(
       workingHours: true,
       lateMinutes: true,
       earlyMinutes: true,
+      leaveMinutes: true,
       overtimeHours: true,
       status: true,
+      statusReason: true,
       employee: {
         select: {
           id: true,

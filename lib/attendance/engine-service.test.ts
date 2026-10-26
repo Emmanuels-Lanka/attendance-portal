@@ -74,6 +74,7 @@ function createHarness(
       attendanceRaw: {
         findMany: async () => raw,
       },
+      leaveRequest: { findMany: async () => [] },
       workSession: {
         findMany: async () => effectiveSessions ?? (raw.length > 0 ? [{
           id: "session-1",
@@ -190,6 +191,7 @@ describe("attendance engine persistence boundary", () => {
         attendanceRaw: {
           findMany: async () => raw,
         },
+        leaveRequest: { findMany: async () => [] },
         attendanceDaily: {
           findMany: async () => [],
           create: async ({ data }: { data: Record<string, unknown> }) => {
@@ -247,6 +249,7 @@ describe("attendance engine persistence boundary", () => {
           }),
         },
         attendanceRaw: { findMany: async () => raw },
+        leaveRequest: { findMany: async () => [] },
         attendanceDaily: {
           findMany: async () => [{ id: "daily-existing" }],
           create: async () => {

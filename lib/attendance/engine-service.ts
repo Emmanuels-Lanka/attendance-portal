@@ -42,6 +42,7 @@ const shiftConfigurationSelect = {
   id: true,
   startTime: true,
   endTime: true,
+  breakStartTime: true,
   gracePeriodMinutes: true,
   lateThresholdMinutes: true,
   earlyDepartureThresholdMinutes: true,
@@ -190,6 +191,22 @@ async function calculateForEmployeeDay(
     throw new AttendanceEngineConfigurationError(message);
   }
   const dateValue = new Date(`${date}T00:00:00.000Z`);
+  const approvedLeaveRequests = "leaveRequest" in transaction
+    ? await transaction.leaveRequest.findMany({
+        where: {
+          employeeId,
+          status: "APPROVED",
+          startDate: { lte: dateValue },
+          endDate: { gte: dateValue },
+        },
+        select: {
+          startTime: true,
+          endTime: true,
+          halfDayPeriod: true,
+          leaveType: { select: { durationMode: true } },
+        },
+      })
+    : [];
   const holiday = "holiday" in transaction
     ? await transaction.holiday.findFirst({
         where: { date: dateValue, branch: "", applicableEmployeeGroups: { isEmpty: true } },
@@ -250,6 +267,12 @@ async function calculateForEmployeeDay(
       : null,
     punches,
     monthlyGraceAllowancesUsed,
+    approvedLeavePeriods: approvedLeaveRequests.map((request) => ({
+      durationMode: request.leaveType.durationMode,
+      startTime: request.startTime,
+      endTime: request.endTime,
+      halfDayPeriod: request.halfDayPeriod,
+    })),
     correction: Object.keys(effectiveCorrection).length > 0 ? effectiveCorrection : undefined,
     holiday: holiday !== null,
     optionalWorkday: optionalSaturday,
@@ -268,7 +291,9 @@ async function calculateForEmployeeDay(
       workingHours: attendanceDailyWorkingHoursForStorage(calculation.workingHours),
       lateMinutes: calculation.lateMinutes,
       earlyMinutes: calculation.earlyMinutes,
+      leaveMinutes: calculation.leaveMinutes,
       status: calculation.status,
+      statusReason: calculation.statusReasons.length > 0 ? calculation.statusReasons.join(" ") : null,
     },
   };
 }

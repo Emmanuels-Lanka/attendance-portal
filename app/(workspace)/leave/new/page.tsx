@@ -10,7 +10,7 @@ export default async function NewLeaveRequestPage() {
   const actor = await requirePageUser();
   if (actor.role === "ADMIN") redirect("/admin");
   const [leaveTypes, documents] = await Promise.all([
-    prisma.leaveType.findMany({ select: { id: true, name: true }, orderBy: [{ name: "asc" }, { id: "asc" }] }),
+    prisma.leaveType.findMany({ select: { id: true, name: true, durationMode: true }, orderBy: [{ name: "asc" }, { id: "asc" }] }),
     listEmployeeDocuments(actor),
   ]);
 

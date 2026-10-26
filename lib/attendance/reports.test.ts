@@ -276,8 +276,24 @@ describe("employee-local monthly report windows", () => {
         findMany: async ({ where }: { where: { employeeId: string; status: string } }) => {
           calls.leaveWhere = where;
           return [
-            { startDate: new Date("2026-06-01T00:00:00.000Z"), endDate: new Date("2026-06-03T00:00:00.000Z") },
-            { startDate: new Date("2026-06-03T00:00:00.000Z"), endDate: new Date("2026-06-04T00:00:00.000Z") },
+            {
+              id: "leave-1",
+              startDate: new Date("2026-06-01T00:00:00.000Z"),
+              endDate: new Date("2026-06-03T00:00:00.000Z"),
+              startTime: null,
+              endTime: null,
+              halfDayPeriod: null,
+              leaveType: { durationMode: "FULL_DAY" },
+            },
+            {
+              id: "leave-2",
+              startDate: new Date("2026-06-03T00:00:00.000Z"),
+              endDate: new Date("2026-06-04T00:00:00.000Z"),
+              startTime: null,
+              endTime: null,
+              halfDayPeriod: null,
+              leaveType: { durationMode: "FULL_DAY" },
+            },
           ];
         },
       },
@@ -322,7 +338,7 @@ describe("employee-local monthly report windows", () => {
     assert.equal(report.summary.workFromHomeDays, 1);
     assert.equal(report.days.find(({ date }) => date === "2026-06-10")?.approvedWorkFromHome, true);
     assert.equal(report.summary.totalWorkingDays, 21);
-    assert.equal(report.summary.approvedLeaveDays, 2);
+    assert.equal(report.summary.approvedLeaveDays, 3);
     assert.equal(report.summary.holidayDays, 1);
     assert.equal(report.summary.unmatchedScopedHolidayDates, 1);
     assert.equal(report.summary.lateDays, 2);
@@ -330,7 +346,7 @@ describe("employee-local monthly report windows", () => {
     assert.equal(report.summary.weekendDays, 8);
     assert.equal(report.summary.undeterminedDays, 0);
     assert.equal(report.summary.engineWorkedMs, (7.5 + 8.75) * 3_600_000);
-    assert.equal(report.summary.engineCalculatedDays, 4);
+    assert.equal(report.summary.engineCalculatedDays, 6);
     assert.equal(report.summary.recordedActualOvertimeHours, 1.5);
     assert.equal(report.summary.recordedActualOvertimeDays, 1);
     assert.equal(report.summary.approvedExpectedOvertimeHours, 2.25);
@@ -422,7 +438,7 @@ describe("employee-local monthly report windows", () => {
     ] as const;
     const actualSaturday = await reportWith(true, [...saturdayPunches]);
     assert.equal(actualSaturday.summary.totalWorkingDays, 22);
-    assert.equal(actualSaturday.summary.lateDays, 1);
+    assert.equal(actualSaturday.summary.lateDays, 0);
     assert.equal(actualSaturday.summary.absentDays, 0);
 
     const unresolvedSaturday = await reportWith(false, [...saturdayPunches]);

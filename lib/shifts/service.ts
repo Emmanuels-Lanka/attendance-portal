@@ -61,6 +61,7 @@ const shiftSelect = {
   name: true,
   startTime: true,
   endTime: true,
+  breakStartTime: true,
   breakDurationMinutes: true,
   gracePeriodMinutes: true,
   lateThresholdMinutes: true,
@@ -77,6 +78,7 @@ const editableShiftFields = [
   "name",
   "startTime",
   "endTime",
+  "breakStartTime",
   "breakDurationMinutes",
   "gracePeriodMinutes",
   "lateThresholdMinutes",
@@ -166,7 +168,7 @@ export async function updateShift(
 ) {
   assertCanManageShifts(admin);
   const { name, startTime, endTime, breakDurationMinutes, gracePeriodMinutes, lateThresholdMinutes,
-    earlyDepartureThresholdMinutes, minimumWorkingHours, overtimeEligible, roundingRules, workingDays } =
+    breakStartTime, earlyDepartureThresholdMinutes, minimumWorkingHours, overtimeEligible, roundingRules, workingDays } =
     shiftRecordSchema.parse(input);
   try {
     return await database.shift.update({
@@ -175,6 +177,7 @@ export async function updateShift(
         name,
         startTime,
         endTime,
+        breakStartTime,
         breakDurationMinutes,
         gracePeriodMinutes,
         lateThresholdMinutes,

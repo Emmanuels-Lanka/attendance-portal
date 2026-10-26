@@ -81,7 +81,7 @@ export function assessDirector08Arrival(
   actualAt: Date,
   timeZone: string,
   shift: AttendanceShiftSchedule | null,
-  monthlyGraceAllowancesUsed: number,
+  monthlyGraceAllowancesUsed: number | null,
 ) {
   if (!shift || !Number.isFinite(actualAt.getTime())) {
     return { classification: "UNDETERMINED" as const, lateMinutes: null, consumesGraceAllowance: false };
@@ -113,6 +113,9 @@ export function assessDirector08Arrival(
     return { classification: "ON_TIME" as const, lateMinutes: 0, consumesGraceAllowance: false };
   }
   if (timeSinceMidnight <= eightForty) {
+    if (monthlyGraceAllowancesUsed === null) {
+      return { classification: "UNDETERMINED" as const, lateMinutes: null, consumesGraceAllowance: false };
+    }
     if (monthlyGraceAllowancesUsed < 2) {
       return { classification: "ON_TIME" as const, lateMinutes: 0, consumesGraceAllowance: true };
     }

@@ -87,10 +87,12 @@ export default async function MonthlyAttendanceSummaryPage({ searchParams }: { s
     { label: "Late arrivals", value: result.summary.lateDays ?? "Not calculated" },
     { label: "Early departures", value: result.summary.earlyOutDays ?? "Not calculated" },
     { label: "Approved leave", value: result.summary.approvedLeaveDays ?? "Unavailable" },
+    { label: "Approved leave hours", value: result.summary.approvedLeaveHours?.toFixed(2) ?? "Unavailable" },
     { label: "WFH days", value: result.summary.workFromHomeDays },
     { label: "Holidays", value: result.summary.holidayDays },
     { label: "Absent", value: result.summary.absentDays ?? "Not calculated" },
     { label: "Missing punch", value: result.summary.missingPunchDays },
+    { label: "Invalid attendance", value: result.summary.invalidDays },
     { label: "Weekend", value: result.summary.weekendDays },
     { label: "Undetermined", value: result.summary.undeterminedDays },
     { label: "Calculated dates", value: result.summary.totalCalculatedDays },
@@ -146,7 +148,7 @@ export default async function MonthlyAttendanceSummaryPage({ searchParams }: { s
           ? <p role="note" className="text-xs text-[var(--muted)]">Actual OT is not recorded; request estimates are not treated as worked overtime.</p>
           : <p role="note" className="text-xs text-[var(--muted)]">Recorded actual OT covers {result.summary.recordedActualEmployees} employees and {result.summary.recordedActualDays} employee-days; conflicting daily values are excluded.</p>}
         {result.summary.absentDays === null && <p role="note" className="text-xs text-[var(--muted)]">Absence is shown only when an ABSENT status has been explicitly saved; missing attendance is not automatically classified as absence.</p>}
-        {result.summary.approvedLeaveDays !== null && <p role="note" className="text-xs text-[var(--muted)]">Approved leave counts scheduled workdays without attendance evidence; recorded attendance takes precedence for a date to prevent double-counting.</p>}
+        {result.summary.approvedLeaveDays !== null && <p role="note" className="text-xs text-[var(--muted)]">Approved leave is reported as day-equivalents and hours, separately from worked time.</p>}
         {result.summary.totalCalculatedDays > 0 && <p className="text-xs text-[var(--muted)]">Status totals cover {result.summary.totalCalculatedDays} employee-dates with saved or on-demand engine results.</p>}
         {result.summary.engineCalculatedDays > 0 && <p className="text-xs text-[var(--muted)]">Engine hours cover {result.summary.engineCalculatedDays} date{result.summary.engineCalculatedDays === 1 ? "" : "s"} with saved daily calculations.</p>}
         {result.summary.unmatchedScopedHolidayDates > 0 && <p role="note" className="text-xs text-[var(--muted)]">{result.summary.unmatchedScopedHolidayDates} potential branch/group-specific holiday date{result.summary.unmatchedScopedHolidayDates === 1 ? "" : "s"} could not be applied because employee branch/group assignments are not available in report data.</p>}

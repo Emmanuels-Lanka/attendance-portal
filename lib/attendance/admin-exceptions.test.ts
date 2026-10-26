@@ -110,7 +110,7 @@ describe("admin attendance exceptions", () => {
     const result = await getAdminAttendanceExceptions(admin, { date: "2026-06-15" }, db);
 
     assert.deepEqual(result.metrics, {
-      lateArrivals: 3,
+      lateArrivals: 1,
       earlyDepartures: 1,
       activeSessions: 2,
       employeesWithoutAttendance: 1,
@@ -120,7 +120,7 @@ describe("admin attendance exceptions", () => {
     assert.equal(sriLankaEntry?.day.sessions.length, 3);
     assert.deepEqual(sriLankaEntry?.day.sessions.map(({ session: item }) => item.mode), ["OFFICE", "WFH", "OFFICE"]);
     assert.equal(sriLankaEntry?.day.totalWorkedMs, 17 * 60 * 60 * 1000 + 49 * 60 * 1000);
-    assert.equal(sriLankaEntry?.day.sessions[0].timing?.arrival, "LATE");
+    assert.equal(sriLankaEntry?.day.sessions[0].timing?.arrival, "UNDETERMINED");
     assert.equal(sriLankaEntry?.day.sessions[1].timing?.arrival, "ON_TIME");
     assert.equal(sriLankaEntry?.day.sessions[2].status, "ACTIVE");
     const noAttendanceEntry = result.entries.find(({ employee: item }) => item.id === noAttendance.id);

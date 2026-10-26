@@ -4,6 +4,8 @@ import { Prisma, type PrismaClient, type Role } from "@prisma/client";
 import { hasPermission } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
 import { calculateEmployeeLeaveWorkdays, LeaveWorkdayScheduleError, type LeaveHolidayResolver } from "@/lib/leave/workdays";
+import { resolveShiftForDate, type EffectiveShiftAssignment } from "@/lib/attendance/shift-assignment";
+import { getTimeLeaveInterval, scheduledWorkingMinutes, type LeaveShiftSchedule } from "@/lib/leave/periods";
 import {
   approvedLeaveUsageInputSchema,
   leaveEntitlementLookupSchema,
@@ -297,7 +299,18 @@ async function calculateEntitlementBalance(
       startDate: { lte: asDatabaseDate(input.periodEnd) },
       endDate: { gte: asDatabaseDate(input.periodStart) },
     },
-    select: { id: true, employeeId: true, leaveTypeId: true, status: true, startDate: true, endDate: true },
+    select: {
+      id: true,
+      employeeId: true,
+      leaveTypeId: true,
+      status: true,
+      startDate: true,
+      endDate: true,
+      startTime: true,
+      endTime: true,
+      halfDayPeriod: true,
+      leaveType: { select: { durationMode: true } },
+    },
     orderBy: [{ startDate: "asc" }, { id: "asc" }],
   });
   const holidayDates: string[] = [];
@@ -323,6 +336,10 @@ async function calculateEntitlementBalance(
         status: request.status,
         startDate: request.startDate.toISOString().slice(0, 10),
         endDate: request.endDate.toISOString().slice(0, 10),
+        durationMode: request.leaveType.durationMode,
+        startTime: request.startTime?.toISOString().slice(11, 16) ?? null,
+        endTime: request.endTime?.toISOString().slice(11, 16) ?? null,
+        halfDayPeriod: request.halfDayPeriod,
       })),
     }, {
       database,
@@ -422,7 +439,39 @@ export async function calculateApprovedLeaveUsage(input: {
   const { employeeId, leaveTypeId, periodStart, periodEnd } = leaveEntitlementLookupSchema.parse(input);
   const employee = await (dependencies.database ?? prisma).employee.findUnique({
     where: { id: employeeId },
-    select: { id: true, userId: true },
+    select: {
+      id: true,
+      userId: true,
+      user: { select: { timeZone: true } },
+      shift: {
+        select: {
+          id: true,
+          startTime: true,
+          endTime: true,
+          gracePeriodMinutes: true,
+          breakStartTime: true,
+          breakDurationMinutes: true,
+          workingDays: true,
+        },
+      },
+      shiftAssignments: {
+        select: {
+          effectiveFrom: true,
+          effectiveTo: true,
+          shift: {
+            select: {
+              id: true,
+              startTime: true,
+              endTime: true,
+              gracePeriodMinutes: true,
+              breakStartTime: true,
+              breakDurationMinutes: true,
+              workingDays: true,
+            },
+          },
+        },
+      },
+    },
   });
   if (!employee?.userId) throw new LeaveEntitlementEmployeeNotFoundError();
 
@@ -442,22 +491,74 @@ export async function calculateApprovedLeaveUsage(input: {
       || existing.status !== candidate.status
       || existing.startDate !== candidate.startDate
       || existing.endDate !== candidate.endDate
+      || existing.durationMode !== candidate.durationMode
+      || existing.startTime !== candidate.startTime
+      || existing.endTime !== candidate.endTime
+      || existing.halfDayPeriod !== candidate.halfDayPeriod
     )) {
       throw new LeaveUsageSourceConflictError();
     }
     uniqueBySource.set(candidate.sourceId, candidate);
   }
 
-  let total = 0;
+  let total = new Prisma.Decimal(0);
   for (const leave of uniqueBySource.values()) {
     if (leave.status !== "APPROVED" || leave.leaveTypeId !== leaveTypeId) continue;
     const startDate = leave.startDate > periodStart ? leave.startDate : periodStart;
     const endDate = leave.endDate < periodEnd ? leave.endDate : periodEnd;
     if (startDate > endDate) continue;
-    total += await calculateEmployeeLeaveWorkdays(
-      { employeeUserId: employee.userId, startDate, endDate },
-      { resolveHolidayDates: dependencies.resolveHolidayDates, database: dependencies.database },
+    if (leave.durationMode === "FULL_DAY") {
+      const workdays = await calculateEmployeeLeaveWorkdays(
+        { employeeUserId: employee.userId, startDate, endDate },
+        { resolveHolidayDates: dependencies.resolveHolidayDates, database: dependencies.database },
+      );
+      total = total.plus(workdays);
+      continue;
+    }
+
+    if (leave.startDate < periodStart || leave.startDate > periodEnd) continue;
+    const holidayDates = await dependencies.resolveHolidayDates({
+      employeeUserId: employee.userId,
+      startDate: leave.startDate,
+      endDate: leave.startDate,
+    });
+    if (holidayDates.has(leave.startDate)) continue;
+    if (!employee.user?.timeZone) throw new LeaveWorkdayScheduleError("Employee timezone is unavailable for partial leave usage.");
+
+    const assignments = employee.shiftAssignments?.length
+      ? employee.shiftAssignments
+      : employee.shift
+        ? [{
+            effectiveFrom: new Date("0001-01-01T00:00:00.000Z"),
+            effectiveTo: null,
+            shift: employee.shift,
+          }]
+        : [];
+    const resolution = resolveShiftForDate(
+      assignments as EffectiveShiftAssignment<LeaveShiftSchedule & { id: string }>[],
+      leave.startDate,
     );
+    if (resolution.kind !== "ASSIGNED") {
+      throw new LeaveWorkdayScheduleError("A configured effective working Shift is required for partial leave usage.");
+    }
+    if (leave.durationMode === "HALF_DAY") {
+      if (!leave.halfDayPeriod) throw new LeaveWorkdayScheduleError("Approved half-day leave has no selected period.");
+      total = total.plus("0.5");
+      continue;
+    }
+    if (!leave.startTime || !leave.endTime) {
+      throw new LeaveWorkdayScheduleError("Approved time-based leave has no approved start and end times.");
+    }
+    getTimeLeaveInterval(
+      leave.startDate,
+      employee.user.timeZone,
+      resolution.shift,
+      leave.startTime,
+      leave.endTime,
+    );
+    const minutes = (Number(leave.endTime.slice(0, 2)) * 60 + Number(leave.endTime.slice(3, 5)))
+      - (Number(leave.startTime.slice(0, 2)) * 60 + Number(leave.startTime.slice(3, 5)));
+    total = total.plus(new Prisma.Decimal(minutes).dividedBy(scheduledWorkingMinutes(resolution.shift)));
   }
-  return new Prisma.Decimal(total);
+  return total;
 }

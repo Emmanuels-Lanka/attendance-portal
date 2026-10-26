@@ -2,7 +2,11 @@ import { Prisma } from "@prisma/client";
 import { z } from "zod";
 
 export const leaveTypeNameSchema = z.string().trim().min(1, "Name is required.").max(120);
-export const leaveTypeRecordSchema = z.object({ name: leaveTypeNameSchema });
+export const leaveDurationModeSchema = z.enum(["FULL_DAY", "HALF_DAY", "TIME_BASED"]);
+export const leaveTypeRecordSchema = z.object({
+  name: leaveTypeNameSchema,
+  durationMode: leaveDurationModeSchema.default("FULL_DAY"),
+});
 
 export const leaveTypeListQuerySchema = z.object({
   query: z.string().trim().default(""),
@@ -63,6 +67,10 @@ export const approvedLeaveUsageInputSchema = z.array(z.object({
   status: z.enum(["PENDING", "APPROVED", "REJECTED", "CANCELLED"]),
   startDate: leaveDateSchema,
   endDate: leaveDateSchema,
+  durationMode: leaveDurationModeSchema.default("FULL_DAY"),
+  startTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).nullable().default(null),
+  endTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).nullable().default(null),
+  halfDayPeriod: z.enum(["MORNING", "AFTERNOON"]).nullable().default(null),
 }).refine((item) => item.endDate >= item.startDate, {
   path: ["endDate"],
   message: "Leave end date must be on or after its start date.",
@@ -72,6 +80,9 @@ export const leaveRequestInputSchema = z.object({
   leaveTypeId: z.string().trim().min(1, "Choose a Leave Type."),
   startDate: leaveDateSchema,
   endDate: leaveDateSchema,
+  startTime: z.preprocess((value) => value === "" || value === undefined || value === null ? null : value, z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).nullable()),
+  endTime: z.preprocess((value) => value === "" || value === undefined || value === null ? null : value, z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).nullable()),
+  halfDayPeriod: z.preprocess((value) => value === "" || value === undefined || value === null ? null : value, z.enum(["MORNING", "AFTERNOON"]).nullable()),
   reason: z.string().trim().min(1, "Enter a reason for your Leave request.").max(500),
   attachmentDocumentId: z.preprocess(
     (value) => value === "" || value === undefined || value === null ? null : value,

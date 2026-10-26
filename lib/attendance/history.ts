@@ -45,10 +45,9 @@ export function classifySessionForShiftAssignments(
     if (resolution.kind !== "ASSIGNED") return "UNDETERMINED" as const;
     if (
       (punch === "IN" || punch === "WFH_IN")
-      && monthlyGraceAllowancesUsed !== undefined
       && resolution.shift.startTime?.toISOString().slice(11, 16) === "08:00"
     ) {
-      return assessDirector08Arrival(at, timeZone, resolution.shift, monthlyGraceAllowancesUsed).classification;
+      return assessDirector08Arrival(at, timeZone, resolution.shift, monthlyGraceAllowancesUsed ?? null).classification;
     }
     return classifyAttendancePunch(punch, at, timeZone, resolution.shift);
   };

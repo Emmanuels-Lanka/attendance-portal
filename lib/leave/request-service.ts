@@ -4,6 +4,13 @@ import { LeaveRequestStatus, type Prisma, type PrismaClient, type Role } from "@
 import { prisma } from "@/lib/prisma";
 import { hasPermission } from "@/lib/auth/permissions";
 import { leaveRequestInputSchema, leaveRequestListQuerySchema } from "@/lib/leave/validation";
+import {
+  getHalfDayIntervals,
+  getTimeLeaveInterval,
+  LeaveScheduleConfigurationError,
+  type LeaveShiftSchedule,
+} from "@/lib/leave/periods";
+import { resolveShiftForDate, type EffectiveShiftAssignment } from "@/lib/attendance/shift-assignment";
 
 type LeaveRequestActor = { id: string; role: Role };
 type LeaveRequestDatabase = Pick<
@@ -53,6 +60,20 @@ export class LeaveRequestSupervisorNotFoundError extends Error {
   }
 }
 
+export class LeaveRequestOverlapError extends Error {
+  constructor() {
+    super("An active Leave request already overlaps these dates.");
+    this.name = "LeaveRequestOverlapError";
+  }
+}
+
+export class LeaveRequestScheduleError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LeaveRequestScheduleError";
+  }
+}
+
 function assertPermission(actor: LeaveRequestActor | null, permission: "leave:submit" | "leave:request:self:read"): asserts actor is LeaveRequestActor {
   if (!actor || actor.role === "ADMIN" || !hasPermission(actor.role, permission)) throw new LeaveRequestAccessError();
   if (permission === "leave:submit" && actor.role !== "EMPLOYEE") throw new LeaveRequestAccessError();
@@ -64,6 +85,35 @@ async function getOwnEmployee(actor: LeaveRequestActor, database: Pick<PrismaCli
     select: {
       id: true,
       userId: true,
+      user: { select: { timeZone: true, countryCode: true } },
+      shift: {
+        select: {
+          id: true,
+          startTime: true,
+          endTime: true,
+          gracePeriodMinutes: true,
+          breakStartTime: true,
+          breakDurationMinutes: true,
+          workingDays: true,
+        },
+      },
+      shiftAssignments: {
+        select: {
+          effectiveFrom: true,
+          effectiveTo: true,
+          shift: {
+            select: {
+              id: true,
+              startTime: true,
+              endTime: true,
+              gracePeriodMinutes: true,
+              breakStartTime: true,
+              breakDurationMinutes: true,
+              workingDays: true,
+            },
+          },
+        },
+      },
       supervisor: {
         select: {
           userId: true,
@@ -93,16 +143,49 @@ const ownRequestSelect = {
   endDate: true,
   reason: true,
   attachmentDocumentId: true,
+  startTime: true,
+  endTime: true,
+  halfDayPeriod: true,
   status: true,
   currentApprovalStage: true,
   currentApproverId: true,
   decisionReason: true,
   reviewedById: true,
   reviewedAt: true,
+  cancellationStatus: true,
+  cancellationReason: true,
+  cancellationRequestedAt: true,
+  cancellationApprovalStage: true,
+  cancellationReviewedAt: true,
+  cancellationDecisionReason: true,
   createdAt: true,
   updatedAt: true,
   leaveType: { select: { id: true, name: true } },
 } satisfies Prisma.LeaveRequestSelect;
+
+function databaseTime(value: string | null) {
+  return value ? new Date(`1970-01-01T${value}:00.000Z`) : null;
+}
+
+function resolveShift(employee: Awaited<ReturnType<typeof getOwnEmployee>>, date: string) {
+  const assignments = employee.shiftAssignments?.length
+    ? employee.shiftAssignments
+    : employee.shift
+      ? [{
+          effectiveFrom: new Date("0001-01-01T00:00:00.000Z"),
+          effectiveTo: null,
+          shift: employee.shift,
+        }]
+      : [];
+  const resolution = resolveShiftForDate(
+    assignments as EffectiveShiftAssignment<LeaveShiftSchedule & { id: string }>[],
+    date,
+  );
+  if (resolution.kind !== "ASSIGNED") {
+    throw new LeaveRequestScheduleError("A configured effective shift with this date as a working day is required for partial leave.");
+  }
+  return resolution.shift;
+}
 
 export async function submitOwnLeaveRequest(
   actor: LeaveRequestActor | null,
@@ -114,6 +197,7 @@ export async function submitOwnLeaveRequest(
 
   return database.$transaction(async (transaction) => {
     const employee = await getOwnEmployee(actor, transaction);
+    await transaction.$queryRaw`SELECT "id" FROM "Employee" WHERE "id" = ${employee.id} FOR UPDATE`;
     const supervisor = employee.supervisor;
     if (
       !supervisor?.userId
@@ -124,9 +208,40 @@ export async function submitOwnLeaveRequest(
     }
     const leaveType = await transaction.leaveType.findUnique({
       where: { id: parsed.leaveTypeId },
-      select: { id: true },
+      select: { id: true, durationMode: true },
     });
     if (!leaveType) throw new LeaveRequestLeaveTypeNotFoundError();
+    const durationMode = leaveType.durationMode ?? "FULL_DAY";
+    let shift: LeaveShiftSchedule | null = null;
+    if (durationMode === "FULL_DAY") {
+      if (parsed.startTime || parsed.endTime || parsed.halfDayPeriod) {
+        throw new LeaveRequestScheduleError("Full-day leave uses a date range and cannot include partial-day times.");
+      }
+    } else {
+      if (parsed.startDate !== parsed.endDate) {
+        throw new LeaveRequestScheduleError("Partial leave must be requested for one employee-local date.");
+      }
+      if (!employee.user?.timeZone) {
+        throw new LeaveRequestScheduleError("The employee's timezone is required to validate partial leave.");
+      }
+      shift = resolveShift(employee, parsed.startDate);
+      try {
+        if (durationMode === "HALF_DAY") {
+          if (!parsed.halfDayPeriod || parsed.startTime || parsed.endTime) {
+            throw new LeaveRequestScheduleError("Select a morning or afternoon half-day period.");
+          }
+          getHalfDayIntervals(parsed.startDate, employee.user.timeZone, shift, parsed.halfDayPeriod);
+        } else {
+          if (!parsed.startTime || !parsed.endTime || parsed.halfDayPeriod) {
+            throw new LeaveRequestScheduleError("Short leave requires a start time and an end time.");
+          }
+          getTimeLeaveInterval(parsed.startDate, employee.user.timeZone, shift, parsed.startTime, parsed.endTime);
+        }
+      } catch (error) {
+        if (error instanceof LeaveScheduleConfigurationError) throw new LeaveRequestScheduleError(error.message);
+        throw error;
+      }
+    }
 
     if (parsed.attachmentDocumentId) {
       const attachment = await transaction.employeeDocument.findFirst({
@@ -136,12 +251,26 @@ export async function submitOwnLeaveRequest(
       if (!attachment) throw new LeaveRequestAttachmentNotFoundError();
     }
 
+    const overlap = await transaction.leaveRequest.findFirst({
+      where: {
+        employeeId: employee.id,
+        status: { in: [LeaveRequestStatus.PENDING, LeaveRequestStatus.APPROVED] },
+        startDate: { lte: asDatabaseDate(parsed.endDate) },
+        endDate: { gte: asDatabaseDate(parsed.startDate) },
+      },
+      select: { id: true },
+    });
+    if (overlap) throw new LeaveRequestOverlapError();
+
     const request = await transaction.leaveRequest.create({
       data: {
         employeeId: employee.id,
         leaveTypeId: parsed.leaveTypeId,
         startDate: asDatabaseDate(parsed.startDate),
         endDate: asDatabaseDate(parsed.endDate),
+        startTime: databaseTime(parsed.startTime),
+        endTime: databaseTime(parsed.endTime),
+        halfDayPeriod: parsed.halfDayPeriod,
         reason: parsed.reason,
         attachmentDocumentId: parsed.attachmentDocumentId,
         status: LeaveRequestStatus.PENDING,

@@ -155,7 +155,7 @@ describe("employee-local attendance history", () => {
 
     const sessions = new Map(history.days.flatMap((day) => day.sessions.map((item) => [item.session.id, item] as const)));
     assert.equal(sessions.get("office-on-time")?.timing?.arrival, "ON_TIME");
-    assert.equal(sessions.get("wfh-late")?.timing?.arrival, "LATE");
+    assert.equal(sessions.get("wfh-late")?.timing?.arrival, "ON_TIME");
     assert.equal(sessions.get("saturday")?.timing?.arrival, "LATE");
   });
 

@@ -2,6 +2,8 @@ import { formatInTimeZone } from "date-fns-tz";
 import { redirect } from "next/navigation";
 import { LeaveReviewForm } from "@/components/leave-review-form";
 import { listManagerLeaveRequests, listSupervisorLeaveRequests } from "@/lib/leave/approval-service";
+import { listManagerLeaveCancellations, listSupervisorLeaveCancellations } from "@/lib/leave/cancellation-service";
+import { LeaveCancellationReviewForm } from "@/components/leave-cancellation-review-form";
 import { requirePageUser } from "@/lib/auth/session";
 import { hasPermission } from "@/lib/auth/permissions";
 
@@ -21,6 +23,9 @@ export default async function SupervisorLeaveApprovalsPage() {
   const requests = actor.role === "SUPERVISOR"
     ? await listSupervisorLeaveRequests(actor)
     : await listManagerLeaveRequests(actor);
+  const cancellations = actor.role === "SUPERVISOR"
+    ? await listSupervisorLeaveCancellations(actor)
+    : await listManagerLeaveCancellations(actor);
   const reviewerLabel = actor.role === "SUPERVISOR" ? "Supervisor" : "Manager";
   return (
     <div className="space-y-6">
@@ -29,6 +34,35 @@ export default async function SupervisorLeaveApprovalsPage() {
         <h1 className="mt-1 text-2xl font-semibold sm:text-[28px]">Leave approvals</h1>
         <p className="mt-2 text-sm text-[var(--muted)]">Pending requests assigned to you for {reviewerLabel.toLowerCase()} review.</p>
       </header>
+      <section className="space-y-4">
+        <div>
+          <h2 className="text-lg font-semibold">Leave cancellations</h2>
+          <p className="mt-1 text-sm text-[var(--muted)]">Approved leave stays active until its cancellation completes this review chain.</p>
+        </div>
+        {cancellations.length === 0 ? (
+          <p role="status" className="rounded-lg border border-[var(--line)] bg-white px-4 py-6 text-sm text-[var(--muted)]">No Leave cancellations are awaiting your review.</p>
+        ) : (
+          <ol className="space-y-4">
+            {cancellations.map((request) => (
+              <li key={`cancellation-${request.id}`} className="rounded-lg border border-[var(--line)] bg-white p-5 shadow-sm">
+                <div>
+                  <h3 className="text-base font-semibold">{request.employee.name}</h3>
+                  <p className="mt-1 text-xs text-[var(--muted)]">{request.employee.employeeId ?? "No employee ID"} · {request.leaveType.name} · {dateLabel(request.startDate)} – {dateLabel(request.endDate)}</p>
+                </div>
+                <p className="mt-3 whitespace-pre-wrap text-sm"><span className="font-semibold">Cancellation reason: </span>{request.cancellationReason}</p>
+                <div className="mt-4 border-t border-[var(--line)] pt-4">
+                  <LeaveCancellationReviewForm leaveRequestId={request.id} />
+                </div>
+              </li>
+            ))}
+          </ol>
+        )}
+      </section>
+      <section className="space-y-4">
+        <div>
+          <h2 className="text-lg font-semibold">New leave requests</h2>
+          <p className="mt-1 text-sm text-[var(--muted)]">Requests assigned to you for {reviewerLabel.toLowerCase()} review.</p>
+        </div>
       {requests.length === 0 ? (
         <p role="status" className="rounded-lg border border-[var(--line)] bg-white px-4 py-8 text-sm text-[var(--muted)]">
           No Leave requests are awaiting your review.
@@ -71,6 +105,7 @@ export default async function SupervisorLeaveApprovalsPage() {
           ))}
         </ol>
       )}
+      </section>
     </div>
   );
 }

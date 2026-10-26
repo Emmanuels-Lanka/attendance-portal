@@ -165,8 +165,8 @@ describe("Leave Type management", () => {
       "LEAVE_TYPE_UPDATED",
       "LEAVE_TYPE_DELETED",
     ]);
-    assert.deepEqual(entries[1]?.previousValues, { leaveTypeId: "type-1", changedFields: ["name"] });
-    assert.deepEqual(entries[1]?.newValues, { leaveTypeId: "type-1", changedFields: ["name"] });
+    assert.deepEqual(entries[1]?.previousValues, { leaveTypeId: "type-1", changedFields: ["name", "durationMode"] });
+    assert.deepEqual(entries[1]?.newValues, { leaveTypeId: "type-1", changedFields: ["name", "durationMode"] });
     assert.deepEqual(entries[2]?.previousValues, { leaveTypeId: "type-1", changedFields: ["id"] });
     assert.equal("newValues" in (entries[2] ?? {}), false);
   });

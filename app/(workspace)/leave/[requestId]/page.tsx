@@ -4,6 +4,7 @@ import { ChevronLeft } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/session";
 import { getOwnLeaveRequest, LeaveRequestNotFoundError } from "@/lib/leave/request-service";
 import { redirect } from "next/navigation";
+import { LeaveCancellationForm } from "@/components/leave-cancellation-form";
 
 type RequestStatus = "PENDING" | "APPROVED" | "REJECTED" | "RETURNED" | "CANCELLED";
 
@@ -50,12 +51,21 @@ export default async function LeaveRequestDetailPage({ params }: { params: Promi
           <div><dt className="text-xs font-medium text-[var(--muted)]">Dates</dt><dd className="mt-1 text-sm">{dateOnly(request.startDate)} – {dateOnly(request.endDate)}</dd></div>
           <div className="sm:col-span-2"><dt className="text-xs font-medium text-[var(--muted)]">Reason</dt><dd className="mt-1 whitespace-pre-wrap text-sm leading-6">{request.reason}</dd></div>
           {request.decisionReason && <div className="sm:col-span-2"><dt className="text-xs font-medium text-[var(--muted)]">Review note</dt><dd className="mt-1 whitespace-pre-wrap text-sm leading-6">{request.decisionReason}</dd></div>}
+          {request.cancellationStatus && <div><dt className="text-xs font-medium text-[var(--muted)]">Cancellation</dt><dd className="mt-1 text-sm">{request.cancellationStatus === "PENDING" ? `Pending ${request.cancellationApprovalStage?.toLowerCase() ?? ""} review` : request.cancellationStatus.toLowerCase()}</dd></div>}
+          {request.cancellationReason && <div className="sm:col-span-2"><dt className="text-xs font-medium text-[var(--muted)]">Cancellation reason</dt><dd className="mt-1 whitespace-pre-wrap text-sm leading-6">{request.cancellationReason}</dd></div>}
+          {request.cancellationDecisionReason && <div className="sm:col-span-2"><dt className="text-xs font-medium text-[var(--muted)]">Cancellation decision note</dt><dd className="mt-1 whitespace-pre-wrap text-sm leading-6">{request.cancellationDecisionReason}</dd></div>}
           <div><dt className="text-xs font-medium text-[var(--muted)]">Submitted</dt><dd className="mt-1 text-sm">{dateTime(request.createdAt, actor.timeZone)}</dd></div>
           <div><dt className="text-xs font-medium text-[var(--muted)]">Last updated</dt><dd className="mt-1 text-sm">{dateTime(request.updatedAt, actor.timeZone)}</dd></div>
           {request.reviewedAt && <div><dt className="text-xs font-medium text-[var(--muted)]">Reviewed</dt><dd className="mt-1 text-sm">{dateTime(request.reviewedAt, actor.timeZone)}</dd></div>}
           {request.attachmentDocumentId && <div><dt className="text-xs font-medium text-[var(--muted)]">Supporting document</dt><dd className="mt-1 text-sm">Attached</dd></div>}
         </dl>
       </section>
+      {actor.role === "EMPLOYEE"
+        && (request.status === "PENDING" || request.status === "APPROVED")
+        && request.cancellationStatus !== "PENDING"
+        && <section className="max-w-2xl rounded-lg border border-[var(--line)] bg-white p-5 shadow-sm sm:p-7">
+          <LeaveCancellationForm leaveRequestId={request.id} />
+        </section>}
     </div>
   );
 }

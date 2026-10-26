@@ -3,6 +3,8 @@ import "server-only";
 import type { PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type { ShiftWeekday } from "@/lib/shifts/validation";
+import { isOptionalSriLankanSaturday, resolveShiftForDate, type EffectiveShiftAssignment } from "@/lib/attendance/shift-assignment";
+import type { AttendanceShiftSchedule } from "@/lib/attendance/schedule";
 
 type LeaveWorkdayDatabase = Pick<PrismaClient, "employee">;
 
@@ -54,8 +56,8 @@ export function countScheduledWorkdays(
 }
 
 export class LeaveWorkdayScheduleError extends Error {
-  constructor() {
-    super("Assign the employee to a Shift with configured working days before calculating Leave duration.");
+  constructor(message = "Assign the employee to a Shift with configured working days before calculating Leave duration.") {
+    super(message);
     this.name = "LeaveWorkdayScheduleError";
   }
 }
@@ -69,10 +71,37 @@ export async function calculateEmployeeLeaveWorkdays(
 ) {
   const employee = await (dependencies.database ?? prisma).employee.findUnique({
     where: { userId: input.employeeUserId },
-    select: { shift: { select: { workingDays: true } } },
+    select: {
+      user: { select: { countryCode: true } },
+      shift: { select: { id: true, startTime: true, endTime: true, gracePeriodMinutes: true, workingDays: true } },
+      shiftAssignments: {
+        select: {
+          effectiveFrom: true,
+          effectiveTo: true,
+          shift: { select: { id: true, startTime: true, endTime: true, gracePeriodMinutes: true, workingDays: true } },
+        },
+      },
+    },
   });
-  if (!employee?.shift || employee.shift.workingDays.length === 0) throw new LeaveWorkdayScheduleError();
-
+  if (!employee) throw new LeaveWorkdayScheduleError();
   const holidayDates = await dependencies.resolveHolidayDates(input);
-  return countScheduledWorkdays(input.startDate, input.endDate, employee.shift.workingDays, holidayDates);
+  const assignments = employee.shiftAssignments?.length
+    ? employee.shiftAssignments
+    : employee.shift
+      ? [{
+          effectiveFrom: new Date("0001-01-01T00:00:00.000Z"),
+          effectiveTo: null,
+          shift: employee.shift,
+        }]
+      : [];
+  if (assignments.length === 0) throw new LeaveWorkdayScheduleError();
+  const effectiveAssignments = assignments as EffectiveShiftAssignment<AttendanceShiftSchedule & { id: string }>[];
+  let count = 0;
+  for (let timestamp = parseDateOnly(input.startDate).getTime(); timestamp <= parseDateOnly(input.endDate).getTime(); timestamp += 86_400_000) {
+    const date = new Date(timestamp).toISOString().slice(0, 10);
+    if (holidayDates.has(date)) continue;
+    if (employee.user?.countryCode && isOptionalSriLankanSaturday(employee.user.countryCode, date)) continue;
+    if (resolveShiftForDate(effectiveAssignments, date).kind === "ASSIGNED") count += 1;
+  }
+  return count;
 }

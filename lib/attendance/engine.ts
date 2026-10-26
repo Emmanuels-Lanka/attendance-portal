@@ -1,7 +1,16 @@
-import { fromZonedTime } from "date-fns-tz";
+import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import type { AttendancePunchType, DailyAttendanceMode } from "@prisma/client";
 import { getEmployeeLocalDayWindow } from "./timezone";
 import { assessAttendanceArrival, assessDirector08Arrival } from "./schedule";
+import {
+  getHalfDayIntervals,
+  getShiftWorkIntervals,
+  getTimeLeaveInterval,
+  mergedIntervals,
+  overlapMilliseconds,
+  scheduledWorkingMinutes,
+  type LeaveInterval,
+} from "@/lib/leave/periods";
 
 export type RawAttendancePunch = {
   id: string;
@@ -18,6 +27,7 @@ export type AttendanceEngineShift = {
   id: string;
   startTime: Date | null;
   endTime: Date | null;
+  breakStartTime?: Date | null;
   gracePeriodMinutes: number | null;
   lateThresholdMinutes: number | null;
   earlyDepartureThresholdMinutes: number | null;
@@ -38,7 +48,8 @@ export type AttendanceEngineResult = {
   workingHours: number | null;
   lateMinutes: number | null;
   earlyMinutes: number | null;
-  status: "PRESENT" | "LATE" | "EARLY_OUT" | "MISSING_PUNCH" | "WEEKEND" | "HOLIDAY" | "UNDETERMINED";
+  status: "PRESENT" | "LATE" | "EARLY_OUT" | "MISSING_PUNCH" | "WEEKEND" | "HOLIDAY" | "LEAVE" | "INVALID" | "UNDETERMINED";
+  leaveMinutes: number;
   statusReasons: string[];
   workPeriods: Array<{ startAt: Date; endAt: Date; durationMs: number }>;
   breakPeriods: Array<{ startAt: Date; endAt: Date; durationMs: number }>;
@@ -85,6 +96,12 @@ export function calculateDailyAttendance(input: {
   monthlyGraceAllowancesUsed?: number;
   holiday?: boolean;
   optionalWorkday?: boolean;
+  approvedLeavePeriods?: readonly {
+    durationMode: "FULL_DAY" | "HALF_DAY" | "TIME_BASED";
+    startTime: Date | null;
+    endTime: Date | null;
+    halfDayPeriod: "MORNING" | "AFTERNOON" | null;
+  }[];
 }): AttendanceEngineResult {
   const { employeeId, date, timeZone, shift } = input;
   const parsedDate = new Date(`${date}T00:00:00.000Z`);
@@ -105,6 +122,7 @@ export function calculateDailyAttendance(input: {
         lateMinutes: null,
         earlyMinutes: null,
         status: input.holiday ? "HOLIDAY" : "WEEKEND",
+        leaveMinutes: 0,
         statusReasons: [
           input.holiday
             ? "No applicable Shift or raw punches exist on an organization-wide holiday."
@@ -127,7 +145,6 @@ export function calculateDailyAttendance(input: {
   ) {
     throw new AttendanceEngineConfigurationError("Shift attendance thresholds must be non-negative whole minutes.");
   }
-
   const startTime = shift.startTime ? timeOfDay(shift.startTime) : null;
   const endTime = shift.endTime ? timeOfDay(shift.endTime) : null;
   const overnightShift = startTime !== null && endTime !== null && endTime <= startTime;
@@ -136,6 +153,47 @@ export function calculateDailyAttendance(input: {
       "The SRS does not define overnight Shift calculation; this Shift cannot be calculated safely.",
     );
   }
+
+  let approvedFullDayLeave = false;
+  let approvedMorningHalfDayLeave = false;
+  const leaveIntervals: LeaveInterval[] = [];
+  try {
+    for (const leave of input.approvedLeavePeriods ?? []) {
+      if (leave.durationMode === "FULL_DAY") {
+        approvedFullDayLeave = true;
+        leaveIntervals.push(...getShiftWorkIntervals(date, timeZone, shift));
+      } else if (leave.durationMode === "HALF_DAY") {
+        if (!leave.halfDayPeriod) {
+          throw new AttendanceEngineConfigurationError("Approved half-day leave has no configured period.");
+        }
+        approvedMorningHalfDayLeave ||= leave.halfDayPeriod === "MORNING";
+        leaveIntervals.push(...getHalfDayIntervals(date, timeZone, shift, leave.halfDayPeriod));
+      } else {
+        if (!leave.startTime || !leave.endTime) {
+          throw new AttendanceEngineConfigurationError("Approved time-based leave has no approved start and end times.");
+        }
+        leaveIntervals.push(...[
+          getTimeLeaveInterval(
+            date,
+            timeZone,
+            shift,
+            leave.startTime.toISOString().slice(11, 16),
+            leave.endTime.toISOString().slice(11, 16),
+          ),
+        ]);
+      }
+    }
+  } catch (error) {
+    if (error instanceof AttendanceEngineConfigurationError) throw error;
+    if (error instanceof Error) throw new AttendanceEngineConfigurationError(error.message);
+    throw error;
+  }
+  const approvedIntervals = mergedIntervals(leaveIntervals);
+  const scheduledMinutes = approvedIntervals.length > 0 ? scheduledWorkingMinutes(shift) : 0;
+  const leaveMinutes = Math.min(
+    scheduledMinutes,
+    Math.round(approvedIntervals.reduce((sum, interval) => sum + (interval.endAt.getTime() - interval.startAt.getTime()), 0) / 60_000),
+  );
 
   let punches = input.punches
     .filter((punch) => validInstant(punch.timestamp)
@@ -197,13 +255,22 @@ export function calculateDailyAttendance(input: {
   const workPeriods: AttendanceEngineResult["workPeriods"] = [];
   const breakPeriods: AttendanceEngineResult["breakPeriods"] = [];
   let openIn: RawAttendancePunch | null = null;
+  let previousOut: Date | null = null;
   for (const punch of uniquePunches) {
     if (punch.punchType === "IN") {
       if (openIn) {
         punchIssues.add("UNUSUAL_SEQUENCE");
         statusReasons.add("Repeated IN before OUT; punch pairing is unresolved.");
       } else {
+        if (previousOut && punch.timestamp > previousOut) {
+          breakPeriods.push({
+            startAt: previousOut,
+            endAt: punch.timestamp,
+            durationMs: punch.timestamp.getTime() - previousOut.getTime(),
+          });
+        }
         openIn = punch;
+        previousOut = null;
       }
       continue;
     }
@@ -216,15 +283,8 @@ export function calculateDailyAttendance(input: {
 
     const durationMs = punch.timestamp.getTime() - openIn.timestamp.getTime();
     workPeriods.push({ startAt: openIn.timestamp, endAt: punch.timestamp, durationMs });
-    if (workPeriods.length > 1) {
-      const previousPeriod = workPeriods.at(-2)!;
-      breakPeriods.push({
-        startAt: previousPeriod.endAt,
-        endAt: openIn.timestamp,
-        durationMs: openIn.timestamp.getTime() - previousPeriod.endAt.getTime(),
-      });
-    }
     openIn = null;
+    previousOut = punch.timestamp;
   }
 
   if (openIn) {
@@ -235,20 +295,60 @@ export function calculateDailyAttendance(input: {
   const firstIn = uniquePunches.find((punch) => punch.punchType === "IN")?.timestamp ?? null;
   const lastOut = [...uniquePunches].reverse().find((punch) => punch.punchType === "OUT")?.timestamp ?? null;
   const hasUnresolvedSequence = [...punchIssues].some((issue) => issue === "DUPLICATE_PUNCH" || issue === "UNUSUAL_SEQUENCE");
-  const totalWorkingMs = hasUnresolvedSequence ? null : workPeriods.reduce((total, period) => total + period.durationMs, 0);
+  const rawWorkingMs = workPeriods.reduce((total, period) => total + period.durationMs, 0);
+  const configuredBreakFallbackMs = breakPeriods.length === 0
+    ? (shift.breakDurationMinutes ?? 0) * 60_000
+    : 0;
+  const totalWorkingMs = hasUnresolvedSequence
+    ? null
+    : Math.max(0, rawWorkingMs - configuredBreakFallbackMs);
   const workingHours = totalWorkingMs === null ? null : totalWorkingMs / 3_600_000;
 
   const scheduledEnd = endTime ? fromZonedTime(`${date}T${endTime}`, timeZone) : null;
   const arrivalAssessment = firstIn
-    ? input.monthlyGraceAllowancesUsed !== undefined && startTime?.slice(0, 5) === "08:00"
-      ? assessDirector08Arrival(firstIn, timeZone, shift, input.monthlyGraceAllowancesUsed)
+    ? startTime?.slice(0, 5) === "08:00"
+      ? assessDirector08Arrival(firstIn, timeZone, shift, input.monthlyGraceAllowancesUsed ?? null)
       : assessAttendanceArrival(firstIn, timeZone, shift)
     : null;
+  const localArrivalTime = firstIn ? formatInTimeZone(firstIn, timeZone, "HH:mm:ss.SSS") : null;
+  let lateMinutes = arrivalAssessment?.lateMinutes ?? null;
+  if (firstIn && startTime?.slice(0, 5) === "08:00" && localArrivalTime) {
+    const graceBoundary = localArrivalTime <= "08:30:00.000" ? null
+      : localArrivalTime <= "09:30:00.000" ? fromZonedTime(`${date}T08:30:00`, timeZone)
+        : fromZonedTime(`${date}T09:30:00`, timeZone);
+    if (graceBoundary) {
+      const arrivalWindow = { startAt: graceBoundary, endAt: firstIn };
+      const fullLateMinutes = Math.ceil((firstIn.getTime() - graceBoundary.getTime()) / 60_000);
+      const excusedMs = approvedIntervals.reduce((sum, leave) => sum + overlapMilliseconds(leave, arrivalWindow), 0);
+      const remainingMs = Math.max(0, firstIn.getTime() - graceBoundary.getTime() - excusedMs);
+      if (localArrivalTime > "08:40:00.000" && localArrivalTime <= "09:30:00.000") {
+        lateMinutes = excusedMs === 0 ? null
+          : remainingMs === 0 ? 0
+          : remainingMs > 0 ? Math.ceil(remainingMs / 60_000) : null;
+      } else if (localArrivalTime > "09:30:00.000") {
+        lateMinutes = Math.ceil(remainingMs / 60_000);
+      } else if (lateMinutes !== null) {
+        lateMinutes = Math.max(0, lateMinutes - Math.ceil(excusedMs / 60_000));
+      } else if (excusedMs > 0 && remainingMs === 0) {
+        lateMinutes = 0;
+      }
+      if (fullLateMinutes > 0 && excusedMs > 0) {
+        statusReasons.add("Approved leave excuses only its overlap with late scheduled time.");
+      }
+    }
+  }
   const earlyDuration = lastOut && scheduledEnd ? scheduledEnd.getTime() - lastOut.getTime() : null;
-  const lateMinutes = arrivalAssessment?.lateMinutes ?? null;
+  const earlyExcusedMs = earlyDuration !== null && earlyDuration > 0 && lastOut && scheduledEnd
+    ? approvedIntervals.reduce((sum, leave) => sum + overlapMilliseconds(leave, { startAt: lastOut, endAt: scheduledEnd }), 0)
+    : 0;
   const earlyMinutes = earlyDuration === null
     ? null
-    : earlyDuration > 0 ? minutesDifference(earlyDuration) : 0;
+    : earlyDuration > 0 ? minutesDifference(Math.max(0, earlyDuration - earlyExcusedMs)) : 0;
+  const invalidLateArrival = localArrivalTime !== null
+    && localArrivalTime > "09:45:00.000"
+    && startTime?.slice(0, 5) === "08:00"
+    && !approvedFullDayLeave
+    && !approvedMorningHalfDayLeave;
 
   if (earlyDuration !== null && earlyMinutes === null) {
     statusReasons.add("Early duration is below whole-minute precision and cannot be stored without rounding.");
@@ -264,6 +364,18 @@ export function calculateDailyAttendance(input: {
   if (arrivalAssessment && arrivalAssessment.lateMinutes !== null && arrivalAssessment.lateMinutes > 0) {
     statusReasons.add("Late minutes round any positive fraction of a minute up; lateness classification uses the exact grace boundary.");
   }
+  if (localArrivalTime !== null && localArrivalTime > "08:40:00.000" && localArrivalTime <= "09:30:00.000" && leaveMinutes === 0) {
+    statusReasons.add("Arrival in this window requires approved short leave; pending or absent leave does not excuse attendance.");
+  }
+  if (invalidLateArrival) {
+    statusReasons.add("Arrival after 09:45 requires approved morning half-day leave.");
+  }
+  if (approvedIntervals.length > 0) {
+    statusReasons.add("Approved leave excuses only its scheduled-time overlap; actual punch timestamps and worked hours are preserved.");
+  }
+  if (breakPeriods.length === 0 && (shift.breakDurationMinutes ?? 0) > 0) {
+    statusReasons.add("Configured unpaid break was subtracted once because no explicit break punch pair exists.");
+  }
   if (workPeriods.length === 0 && uniquePunches.length === 0) {
     statusReasons.add(input.holiday
       ? "No raw punches exist on an organization-wide holiday."
@@ -277,12 +389,16 @@ export function calculateDailyAttendance(input: {
   let status: AttendanceEngineResult["status"] = "UNDETERMINED";
   if (incomplete) {
     status = "MISSING_PUNCH";
+  } else if (invalidLateArrival) {
+    status = "INVALID";
   } else if (hasUnresolvedSequence) {
     statusReasons.add("Punch sequence is unusual; a daily status cannot be assigned safely.");
   } else if (uniquePunches.length === 0 && input.holiday) {
     status = "HOLIDAY";
   } else if (uniquePunches.length === 0 && (isScheduledWorkingDay === false || input.optionalWorkday === true)) {
     status = "WEEKEND";
+  } else if (uniquePunches.length === 0 && approvedFullDayLeave) {
+    status = "LEAVE";
   } else if (uniquePunches.length > 0 && isScheduledWorkingDay === false) {
     statusReasons.add("Punches exist on a configured non-working day; the SRS does not define status or overtime treatment.");
   } else if (workPeriods.length === 0) {
@@ -290,10 +406,18 @@ export function calculateDailyAttendance(input: {
   } else if (lateMinutes === null || earlyMinutes === null) {
     statusReasons.add("Shift timing configuration is incomplete; a daily status cannot be assigned safely.");
   } else {
-    const belowMinimumHours = shift.minimumWorkingHours !== null
+    if (approvedFullDayLeave && workingHours === 0 && leaveMinutes >= scheduledMinutes) {
+      status = "LEAVE";
+    }
+    const requiredWorkingHours = shift.minimumWorkingHours === null
+      ? null
+      : Math.max(0, Number(shift.minimumWorkingHours) - leaveMinutes / 60);
+    const belowMinimumHours = requiredWorkingHours !== null
       && workingHours !== null
-      && workingHours < Number(shift.minimumWorkingHours);
-    if (belowMinimumHours) {
+      && workingHours < requiredWorkingHours;
+    if (status === "LEAVE") {
+      statusReasons.add("Approved full-day leave covers the scheduled work time.");
+    } else if (belowMinimumHours) {
       statusReasons.add("Worked hours are below the configured minimum; approval is unavailable to distinguish a Half Day.");
     } else if (lateMinutes > 0 && earlyMinutes > 0) {
       statusReasons.add("The SRS does not define precedence when both Late and Early Out apply.");
@@ -321,6 +445,7 @@ export function calculateDailyAttendance(input: {
     lateMinutes,
     earlyMinutes,
     status,
+    leaveMinutes,
     statusReasons: [...statusReasons],
     workPeriods,
     breakPeriods,
