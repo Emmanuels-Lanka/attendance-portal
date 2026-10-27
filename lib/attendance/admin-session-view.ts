@@ -10,7 +10,7 @@ function isValidDate(value: Date) {
 }
 
 function localDateTimeInput(value: Date, timeZone: string) {
-  return isValidDate(value) ? formatInTimeZone(value, timeZone, "yyyy-MM-dd'T'HH:mm") : "";
+  return isValidDate(value) ? formatInTimeZone(value, timeZone, "yyyy-MM-dd'T'HH:mm:ss") : "";
 }
 
 export function sessionView(session: AdminAttendanceSession) {

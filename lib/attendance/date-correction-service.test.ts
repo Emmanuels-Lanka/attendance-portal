@@ -503,6 +503,85 @@ describe("date-based attendance correction requests", () => {
     assert.equal(harness.getDaily()?.firstIn?.toISOString(), correctedStart.toISOString());
   });
 
+  it("adds a missing OUT to yesterday's open session without requiring a daily row", async () => {
+    const recordedIn = new Date("2026-10-05T03:00:00.000Z");
+    const correctedOut = new Date("2026-10-05T12:30:00.000Z");
+    const harness = createHarness({
+      session: {
+        id: "session-yesterday-open",
+        recordId: "record-yesterday-open",
+        mode: "OFFICE",
+        startAt: recordedIn,
+        endAt: null,
+      },
+      rawPunches: [{ timestamp: recordedIn, punchType: "IN", workMode: "OFFICE" }],
+    });
+    const rawBefore = structuredClone(harness.raw);
+    const request = await submit(harness, employeeActor, { lastOut: correctedOut.toISOString() });
+
+    await decideDailyAttendanceCorrection(supervisorActor, request.id, { action: "APPROVE" }, harness.database);
+    await decideDailyAttendanceCorrection(independentHrActor, request.id, { action: "APPROVE" }, harness.database);
+
+    assert.equal(harness.getSession()?.startAt.toISOString(), recordedIn.toISOString());
+    assert.equal(harness.getSession()?.endAt?.toISOString(), correctedOut.toISOString());
+    assert.equal(harness.getDaily()?.firstIn?.toISOString(), recordedIn.toISOString());
+    assert.equal(harness.getDaily()?.lastOut?.toISOString(), correctedOut.toISOString());
+    assert.deepEqual(harness.raw, rawBefore);
+  });
+
+  it("blocks moving a real OUT from today back to yesterday and preserves raw evidence", async () => {
+    const recordedIn = new Date("2026-10-05T03:00:00.000Z");
+    const recordedOutToday = new Date("2026-10-06T03:00:00.000Z");
+    const harness = createHarness({
+      session: {
+        id: "session-out-today",
+        recordId: "record-out-today",
+        mode: "OFFICE",
+        startAt: recordedIn,
+        endAt: recordedOutToday,
+      },
+      rawPunches: [
+        { timestamp: recordedIn, punchType: "IN", workMode: "OFFICE" },
+        { timestamp: recordedOutToday, punchType: "OUT", workMode: "OFFICE" },
+      ],
+    });
+    const rawBefore = structuredClone(harness.raw);
+
+    await assert.rejects(
+      submit(harness, employeeActor, { lastOut: "2026-10-05T12:30:00.000Z" }),
+      (error: unknown) => error instanceof DailyAttendanceCorrectionInvalidValuesError
+        && error.message.includes("raw punch evidence exists on its original employee-local date"),
+    );
+
+    assert.equal(harness.requests.length, 0);
+    assert.equal(harness.audits.length, 0);
+    assert.equal(harness.getSession()?.endAt?.toISOString(), recordedOutToday.toISOString());
+    assert.deepEqual(harness.raw, rawBefore);
+  });
+
+  it("updates a pre-existing empty daily row without creating a duplicate row", async () => {
+    const harness = createHarness({
+      daily: {
+        id: "daily-empty",
+        firstIn: null,
+        lastOut: null,
+        status: null,
+      },
+    });
+    const request = await submit(harness, employeeActor, {
+      firstIn: "2026-10-05T03:00:00.000Z",
+      lastOut: "2026-10-05T12:30:00.000Z",
+    });
+
+    await decideDailyAttendanceCorrection(supervisorActor, request.id, { action: "APPROVE" }, harness.database);
+    await decideDailyAttendanceCorrection(independentHrActor, request.id, { action: "APPROVE" }, harness.database);
+
+    assert.equal(harness.getDaily()?.id, "daily-empty");
+    assert.equal(harness.getDaily()?.firstIn?.toISOString(), "2026-10-05T03:00:00.000Z");
+    assert.equal(harness.getDaily()?.lastOut?.toISOString(), "2026-10-05T12:30:00.000Z");
+    assert.equal(harness.records.filter(({ sessions }) => sessions.length > 0).length, 1);
+  });
+
   it("allows a consistent daily row materialized from an unchanged open session between reviews", async () => {
     const originalStart = new Date("2026-10-05T03:00:00.000Z");
     const correctedStart = new Date("2026-10-05T03:20:00.000Z");

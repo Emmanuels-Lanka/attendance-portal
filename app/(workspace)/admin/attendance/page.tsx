@@ -293,7 +293,7 @@ export default async function AdminAttendancePage({ searchParams }: { searchPara
                   </div>
                   <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] pt-4">
                     <Link href={exceptionEmployeeHref(filters, view.employee.id)} className="text-xs font-medium text-[var(--blue)] hover:underline">Inspect employee attendance</Link>
-                    <AdminAttendanceCorrectionForm sessionId={session.id} startAt={view.correctionStart} endAt={view.correctionEnd} mode={session.mode} />
+                    <AdminAttendanceCorrectionForm sessionId={session.id} localDate={view.localDate} timeZone={view.employee.timeZone} startAt={view.correctionStart} endAt={view.correctionEnd} mode={session.mode} />
                   </div>
                 </article>
               </li>
@@ -404,7 +404,7 @@ export default async function AdminAttendancePage({ searchParams }: { searchPara
                         <td className="px-4 py-4"><AttendancePunch kind={session.mode === "WFH" ? "WFH_OUT" : "OUT"}><p className="font-semibold">{session.endAt && view.correctionEnd ? formatInTimeZone(session.endAt, view.employee.timeZone, "MMM d, yyyy h:mm a") : session.endAt ? "Invalid" : "Awaiting OUT"}</p><p className="mt-0.5 text-xs text-[var(--muted)]">{view.departure?.replaceAll("_", " ") ?? (session.endAt ? "Unavailable" : "Session active")}</p></AttendancePunch></td>
                         <td className="px-4 py-4 tabular-nums">{formatWorkedDuration(view.durationMs)}</td>
                         <td className="px-4 py-4"><span className={`text-xs font-semibold ${view.status === "Active" ? "text-[var(--mint-ink)]" : view.invalid ? "text-[var(--danger)]" : "text-[var(--muted)]"}`}>{view.status}</span></td>
-                        <td className="px-4 py-4"><AdminAttendanceCorrectionForm sessionId={session.id} startAt={view.correctionStart} endAt={view.correctionEnd} mode={session.mode} /></td>
+                        <td className="px-4 py-4"><AdminAttendanceCorrectionForm sessionId={session.id} localDate={view.localDate} timeZone={view.employee.timeZone} startAt={view.correctionStart} endAt={view.correctionEnd} mode={session.mode} /></td>
                       </tr>
                     );
                   })}
@@ -423,7 +423,7 @@ export default async function AdminAttendancePage({ searchParams }: { searchPara
                       <div><AttendancePunch kind={session.mode === "WFH" ? "WFH_IN" : "IN"}><p className="font-semibold">{view.correctionStart ? formatInTimeZone(session.startAt, view.employee.timeZone, "MMM d, yyyy h:mm a") : "Invalid"}</p><p className="mt-0.5 text-xs text-[var(--muted)]">{view.arrival?.replaceAll("_", " ") ?? "Unavailable"}</p></AttendancePunch></div>
                       <div><AttendancePunch kind={session.mode === "WFH" ? "WFH_OUT" : "OUT"}><p className="font-semibold">{session.endAt && view.correctionEnd ? formatInTimeZone(session.endAt, view.employee.timeZone, "MMM d, yyyy h:mm a") : session.endAt ? "Invalid" : "Awaiting OUT"}</p><p className="mt-0.5 text-xs text-[var(--muted)]">{view.departure?.replaceAll("_", " ") ?? (session.endAt ? "Unavailable" : "Session active")}</p></AttendancePunch></div>
                     </div>
-                    <AdminAttendanceCorrectionForm sessionId={session.id} startAt={view.correctionStart} endAt={view.correctionEnd} mode={session.mode} />
+                    <AdminAttendanceCorrectionForm sessionId={session.id} localDate={view.localDate} timeZone={view.employee.timeZone} startAt={view.correctionStart} endAt={view.correctionEnd} mode={session.mode} />
                   </li>
                 );
               })}

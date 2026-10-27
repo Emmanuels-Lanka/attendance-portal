@@ -7,6 +7,7 @@ import { hasPermission } from "@/lib/auth/permissions";
 import {
   DailyAttendanceCorrectionAccessError,
   DailyAttendanceCorrectionConflictError,
+  DailyAttendanceCorrectionInvalidValuesError,
   DailyAttendanceCorrectionReviewerScopeError,
   DailyAttendanceCorrectionSelfApprovalError,
   DailyAttendanceCorrectionStageError,
@@ -47,6 +48,7 @@ export async function decideAttendanceCorrectionAction(
     if (
       error instanceof DailyAttendanceCorrectionAccessError
       || error instanceof DailyAttendanceCorrectionConflictError
+      || error instanceof DailyAttendanceCorrectionInvalidValuesError
       || error instanceof DailyAttendanceCorrectionReviewerScopeError
       || error instanceof DailyAttendanceCorrectionSelfApprovalError
       || error instanceof DailyAttendanceCorrectionStageError

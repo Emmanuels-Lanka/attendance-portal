@@ -827,6 +827,22 @@ describe("admin attendance access and corrections", () => {
     assert.equal(stub.calls.auditData?.reason, "Incorrect arrival time");
   });
 
+  it("preserves effective timestamp seconds when a local correction is submitted", async () => {
+    const session = makeSession("seconds", "OFFICE");
+    session.startAt = new Date("2026-06-15T02:30:45.000Z");
+    const stub = createDatabase([session]);
+
+    const corrected = await correctAdminAttendance(admin, "seconds", {
+      startAt: "2026-06-15T08:00:45",
+      reason: "Preserve the recorded seconds.",
+    }, stub.database);
+
+    assert.equal(corrected.startAt.toISOString(), "2026-06-15T02:30:45.000Z");
+    const updatedStart = stub.calls.updateData?.startAt;
+    assert.ok(updatedStart instanceof Date);
+    assert.equal(updatedStart.toISOString(), "2026-06-15T02:30:45.000Z");
+  });
+
   it("corrects OUT in Dhaka timezone and leaves unrelated fields unchanged", async () => {
     const stub = createDatabase([makeSession("dhaka", "WFH", "Asia/Dhaka")]);
     const corrected = await correctAdminAttendance(admin, "dhaka", { endAt: "2026-06-15T17:29", reason: "Incorrect departure time" }, stub.database);
@@ -930,6 +946,33 @@ describe("admin attendance access and corrections", () => {
     assert.deepEqual((stub.calls.rawWhere as { employeeId: string }).employeeId, "employee-record-first-day");
     assert.equal(stub.sessionById.get("first-day")?.startAt.toISOString(), "2026-06-15T02:30:00.000Z");
     assert.equal(stub.calls.auditData, undefined);
+  });
+
+  it("rejects moving a real OUT away from its employee-local date when raw evidence exists", async () => {
+    const startAt = new Date("2026-06-16T02:30:00.000Z");
+    const endAt = new Date("2026-06-17T02:30:00.000Z");
+    const rawPunches = [
+      { timestamp: startAt, punchType: "IN" as const, workMode: "OFFICE" as const },
+      { timestamp: endAt, punchType: "OUT" as const, workMode: "OFFICE" as const },
+    ];
+    const stub = createCrossDateCorrectionDatabase({
+      startAt,
+      endAt,
+      dailyDates: ["2026-06-16", "2026-06-17"],
+      rawPunches,
+    });
+
+    await assert.rejects(
+      correctAdminAttendance(admin, "cross-date-session", {
+        endAt: "2026-06-18T09:00",
+        reason: "Try moving the real OUT to another date.",
+      }, stub.database),
+      /cannot move an effective endpoint to another employee-local date while raw punch evidence exists/,
+    );
+
+    assert.equal(stub.session.endAt?.toISOString(), endAt.toISOString());
+    assert.deepEqual(stub.rawPunches, stub.rawBefore);
+    assert.equal(stub.recalculatedDates.length, 0);
   });
 
   it("recalculates original and updated endpoint dates when a session's OUT date changes", async () => {

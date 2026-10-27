@@ -6,12 +6,14 @@ import type { AttendanceCorrectionState } from "@/app/(workspace)/admin/attendan
 
 type CorrectionValues = {
   sessionId: string;
+  localDate: string;
+  timeZone: string;
   startAt: string;
   endAt: string;
   mode: "OFFICE" | "WFH";
 };
 
-export function AdminAttendanceCorrectionForm({ sessionId, startAt, endAt, mode }: CorrectionValues) {
+export function AdminAttendanceCorrectionForm({ sessionId, localDate, timeZone, startAt, endAt, mode }: CorrectionValues) {
   const action = correctAttendanceAction.bind(null, sessionId);
   const [state, formAction, pending] = useActionState<AttendanceCorrectionState, FormData>(action, null);
 
@@ -22,11 +24,17 @@ export function AdminAttendanceCorrectionForm({ sessionId, startAt, endAt, mode 
         const outTime = (event.currentTarget.elements.namedItem("endAt") as HTMLInputElement).value;
         if (endAt && !outTime && !window.confirm("Reopen this completed session? The change will be recorded in audit history.")) event.preventDefault();
       }} className="mt-3 grid gap-2 rounded-md border border-[var(--line)] bg-white p-3 shadow-sm">
+        <p className="text-[11px] leading-4 text-[var(--muted)]">
+          Session&apos;s employee-local IN date: {localDate} ({timeZone}). Effective IN: {startAt || "Unavailable"}; effective OUT: {endAt || "not recorded"}.
+        </p>
+        <p className="rounded-md bg-amber-50 px-2.5 py-2 text-[10px] leading-4 text-amber-900">
+          Moving an IN or OUT to another employee-local date is blocked when raw punches exist on its original date. Keep each endpoint on its original date, or ask HR to resolve the raw punch evidence; original punches are preserved.
+        </p>
         <label className="text-[11px] font-semibold text-[var(--muted)]">Employee-local IN time
-          <input name="startAt" type="datetime-local" required defaultValue={startAt} className="mt-1 h-9 w-full rounded-md border border-[var(--line)] bg-white px-2 text-xs text-[var(--ink)]" />
+          <input name="startAt" type="datetime-local" step="1" required defaultValue={startAt} className="mt-1 h-9 w-full rounded-md border border-[var(--line)] bg-white px-2 text-xs text-[var(--ink)]" />
         </label>
         <label className="text-[11px] font-semibold text-[var(--muted)]">Employee-local OUT time
-          <input name="endAt" type="datetime-local" defaultValue={endAt} className="mt-1 h-9 w-full rounded-md border border-[var(--line)] bg-white px-2 text-xs text-[var(--ink)]" />
+          <input name="endAt" type="datetime-local" step="1" defaultValue={endAt} className="mt-1 h-9 w-full rounded-md border border-[var(--line)] bg-white px-2 text-xs text-[var(--ink)]" />
         </label>
         <p className="text-[10px] leading-4 text-[var(--muted)]">Clear OUT only to reverse a mistaken close. The change is recorded in audit history.</p>
         <label className="text-[11px] font-semibold text-[var(--muted)]">Work mode

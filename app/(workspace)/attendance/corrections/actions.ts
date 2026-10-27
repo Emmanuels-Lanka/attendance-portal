@@ -1,7 +1,5 @@
 "use server";
 
-import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
-import { isValid } from "date-fns";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { canSubmitOwnAttendanceCorrection } from "@/lib/auth/permissions";
@@ -18,6 +16,7 @@ import {
   submitAttendanceSessionModeCorrection,
   submitDailyAttendanceCorrection,
 } from "@/lib/attendance/correction-service";
+import { attendanceCorrectionInstant } from "@/lib/attendance/correction-input";
 
 export type AttendanceCorrectionSubmissionState =
   | { error: string }
@@ -51,25 +50,6 @@ const sessionModeCorrectionFormSchema = z.object({
   reason: z.string().trim().min(1, "A correction reason is required.").max(500),
 });
 
-function requestedInstant(value: string, timeZone: string, attendanceDate?: string) {
-  const instant = fromZonedTime(value, timeZone);
-  if (!isValid(instant)) {
-    throw new Error("Enter a valid time on the selected attendance date in your configured timezone.");
-  }
-  const expectedLocalValue = formatInTimeZone(
-    instant,
-    timeZone,
-    value.length === 19 ? "yyyy-MM-dd'T'HH:mm:ss" : "yyyy-MM-dd'T'HH:mm",
-  );
-  if (
-    expectedLocalValue !== value
-    || (attendanceDate && expectedLocalValue.slice(0, 10) !== attendanceDate)
-  ) {
-    throw new Error("Enter a valid time on the selected attendance date in your configured timezone.");
-  }
-  return instant.toISOString();
-}
-
 function actionError(error: unknown) {
   if (error instanceof z.ZodError) return error.issues[0]?.message ?? "Check the correction details.";
   if (
@@ -81,7 +61,6 @@ function actionError(error: unknown) {
     || error instanceof DailyAttendanceCorrectionTargetNotFoundError
     || error instanceof DailyAttendanceCorrectionInvalidValuesError
   ) return error.message;
-  if (error instanceof Error && error.message.startsWith("Enter a valid local date and time")) return error.message;
   console.error("Attendance correction submission failed", error instanceof Error ? error.name : "Unknown error");
   return "Your attendance correction could not be submitted. Try again shortly.";
 }
@@ -112,8 +91,8 @@ export async function submitAttendanceCorrectionAction(
         reason: formData.get("reason"),
       });
       const requestedValues = {
-        ...(parsed.firstIn ? { firstIn: requestedInstant(parsed.firstIn, actor.timeZone, parsed.attendanceDate) } : {}),
-        ...(parsed.lastOut ? { lastOut: requestedInstant(parsed.lastOut, actor.timeZone, parsed.attendanceDate) } : {}),
+        ...(parsed.firstIn ? { firstIn: attendanceCorrectionInstant(parsed.firstIn, actor.timeZone, parsed.attendanceDate) } : {}),
+        ...(parsed.lastOut ? { lastOut: attendanceCorrectionInstant(parsed.lastOut, actor.timeZone, parsed.attendanceDate) } : {}),
       };
       await submitAttendanceDateCorrection(actor, {
         attendanceDate: parsed.attendanceDate,
@@ -138,10 +117,10 @@ export async function submitAttendanceCorrectionAction(
     const requestedValues = {
       ...(parsed.clearFirstIn
         ? { firstIn: null }
-        : parsed.firstIn ? { firstIn: requestedInstant(parsed.firstIn, actor.timeZone) } : {}),
+        : parsed.firstIn ? { firstIn: attendanceCorrectionInstant(parsed.firstIn, actor.timeZone) } : {}),
       ...(parsed.clearLastOut
         ? { lastOut: null }
-        : parsed.lastOut ? { lastOut: requestedInstant(parsed.lastOut, actor.timeZone) } : {}),
+        : parsed.lastOut ? { lastOut: attendanceCorrectionInstant(parsed.lastOut, actor.timeZone) } : {}),
     };
     await submitDailyAttendanceCorrection(actor, parsed.dailyAttendanceId, {
       requestedValues,

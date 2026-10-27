@@ -37,9 +37,9 @@ export const adminAttendanceFilterSchema = z.object({
 });
 
 export const adminAttendanceCorrectionSchema = z.object({
-  startAt: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/, "Enter a valid employee-local start time.").optional(),
+  startAt: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/, "Enter a valid employee-local start time.").optional(),
   endAt: z.union([
-    z.string().trim().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/, "Enter a valid employee-local end time."),
+    z.string().trim().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/, "Enter a valid employee-local end time."),
     z.literal(""),
   ]).optional(),
   mode: z.enum(["OFFICE", "WFH"]).optional(),

@@ -23,7 +23,8 @@ export function AttendanceDateCorrectionRequestForm({
       <div>
         <h2 className="text-base font-semibold">Request correction for any attendance date</h2>
         <p className="mt-1 text-sm text-[var(--muted)]">
-          This request can repair a missing session. Times are interpreted in {timeZone}; blank times preserve recorded endpoints.
+          This request can repair a missing session. The selected date and both corrected times use {timeZone}; blank times preserve recorded endpoints.
+          Overnight attendance calculations are not supported. If an OUT was genuinely recorded on a later local date, do not move it back to this date; contact HR to resolve the raw punch history.
         </p>
       </div>
       <form action={formAction} className="mt-5 space-y-4">

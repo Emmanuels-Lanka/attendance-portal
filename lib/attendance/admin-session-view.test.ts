@@ -50,4 +50,38 @@ describe("Admin attendance session details", () => {
     assert.equal(view.arrival, "UNDETERMINED");
     assert.equal(view.departure, "UNDETERMINED");
   });
+
+  it("serializes effective employee-local timestamps with seconds for the correction form", () => {
+    const view = sessionView({
+      id: "precision-session",
+      recordId: "attendance-record-precision",
+      mode: "OFFICE",
+      startAt: new Date("2026-10-23T18:35:47.000Z"),
+      endAt: new Date("2026-10-24T11:00:29.000Z"),
+      monthlyGraceAllowancesUsed: 0,
+      createdAt: new Date("2026-10-23T18:35:47.000Z"),
+      updatedAt: new Date("2026-10-24T11:00:29.000Z"),
+      record: {
+        employee: {
+          id: "employee-precision",
+          name: "Precision employee",
+          employeeCode: "LK-002",
+          email: "precision@example.invalid",
+          role: "EMPLOYEE",
+          isActive: true,
+          countryCode: "LK",
+          timeZone: "Asia/Colombo",
+          employeeRecord: {
+            id: "record-precision",
+            name: "Precision employee",
+            employeeId: "LK-002",
+            shiftAssignments: weekdayOnlyAssignment,
+          },
+        },
+      },
+    });
+
+    assert.equal(view.correctionStart, "2026-10-24T00:05:47");
+    assert.equal(view.correctionEnd, "2026-10-24T16:30:29");
+  });
 });

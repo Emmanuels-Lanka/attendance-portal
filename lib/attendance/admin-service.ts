@@ -76,7 +76,8 @@ function nextLocalDay(date: string, timeZone: string) {
 
 function localDateTimeToInstant(value: string, timeZone: string, label: string) {
   const instant = fromZonedTime(value, timeZone);
-  if (!Number.isFinite(instant.getTime()) || formatInTimeZone(instant, timeZone, "yyyy-MM-dd'T'HH:mm") !== value) {
+  const format = value.length === 19 ? "yyyy-MM-dd'T'HH:mm:ss" : "yyyy-MM-dd'T'HH:mm";
+  if (!Number.isFinite(instant.getTime()) || formatInTimeZone(instant, timeZone, format) !== value) {
     throw new AdminAttendanceCorrectionError(`${label} must be a valid local date and time.`);
   }
   return instant;
