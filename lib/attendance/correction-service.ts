@@ -12,6 +12,7 @@ import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { canSubmitOwnAttendanceCorrection, hasPermission } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
 import { getEmployeeLocalDayWindow } from "@/lib/attendance/timezone";
+import { findConflictingRawPunchOnMovedEndpoint } from "@/lib/attendance/correction-raw-evidence";
 import {
   getActiveManagerDepartmentScope,
   lockActiveManagerDepartmentScope,
@@ -97,35 +98,6 @@ export const dailyAttendanceCorrectionDecisionSchema = z.object({
     z.string().trim().max(500).optional(),
   ),
 });
-
-async function assertNoRawPunchEvidenceOnMovedDates(
-  transaction: Prisma.TransactionClient,
-  employeeRecordId: string,
-  timeZone: string,
-  transitions: Array<{ label: "IN" | "OUT"; previous: Date | null; next: Date | null }>,
-) {
-  const displacedDates = new Map<string, { label: "IN" | "OUT"; nextDate: string }>();
-  for (const { label, previous, next } of transitions) {
-    if (!previous || !next) continue;
-    const previousDate = formatInTimeZone(previous, timeZone, "yyyy-MM-dd");
-    const nextDate = formatInTimeZone(next, timeZone, "yyyy-MM-dd");
-    if (previousDate !== nextDate) displacedDates.set(previousDate, { label, nextDate });
-  }
-
-  for (const [date, transition] of displacedDates) {
-    const day = getEmployeeLocalDayWindow(fromZonedTime(`${date}T12:00:00.000`, timeZone), timeZone);
-    const rawPunches = await transaction.attendanceRaw.findMany({
-      where: { employeeId: employeeRecordId, timestamp: { gte: day.startAt, lt: day.endAt } },
-      select: { id: true },
-      take: 1,
-    });
-    if (rawPunches.length > 0) {
-      throw new DailyAttendanceCorrectionInvalidValuesError(
-        `The corrected ${transition.label} cannot move from ${date} to ${transition.nextDate} because raw punch evidence exists on its original employee-local date. Keep the time on ${date}, or ask HR to resolve the raw punch evidence; original punches are preserved.`,
-      );
-    }
-  }
-}
 
 export class DailyAttendanceCorrectionAccessError extends Error {
   constructor() {
@@ -359,10 +331,15 @@ export async function submitAttendanceDateCorrection(
     if (effectiveStart && effectiveEnd && effectiveStart >= effectiveEnd) {
       throw new DailyAttendanceCorrectionInvalidValuesError("The attendance start time must be before the end time.");
     }
-    await assertNoRawPunchEvidenceOnMovedDates(transaction, employee.id, requester.timeZone, [
+    const rawPunchConflict = await findConflictingRawPunchOnMovedEndpoint(transaction, employee.id, requester.timeZone, [
       { label: "IN", previous: originalStart, next: effectiveStart },
       { label: "OUT", previous: originalEnd, next: effectiveEnd },
     ]);
+    if (rawPunchConflict) {
+      throw new DailyAttendanceCorrectionInvalidValuesError(
+        `The corrected ${rawPunchConflict.label} conflicts with another raw punch on ${rawPunchConflict.date}. Resolve the conflicting punch evidence before requesting this correction.`,
+      );
+    }
     if (
       session
       && parsed.requestedMode === session.mode
@@ -656,6 +633,7 @@ export async function submitDailyAttendanceCorrection(
           select: {
             id: true,
             userId: true,
+            user: { select: { timeZone: true } },
             supervisor: {
               select: {
                 userId: true,
@@ -668,6 +646,23 @@ export async function submitDailyAttendanceCorrection(
     });
     if (!attendance) throw new DailyAttendanceCorrectionTargetNotFoundError();
     if (!attendance.employee.userId) throw new DailyAttendanceCorrectionSubjectUserNotFoundError();
+    const timeZone = attendance.employee.user?.timeZone;
+    if (!timeZone) {
+      throw new DailyAttendanceCorrectionInvalidValuesError(
+        "The employee timezone is unavailable; an administrator must resolve the attendance record before correction.",
+      );
+    }
+    const attendanceDate = attendance.date.toISOString().slice(0, 10);
+    for (const timestamp of [parsed.requestedValues.firstIn, parsed.requestedValues.lastOut]) {
+      if (
+        timestamp
+        && formatInTimeZone(new Date(timestamp), timeZone, "yyyy-MM-dd") !== attendanceDate
+      ) {
+        throw new DailyAttendanceCorrectionInvalidValuesError(
+          "This correction changes the employee-local attendance date. Use the date-based correction form above and select the corrected date.",
+        );
+      }
+    }
     if (
       (actor.role === "EMPLOYEE" || actor.role === "HR_ADMINISTRATOR")
       && attendance.employee.userId !== actor.id
@@ -1140,7 +1135,7 @@ async function loadAttendanceDateState(
             ?? state.daily?.lastOut
             ?? [...state.punches].reverse().find((punch) => punch.punchType === "OUT")?.timestamp
             ?? null;
-          await assertNoRawPunchEvidenceOnMovedDates(
+          const rawPunchConflict = await findConflictingRawPunchOnMovedEndpoint(
             transaction,
             input.employeeRecordId,
             input.timeZone,
@@ -1161,6 +1156,9 @@ async function loadAttendanceDateState(
               },
             ],
           );
+          if (rawPunchConflict) {
+            throw new DailyAttendanceCorrectionConflictError();
+          }
           if (input.requested.firstIn === null || input.requested.lastOut === null) {
             throw new DailyAttendanceCorrectionConflictError();
           }

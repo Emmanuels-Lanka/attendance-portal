@@ -28,6 +28,9 @@ export async function correctAttendanceAction(
     revalidatePath("/admin/attendance");
     revalidatePath("/admin/attendance/daily");
     revalidatePath("/attendance");
+    revalidatePath("/reports");
+    revalidatePath("/reports/monthly");
+    revalidatePath("/admin/reports");
     return { success: "Attendance correction saved." };
   } catch (error) {
     if (error instanceof z.ZodError) return { error: error.issues[0]?.message ?? "Check the correction values." };

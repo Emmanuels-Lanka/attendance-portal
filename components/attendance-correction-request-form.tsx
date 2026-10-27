@@ -50,6 +50,9 @@ export function AttendanceCorrectionRequestForm({
       <form action={formAction} className="mt-5 space-y-4 border-t border-[var(--line)] pt-4">
         <input type="hidden" name="dailyAttendanceId" value={dailyAttendanceId} />
         <p className="text-sm font-medium">Requested times <span className="font-normal text-[var(--muted)]">(leave unchanged fields blank)</span></p>
+        <p className="text-xs text-[var(--muted)]">
+          These fields correct this attendance date only. To change an endpoint&apos;s employee-local date, use the date-based correction form above and select the corrected date.
+        </p>
         <div className="grid gap-4 sm:grid-cols-2">
           <label className="block text-sm font-semibold">
             Corrected IN

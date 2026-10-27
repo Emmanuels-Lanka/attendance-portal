@@ -38,6 +38,11 @@ export async function decideAttendanceCorrectionAction(
     revalidatePath("/dashboard");
     revalidatePath("/attendance");
     revalidatePath("/attendance/corrections");
+    revalidatePath("/admin/attendance");
+    revalidatePath("/admin/attendance/daily");
+    revalidatePath("/admin/reports");
+    revalidatePath("/reports");
+    revalidatePath("/reports/monthly");
     return {
       success: result.status === "PENDING"
         ? "Correction advanced to HR review."

@@ -10,6 +10,7 @@ import {
   monthlyGraceAllowancesUsedBeforeEachDate,
 } from "@/lib/attendance/history";
 import { lockAttendanceEmployee } from "@/lib/attendance/service";
+import { findConflictingRawPunchOnMovedEndpoint } from "@/lib/attendance/correction-raw-evidence";
 import {
   calculateAndPersistDailyAttendanceInTransaction,
   recalculateAttendanceMonthsFromDatesInTransaction,
@@ -352,33 +353,21 @@ export async function correctAdminAttendance(
     ];
     const updatedEndpoints = { startAt, endAt };
     const oldStartDate = endpointDates(current)[0];
-    const oldEndDate = current.endAt ? endpointDates(current)[1] : undefined;
     const newStartDate = endpointDates(updatedEndpoints)[0];
-    const newEndDate = endAt ? endpointDates(updatedEndpoints)[1] : undefined;
     const datesToRecalculate = [...new Set([
       ...endpointDates(current),
       ...endpointDates(updatedEndpoints),
     ])].sort();
-    const displacedEndpointDates = new Set([
-      ...(oldStartDate !== newStartDate ? [oldStartDate] : []),
-      ...(oldEndDate && oldEndDate !== newEndDate ? [oldEndDate] : []),
-    ]);
-    for (const date of displacedEndpointDates) {
-      if (!targetEmployeeRecordId) break;
-      const oldDay = getEmployeeLocalDayWindow(fromZonedTime(`${date}T12:00:00.000`, timeZone), timeZone);
-      const rawEvidence = await transaction.attendanceRaw.findMany({
-        where: {
-          employeeId: targetEmployeeRecordId,
-          timestamp: { gte: oldDay.startAt, lt: oldDay.endAt },
-        },
-        select: { id: true },
-        take: 1,
-      });
-      if (rawEvidence.length > 0) {
-        throw new AdminAttendanceCorrectionError(
-          "This correction cannot move an effective endpoint to another employee-local date while raw punch evidence exists on the original date.",
-        );
-      }
+    const rawPunchConflict = targetEmployeeRecordId
+      ? await findConflictingRawPunchOnMovedEndpoint(transaction, targetEmployeeRecordId, timeZone, [
+          { label: "IN", previous: current.startAt, next: startAt },
+          { label: "OUT", previous: current.endAt, next: endAt },
+        ])
+      : null;
+    if (rawPunchConflict) {
+      throw new AdminAttendanceCorrectionError(
+        `A different raw ${rawPunchConflict.label} punch already exists on the corrected employee-local date ${rawPunchConflict.date}. Review the punch evidence before changing the endpoint.`,
+      );
     }
 
     const changed = await transaction.workSession.updateMany({

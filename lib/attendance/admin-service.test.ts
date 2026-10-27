@@ -71,7 +71,6 @@ function createDatabase(
     failConditionalUpdate?: boolean;
     managerDepartmentId?: string | null;
     managerDepartmentName?: string;
-    hasRawPunchEvidence?: boolean;
   } = {},
 ) {
   const sessionById = new Map(sessions.map((session) => [session.id, session]));
@@ -197,7 +196,7 @@ function createDatabase(
     attendanceRaw: {
       findMany: async ({ where }: { where: unknown }) => {
         calls.rawWhere = where;
-        return options.hasRawPunchEvidence ? [{ id: "raw-punch" }] : [];
+        return [];
       },
     },
     attendanceAuditLog: {
@@ -284,6 +283,7 @@ function createCrossDateCorrectionDatabase(input: {
   };
   const rawPunches = input.rawPunches ?? [];
   const rawBefore = structuredClone(rawPunches);
+  const audits: Array<Record<string, unknown>> = [];
   const dailyRows = input.dailyDates.map((date, index) => ({
     id: `daily-${date}`,
     employeeId,
@@ -359,11 +359,13 @@ function createCrossDateCorrectionDatabase(input: {
     },
     attendanceRaw: {
       findMany: async ({ where }: {
-        where: { employeeId: string; timestamp: { gte: Date; lt: Date } };
+        where: { employeeId: string; punchType?: "IN" | "OUT"; timestamp: { gte: Date; lt: Date } };
       }) => {
         if (where.employeeId !== employeeId) return [];
-        return rawPunches.filter(({ timestamp }) =>
-          timestamp >= where.timestamp.gte && timestamp < where.timestamp.lt);
+        return rawPunches.filter(({ timestamp, punchType }) =>
+          timestamp >= where.timestamp.gte
+          && timestamp < where.timestamp.lt
+          && (!where.punchType || punchType === where.punchType));
       },
     },
     attendanceDaily: {
@@ -397,12 +399,17 @@ function createCrossDateCorrectionDatabase(input: {
     },
     attendanceCorrectionRequest: { findMany: async () => [] },
     holiday: { findFirst: async () => null },
-    attendanceAuditLog: { create: async () => ({ id: "audit-1" }) },
+    attendanceAuditLog: {
+      create: async ({ data }: { data: Record<string, unknown> }) => {
+        audits.push(data);
+        return { id: `audit-${audits.length}` };
+      },
+    },
   };
   const database = {
     $transaction: async <T>(operation: (tx: typeof transaction) => Promise<T>) => operation(transaction),
   } as never;
-  return { database, session, rawPunches, rawBefore, dailyRows, recalculatedDates };
+  return { database, session, rawPunches, rawBefore, dailyRows, recalculatedDates, audits };
 }
 
 describe("admin attendance access and corrections", () => {
@@ -934,21 +941,27 @@ describe("admin attendance access and corrections", () => {
     await assert.rejects(correctAdminAttendance(admin, "missing", { endAt: "", reason: "Fix missing session" }, stub.database), AdminAttendanceNotFoundError);
   });
 
-  it("rejects moving a session across employee-local dates without changing history", async () => {
-    const first = makeSession("first-day");
-    first.record.employee.employee.id = "employee-record-first-day";
-    const stub = createDatabase([first], undefined, { hasRawPunchEvidence: true });
+  it("allows moving an endpoint when its raw evidence remains on the original date", async () => {
+    const startAt = new Date("2026-06-15T02:30:00.000Z");
+    const rawPunches = [{ timestamp: startAt, punchType: "IN" as const, workMode: "OFFICE" as const }];
+    const stub = createCrossDateCorrectionDatabase({
+      startAt,
+      endAt: null,
+      dailyDates: ["2026-06-15", "2026-06-16"],
+      rawPunches,
+    });
 
-    await assert.rejects(
-      correctAdminAttendance(admin, "first-day", { startAt: "2026-06-16T08:15", reason: "Fix incorrect date" }, stub.database),
-      /cannot move an effective endpoint to another employee-local date while raw punch evidence exists/,
-    );
-    assert.deepEqual((stub.calls.rawWhere as { employeeId: string }).employeeId, "employee-record-first-day");
-    assert.equal(stub.sessionById.get("first-day")?.startAt.toISOString(), "2026-06-15T02:30:00.000Z");
-    assert.equal(stub.calls.auditData, undefined);
+    const corrected = await correctAdminAttendance(admin, "cross-date-session", {
+      startAt: "2026-06-16T08:15",
+      reason: "Correct the effective IN date.",
+    }, stub.database);
+
+    assert.equal(corrected.startAt.toISOString(), "2026-06-16T02:45:00.000Z");
+    assert.deepEqual(stub.rawPunches, stub.rawBefore);
+    assert.deepEqual(stub.recalculatedDates, ["2026-06-15", "2026-06-16"]);
   });
 
-  it("rejects moving a real OUT away from its employee-local date when raw evidence exists", async () => {
+  it("permits the requested effective OUT date while retaining the original raw OUT evidence", async () => {
     const startAt = new Date("2026-06-16T02:30:00.000Z");
     const endAt = new Date("2026-06-17T02:30:00.000Z");
     const rawPunches = [
@@ -962,16 +975,59 @@ describe("admin attendance access and corrections", () => {
       rawPunches,
     });
 
+    const corrected = await correctAdminAttendance(admin, "cross-date-session", {
+      endAt: "2026-06-16T22:30",
+      reason: "Correct the OUT to the employee-local attendance date.",
+    }, stub.database);
+
+    assert.equal(corrected.startAt.toISOString(), startAt.toISOString());
+    assert.equal(corrected.endAt?.toISOString(), "2026-06-16T17:00:00.000Z");
+    assert.equal(stub.dailyRows[0]?.firstIn?.toISOString(), startAt.toISOString());
+    assert.equal(stub.dailyRows[0]?.lastOut?.toISOString(), "2026-06-16T17:00:00.000Z");
+    assert.equal(stub.dailyRows[1]?.firstIn, null);
+    assert.equal(stub.dailyRows[1]?.lastOut?.toISOString(), endAt.toISOString());
+    assert.deepEqual(stub.audits[0]?.previousValues, {
+      mode: "OFFICE",
+      startAt: startAt.toISOString(),
+      endAt: endAt.toISOString(),
+    });
+    assert.deepEqual(stub.audits[0]?.newValues, {
+      mode: "OFFICE",
+      startAt: startAt.toISOString(),
+      endAt: "2026-06-16T17:00:00.000Z",
+      actorRole: Role.ADMIN,
+    });
+    assert.deepEqual(stub.rawPunches, stub.rawBefore);
+    assert.deepEqual(stub.recalculatedDates, ["2026-06-16", "2026-06-17"]);
+  });
+
+  it("rejects a conflicting raw OUT on the corrected employee-local date", async () => {
+    const startAt = new Date("2026-06-16T02:30:00.000Z");
+    const endAt = new Date("2026-06-17T02:30:00.000Z");
+    const targetOut = new Date("2026-06-16T12:00:00.000Z");
+    const rawPunches = [
+      { timestamp: startAt, punchType: "IN" as const, workMode: "OFFICE" as const },
+      { timestamp: targetOut, punchType: "OUT" as const, workMode: "OFFICE" as const },
+      { timestamp: endAt, punchType: "OUT" as const, workMode: "OFFICE" as const },
+    ];
+    const stub = createCrossDateCorrectionDatabase({
+      startAt,
+      endAt,
+      dailyDates: ["2026-06-16", "2026-06-17"],
+      rawPunches,
+    });
+
     await assert.rejects(
       correctAdminAttendance(admin, "cross-date-session", {
-        endAt: "2026-06-18T09:00",
-        reason: "Try moving the real OUT to another date.",
+        endAt: "2026-06-16T22:30",
+        reason: "Correct the OUT date.",
       }, stub.database),
-      /cannot move an effective endpoint to another employee-local date while raw punch evidence exists/,
+      /different raw OUT punch already exists on the corrected employee-local date/,
     );
 
     assert.equal(stub.session.endAt?.toISOString(), endAt.toISOString());
     assert.deepEqual(stub.rawPunches, stub.rawBefore);
+    assert.equal(stub.audits.length, 0);
     assert.equal(stub.recalculatedDates.length, 0);
   });
 

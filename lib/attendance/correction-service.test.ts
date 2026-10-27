@@ -8,6 +8,7 @@ import {
 import {
   DailyAttendanceCorrectionAccessError,
   DailyAttendanceCorrectionConflictError,
+  DailyAttendanceCorrectionInvalidValuesError,
   DailyAttendanceCorrectionPendingRequestExistsError,
   DailyAttendanceCorrectionRequesterNotFoundError,
   DailyAttendanceCorrectionReviewerNotFoundError,
@@ -47,6 +48,7 @@ type TestDaily = {
   employee: {
     id: string;
     userId: string | null;
+    user: { timeZone: string } | null;
     departmentId: string;
     supervisor: { userId: string | null; user: { role: Role; isActive: boolean } | null } | null;
   };
@@ -68,6 +70,7 @@ const originalDaily: TestDaily = {
   employee: {
     id: "employee-1",
     userId: "user-1",
+    user: { timeZone: "Asia/Colombo" },
     departmentId: "engineering-dept",
     supervisor: { userId: "supervisor-user", user: { role: Role.SUPERVISOR, isActive: true } },
   },
@@ -597,6 +600,27 @@ describe("pending daily attendance correction requests", () => {
       newValues: requestedValues,
       reason: "Forgot to punch out",
     });
+  });
+
+  it("directs a per-day request that changes the local date to the date-based correction flow", async () => {
+    const daily = {
+      ...originalDaily,
+      date: new Date("2026-10-27T00:00:00.000Z"),
+      firstIn: null,
+      lastOut: new Date("2026-10-27T17:00:00.000Z"),
+    };
+    const stub = createDatabase({ daily });
+
+    await assert.rejects(
+      submitDailyAttendanceCorrection(employeeActor, "daily-1", {
+        requestedValues: { lastOut: "2026-10-26T17:00:00.000Z" },
+        reason: "Correct the OUT date.",
+      }, stub.database),
+      (error: unknown) => error instanceof DailyAttendanceCorrectionInvalidValuesError
+        && error.message.includes("Use the date-based correction form above"),
+    );
+    assert.equal(stub.requests.length, 0);
+    assert.equal(stub.audits.length, 0);
   });
 
   it("allows an authorized Supervisor to submit while preserving requester and subject attribution", async () => {

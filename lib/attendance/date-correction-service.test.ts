@@ -12,6 +12,7 @@ import {
   listOwnAttendanceCorrectionHistory,
   submitAttendanceDateCorrection,
 } from "./correction-service";
+import { attendanceCorrectionInstant } from "./correction-input";
 
 const attendanceDate = "2026-10-05";
 const employeeActor = { id: "employee-user", role: Role.EMPLOYEE };
@@ -46,6 +47,7 @@ function createHarness(options: {
     startAt: Date;
     endAt: Date | null;
   } | null;
+  attendanceDate?: string;
   daily?: {
     id: string;
     firstIn: Date | null;
@@ -60,15 +62,17 @@ function createHarness(options: {
   emptyRecordId?: string;
   failDailyUpdate?: boolean;
 } = {}) {
+  const fixtureDate = options.attendanceDate ?? attendanceDate;
   const ownerId = options.ownerId ?? employeeActor.id;
   const ownerRole = options.ownerRole ?? Role.EMPLOYEE;
   const employeeLinked = options.employeeLinked ?? true;
   let session: SessionState | null = options.session ? structuredClone(options.session) : null;
+  const additionalDailyRows: DailyState[] = [];
   let daily: DailyState | null = options.daily
     ? {
         ...structuredClone(options.daily),
         employeeId: "employee-record",
-        date: new Date(`${attendanceDate}T00:00:00.000Z`),
+        date: new Date(`${fixtureDate}T00:00:00.000Z`),
       }
     : null;
   const raw: Array<{ id: string; timestamp: Date; punchType: "IN" | "OUT"; workMode: "OFFICE" | "WFH" }> =
@@ -151,25 +155,56 @@ function createHarness(options: {
       },
     },
     attendanceDaily: {
-      findFirst: async () => daily,
-      findMany: async ({ select }: { select?: { firstIn?: boolean; date?: boolean } }) => {
-        if (!daily) return [];
-        if (select?.date && !select.firstIn) return [{ date: daily.date }];
-        return select?.firstIn ? [daily] : [{ id: daily.id }];
+      findFirst: async ({ where }: { where: { employeeId: string; date: Date } }) =>
+        [daily, ...additionalDailyRows].find((row) =>
+          row !== null
+          && row.employeeId === where.employeeId
+          && row.date.getTime() === where.date.getTime()) ?? null,
+      findMany: async ({ where, select }: {
+        where: { employeeId: string; date: Date | { gte: Date; lt: Date } };
+        select?: { id?: boolean; firstIn?: boolean; date?: boolean };
+      }) => {
+        const rows = [daily, ...additionalDailyRows].filter((row): row is DailyState => {
+          if (!row || row.employeeId !== where.employeeId) return false;
+          return where.date instanceof Date
+            ? row.date.getTime() === where.date.getTime()
+            : row.date >= where.date.gte && row.date < where.date.lt;
+        });
+        if (select?.date && Object.keys(select).length === 1) return rows.map(({ date }) => ({ date }));
+        if (select?.id && Object.keys(select).length === 1) return rows.map(({ id }) => ({ id }));
+        return rows;
       },
-      findUnique: async ({ where }: { where: { id: string } }) => daily?.id === where.id ? daily : null,
+      findUnique: async ({ where }: { where: { id: string } }) =>
+        [daily, ...additionalDailyRows].find((row) => row?.id === where.id) ?? null,
       create: async ({ data }: { data: Record<string, unknown> }) => {
-        daily = { id: "daily-created", employeeId: "employee-record", ...data } as DailyState;
-        return { id: daily.id };
+        const created = {
+          id: additionalDailyRows.length === 0 ? "daily-created" : `daily-created-${additionalDailyRows.length + 1}`,
+          employeeId: "employee-record",
+          ...data,
+        } as DailyState;
+        if (created.date.getTime() === new Date(`${fixtureDate}T00:00:00.000Z`).getTime()) daily = created;
+        else additionalDailyRows.push(created);
+        return { id: created.id };
       },
       updateMany: async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
-        if (options.failDailyUpdate || !daily || daily.id !== where.id) return { count: 0 };
-        daily = { ...daily, ...data };
+        const existing = [daily, ...additionalDailyRows].find((row) => row?.id === where.id);
+        if (options.failDailyUpdate || !existing) return { count: 0 };
+        const updated = { ...existing, ...data } as DailyState;
+        if (daily?.id === where.id) daily = updated;
+        else {
+          const index = additionalDailyRows.findIndex((row) => row.id === where.id);
+          additionalDailyRows[index] = updated;
+        }
         return { count: 1 };
       },
     },
     attendanceRaw: {
-      findMany: async () => raw,
+      findMany: async ({ where }: {
+        where: { employeeId?: string; punchType?: "IN" | "OUT"; timestamp?: { gte: Date; lt: Date } };
+      }) => raw.filter((punch) =>
+        (!where.employeeId || where.employeeId === "employee-record")
+        && (!where.punchType || punch.punchType === where.punchType)
+        && (!where.timestamp || (punch.timestamp >= where.timestamp.gte && punch.timestamp < where.timestamp.lt))),
       create: async () => { throw new Error("Correction must not create raw punches."); },
     },
     workSession: {
@@ -304,12 +339,13 @@ function createHarness(options: {
 
   const database = {
     $transaction: async <T>(callback: (tx: typeof transaction) => Promise<T>) => {
-      const before = structuredClone({ session, daily, records, requests, audits, notifications });
+      const before = structuredClone({ session, daily, additionalDailyRows, records, requests, audits, notifications });
       try {
         return await callback(transaction);
       } catch (error) {
         session = before.session;
         daily = before.daily;
+        additionalDailyRows.splice(0, additionalDailyRows.length, ...before.additionalDailyRows);
         records.splice(0, records.length, ...before.records);
         requests.splice(0, requests.length, ...before.requests);
         audits.splice(0, audits.length, ...before.audits);
@@ -334,11 +370,12 @@ function createHarness(options: {
     get daily(): DailyState | null { return daily; },
     getSession: () => session,
     getDaily: () => daily,
+    getAdditionalDailyRows: () => additionalDailyRows,
     materializeDaily: (firstIn: Date | null, lastOut: Date | null) => {
       daily = {
         id: "daily-materialized",
         employeeId: "employee-record",
-        date: new Date(`${attendanceDate}T00:00:00.000Z`),
+        date: new Date(`${fixtureDate}T00:00:00.000Z`),
         firstIn,
         lastOut,
         status: "MISSING_PUNCH",
@@ -351,13 +388,14 @@ async function submit(
   harness: ReturnType<typeof createHarness>,
   actor: { id: string; role: Role } = employeeActor,
   input: {
+    attendanceDate?: string;
     firstIn?: string;
     lastOut?: string;
     mode?: "OFFICE" | "WFH";
   } = {},
 ) {
   return submitAttendanceDateCorrection(actor, {
-    attendanceDate,
+    attendanceDate: input.attendanceDate ?? attendanceDate,
     requestedValues: {
       ...(input.firstIn ? { firstIn: input.firstIn } : {}),
       ...(input.lastOut ? { lastOut: input.lastOut } : {}),
@@ -503,6 +541,141 @@ describe("date-based attendance correction requests", () => {
     assert.equal(harness.getDaily()?.firstIn?.toISOString(), correctedStart.toISOString());
   });
 
+  it("approves an OUT date correction from October 27 to October 26 and preserves the raw punch", async () => {
+    const date = "2026-10-26";
+    const originalStart = new Date("2026-10-26T03:31:00.000Z");
+    const originalEnd = new Date("2026-10-27T17:00:00.000Z");
+    const correctedEnd = new Date(attendanceCorrectionInstant("2026-10-26T22:30", "Asia/Colombo", date));
+    const harness = createHarness({
+      attendanceDate: date,
+      session: {
+        id: "session-cross-date-out",
+        recordId: "record-cross-date-out",
+        mode: "OFFICE",
+        startAt: originalStart,
+        endAt: originalEnd,
+      },
+      daily: {
+        id: "daily-cross-date-out",
+        firstIn: originalStart,
+        lastOut: null,
+        status: "MISSING_PUNCH",
+      },
+      rawPunches: [
+        { timestamp: originalStart, punchType: "IN", workMode: "OFFICE" },
+        { timestamp: originalEnd, punchType: "OUT", workMode: "OFFICE" },
+      ],
+    });
+    const rawBefore = structuredClone(harness.raw);
+    const request = await submit(harness, employeeActor, {
+      attendanceDate: date,
+      lastOut: correctedEnd.toISOString(),
+    });
+
+    await decideDailyAttendanceCorrection(supervisorActor, request.id, { action: "APPROVE" }, harness.database);
+    await decideDailyAttendanceCorrection(independentHrActor, request.id, { action: "APPROVE" }, harness.database);
+
+    assert.equal(harness.getSession()?.startAt.toISOString(), originalStart.toISOString());
+    assert.equal(harness.getSession()?.endAt?.toISOString(), correctedEnd.toISOString());
+    assert.equal(harness.getDaily()?.firstIn?.toISOString(), originalStart.toISOString());
+    assert.equal(harness.getDaily()?.lastOut?.toISOString(), correctedEnd.toISOString());
+    assert.equal(harness.getAdditionalDailyRows().find((row) => row.date.toISOString().slice(0, 10) === "2026-10-27")?.lastOut?.toISOString(), originalEnd.toISOString());
+    const finalAudit = harness.audits.at(-1);
+    assert.equal(finalAudit?.reason, "Correct missed or inaccurate attendance punches");
+    assert.deepEqual(finalAudit?.previousValues, {
+      status: AttendanceCorrectionStatus.PENDING,
+      currentApprovalStage: AttendanceCorrectionApprovalStage.HR,
+      attendance: request.originalValues,
+    });
+    const finalized = finalAudit?.newValues as {
+      attendance?: { firstIn?: string | null; lastOut?: string | null };
+      session?: { id?: string; startAt?: string; endAt?: string | null };
+    };
+    assert.equal(finalized.attendance?.firstIn, originalStart.toISOString());
+    assert.equal(finalized.attendance?.lastOut, correctedEnd.toISOString());
+    assert.deepEqual(finalized.session, {
+      id: "session-cross-date-out",
+      mode: "OFFICE",
+      startAt: originalStart.toISOString(),
+      endAt: correctedEnd.toISOString(),
+    });
+    assert.deepEqual(harness.raw, rawBefore);
+  });
+
+  it("rejects a conflicting raw OUT on the requested employee-local date", async () => {
+    const originalStart = new Date("2026-10-26T03:31:00.000Z");
+    const originalEnd = new Date("2026-10-27T17:00:00.000Z");
+    const harness = createHarness({
+      attendanceDate: "2026-10-26",
+      session: {
+        id: "session-conflicting-out",
+        recordId: "record-conflicting-out",
+        mode: "OFFICE",
+        startAt: originalStart,
+        endAt: originalEnd,
+      },
+      rawPunches: [
+        { timestamp: originalStart, punchType: "IN", workMode: "OFFICE" },
+        { timestamp: new Date("2026-10-26T12:00:00.000Z"), punchType: "OUT", workMode: "OFFICE" },
+        { timestamp: originalEnd, punchType: "OUT", workMode: "OFFICE" },
+      ],
+    });
+
+    await assert.rejects(
+      submit(harness, employeeActor, {
+        attendanceDate: "2026-10-26",
+        lastOut: "2026-10-26T17:00:00.000Z",
+      }),
+      /conflicts with another raw punch on 2026-10-26/,
+    );
+    assert.equal(harness.requests.length, 0);
+    assert.equal(harness.audits.length, 0);
+    assert.equal(harness.getSession()?.endAt?.toISOString(), originalEnd.toISOString());
+  });
+
+  it("rechecks for a conflicting raw OUT that arrives before final approval", async () => {
+    const originalStart = new Date("2026-10-26T03:31:00.000Z");
+    const originalEnd = new Date("2026-10-27T17:00:00.000Z");
+    const harness = createHarness({
+      attendanceDate: "2026-10-26",
+      session: {
+        id: "session-late-conflict",
+        recordId: "record-late-conflict",
+        mode: "OFFICE",
+        startAt: originalStart,
+        endAt: originalEnd,
+      },
+      rawPunches: [
+        { timestamp: originalStart, punchType: "IN", workMode: "OFFICE" },
+        { timestamp: originalEnd, punchType: "OUT", workMode: "OFFICE" },
+      ],
+    });
+    const request = await submit(harness, employeeActor, {
+      attendanceDate: "2026-10-26",
+      lastOut: "2026-10-26T17:00:00.000Z",
+    });
+    await decideDailyAttendanceCorrection(supervisorActor, request.id, { action: "APPROVE" }, harness.database);
+    const sessionBeforeFinalReview = structuredClone(harness.getSession());
+    const auditsBeforeFinalReview = structuredClone(harness.audits);
+    const notificationsBeforeFinalReview = structuredClone(harness.notifications);
+    harness.raw.push({
+      id: "raw-late-conflict",
+      timestamp: new Date("2026-10-26T12:00:00.000Z"),
+      punchType: "OUT",
+      workMode: "OFFICE",
+    });
+
+    await assert.rejects(
+      decideDailyAttendanceCorrection(independentHrActor, request.id, { action: "APPROVE" }, harness.database),
+      DailyAttendanceCorrectionConflictError,
+    );
+    assert.equal(harness.correctionRequests[0]?.status, AttendanceCorrectionStatus.PENDING);
+    assert.equal(harness.correctionRequests[0]?.currentApprovalStage, AttendanceCorrectionApprovalStage.HR);
+    assert.deepEqual(harness.getSession(), sessionBeforeFinalReview);
+    assert.deepEqual(harness.audits, auditsBeforeFinalReview);
+    assert.deepEqual(harness.notifications, notificationsBeforeFinalReview);
+  });
+
   it("adds a missing OUT to yesterday's open session without requiring a daily row", async () => {
     const recordedIn = new Date("2026-10-05T03:00:00.000Z");
     const correctedOut = new Date("2026-10-05T12:30:00.000Z");
@@ -529,7 +702,7 @@ describe("date-based attendance correction requests", () => {
     assert.deepEqual(harness.raw, rawBefore);
   });
 
-  it("blocks moving a real OUT from today back to yesterday and preserves raw evidence", async () => {
+  it("allows moving a real OUT from the next day back to the selected day and preserves raw evidence", async () => {
     const recordedIn = new Date("2026-10-05T03:00:00.000Z");
     const recordedOutToday = new Date("2026-10-06T03:00:00.000Z");
     const harness = createHarness({
@@ -547,15 +720,13 @@ describe("date-based attendance correction requests", () => {
     });
     const rawBefore = structuredClone(harness.raw);
 
-    await assert.rejects(
-      submit(harness, employeeActor, { lastOut: "2026-10-05T12:30:00.000Z" }),
-      (error: unknown) => error instanceof DailyAttendanceCorrectionInvalidValuesError
-        && error.message.includes("raw punch evidence exists on its original employee-local date"),
-    );
+    const request = await submit(harness, employeeActor, { lastOut: "2026-10-05T12:30:00.000Z" });
+    await decideDailyAttendanceCorrection(supervisorActor, request.id, { action: "APPROVE" }, harness.database);
+    await decideDailyAttendanceCorrection(independentHrActor, request.id, { action: "APPROVE" }, harness.database);
 
-    assert.equal(harness.requests.length, 0);
-    assert.equal(harness.audits.length, 0);
-    assert.equal(harness.getSession()?.endAt?.toISOString(), recordedOutToday.toISOString());
+    assert.equal(harness.requests.length, 1);
+    assert.equal(harness.getSession()?.endAt?.toISOString(), "2026-10-05T12:30:00.000Z");
+    assert.equal(harness.getDaily()?.lastOut?.toISOString(), "2026-10-05T12:30:00.000Z");
     assert.deepEqual(harness.raw, rawBefore);
   });
 
