@@ -32,6 +32,7 @@ import {
 const employeeActor = { id: "user-1", role: Role.EMPLOYEE };
 const supervisorActor = { id: "supervisor-user", role: Role.SUPERVISOR };
 const adminActor = { id: "admin-user", role: Role.ADMIN };
+const hrActor = { id: "hr-user", role: Role.HR_ADMINISTRATOR };
 type TestDaily = {
   id: string;
   employeeId: string;
@@ -148,7 +149,7 @@ function createDatabase(options: {
           }
         : daily && where.id === daily.employee.id ? ({
         id: where.id,
-        userId: "user-1",
+        userId: daily?.employee.userId ?? "user-1",
         departmentId: daily.employee.departmentId,
         user: { timeZone: "Asia/Colombo", countryCode: "LK" },
         shift: {
@@ -167,7 +168,7 @@ function createDatabase(options: {
       }) : null,
     },
     workSession: {
-      findMany: async () => session && session.employeeId === "user-1"
+      findMany: async () => session && session.employeeId === (daily?.employee.userId ?? "user-1")
         ? [{ id: session.id, mode: session.mode, startAt: session.startAt, endAt: session.endAt }]
         : [],
       findUnique: async ({ where }: { where: { id: string } }) => session?.id === where.id ? ({
@@ -852,7 +853,7 @@ describe("attendance session work-mode correction requests", () => {
     assert.deepEqual(stub.rawMutations, []);
   });
 
-  it("prevents the affected HR Administrator from approving a work-mode correction for their own session", async () => {
+  it("requires independent Supervisor review before HR can approve their own work-mode correction", async () => {
     const stub = createDatabase({
       session: {
         id: "hr-session",
@@ -862,37 +863,76 @@ describe("attendance session work-mode correction requests", () => {
         employeeId: "hr-user",
       },
     });
-    stub.requests.push({
-      id: "correction-self",
-      employeeId: "hr-user",
-      requesterId: "hr-user",
-      sessionId: "hr-session",
-      originalMode: "WFH",
+    const request = await submitAttendanceSessionModeCorrection(hrActor, "hr-session", {
       requestedMode: "OFFICE",
-      originalStartAt: stub.session?.startAt,
-      originalEndAt: stub.session?.endAt,
-      originalValues: { mode: "WFH" },
-      requestedValues: { requestedMode: "OFFICE" },
-      reason: "Wrong mode",
-      status: AttendanceCorrectionStatus.PENDING,
-      currentApprovalStage: AttendanceCorrectionApprovalStage.HR,
-    });
-
-    const auditsBefore = structuredClone(stub.audits);
-    const notificationsBefore = structuredClone(stub.notifications);
+      reason: "The session was incorrectly recorded as WFH.",
+    }, stub.database);
+    const rawBefore = structuredClone(stub.rawPunches);
     await assert.rejects(
       decideDailyAttendanceCorrection(
-        { id: "hr-user", role: Role.HR_ADMINISTRATOR },
-        "correction-self",
+        hrActor,
+        request.id,
         { action: "APPROVE" },
         stub.database,
       ),
       DailyAttendanceCorrectionSelfApprovalError,
     );
-    assert.equal(stub.session?.mode, "WFH");
-    assert.equal(stub.requests[0]?.status, AttendanceCorrectionStatus.PENDING);
-    assert.deepEqual(stub.audits, auditsBefore);
-    assert.deepEqual(stub.notifications, notificationsBefore);
+    assert.equal(stub.requests[0]?.currentApprovalStage, AttendanceCorrectionApprovalStage.SUPERVISOR);
+    await decideDailyAttendanceCorrection(supervisorActor, request.id, { action: "APPROVE" }, stub.database);
+    const finalResult = await decideDailyAttendanceCorrection(hrActor, request.id, { action: "APPROVE" }, stub.database);
+    assert.equal(finalResult.status, AttendanceCorrectionStatus.APPROVED);
+    assert.equal(stub.session?.mode, "OFFICE");
+    assert.equal(stub.requests[0]?.requesterId, hrActor.id);
+    assert.equal(stub.requests[0]?.reviewedById, hrActor.id);
+    assert.deepEqual(stub.audits.slice(-2).map(({ actorId, actionType }) => ({ actorId, actionType })), [
+      { actorId: supervisorActor.id, actionType: "ATTENDANCE_CORRECTION_SUPERVISOR_APPROVED" },
+      { actorId: hrActor.id, actionType: "ATTENDANCE_CORRECTION_HR_APPROVED" },
+    ]);
+    assert.deepEqual(stub.rawPunches, rawBefore);
+    assert.deepEqual(stub.rawMutations, []);
+  });
+
+  it("allows an HR Administrator to submit and approve their own daily attendance correction after Supervisor review", async () => {
+    const hrDaily = {
+      ...originalDaily,
+      employee: { ...originalDaily.employee, userId: hrActor.id },
+    };
+    const stub = createDatabase({
+      daily: hrDaily,
+      session: {
+        id: "hr-daily-session",
+        mode: "OFFICE",
+        startAt: hrDaily.firstIn!,
+        endAt: null,
+        employeeId: hrActor.id,
+      },
+    });
+    const rawBefore = structuredClone(stub.rawPunches);
+    const request = await submitDailyAttendanceCorrection(hrActor, "daily-1", {
+      requestedValues: { lastOut: "2026-10-05T12:00:00.000Z" },
+      reason: "I forgot to punch out.",
+    }, stub.database);
+
+    assert.equal(request.employeeId, hrActor.id);
+    assert.equal(request.requesterId, hrActor.id);
+    assert.equal(request.currentApprovalStage, AttendanceCorrectionApprovalStage.SUPERVISOR);
+    assert.equal(stub.session?.mode, "OFFICE");
+    await assert.rejects(
+      decideDailyAttendanceCorrection(hrActor, request.id, { action: "APPROVE" }, stub.database),
+      DailyAttendanceCorrectionSelfApprovalError,
+    );
+    await decideDailyAttendanceCorrection(supervisorActor, request.id, { action: "APPROVE" }, stub.database);
+    const result = await decideDailyAttendanceCorrection(hrActor, request.id, { action: "APPROVE" }, stub.database);
+
+    assert.equal(result.status, AttendanceCorrectionStatus.APPROVED);
+    assert.equal(stub.daily?.lastOut?.toISOString(), "2026-10-05T12:00:00.000Z");
+    assert.equal(stub.session?.endAt?.toISOString(), "2026-10-05T12:00:00.000Z");
+    assert.equal(stub.requests[0]?.reviewedById, hrActor.id);
+    assert.equal(stub.audits.at(-1)?.actorId, hrActor.id);
+    assert.equal(stub.audits.at(-1)?.employeeId, hrActor.id);
+    assert.equal(stub.audits.at(-1)?.reason, "I forgot to punch out.");
+    assert.deepEqual(stub.rawPunches, rawBefore);
+    assert.deepEqual(stub.rawMutations, []);
   });
 
   it("rejects a supervisor outside the session employee's assignment scope", async () => {
@@ -1034,7 +1074,7 @@ async function employeeCorrection(stub: ReturnType<typeof createDatabase>) {
 }
 
 describe("attendance correction approvals", () => {
-  it("prevents an HR Administrator from approving their own attendance correction without changing state", async () => {
+  it("does not allow HR to approve their own attendance when someone else submitted the request", async () => {
     const hrDaily = {
       ...originalDaily,
       employee: { ...originalDaily.employee, userId: "hr-user" },

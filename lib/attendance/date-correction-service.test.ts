@@ -406,7 +406,7 @@ async function submit(
 }
 
 describe("date-based attendance correction requests", () => {
-  it("accepts HR self-requests without a daily row or session, then creates a WFH session and daily result after independent approvals", async () => {
+  it("accepts and applies an HR self-request without a daily row or session after Supervisor approval", async () => {
     const harness = createHarness({ ownerId: hrActor.id, ownerRole: Role.HR_ADMINISTRATOR });
     const request = await submit(harness, hrActor, {
       firstIn: "2026-10-05T05:17:00.000Z",
@@ -425,15 +425,10 @@ describe("date-based attendance correction requests", () => {
     assert.equal(harness.session, null);
     assert.equal(harness.daily, null);
     await assert.rejects(
-      decideDailyAttendanceCorrection(hrActor, request.id, { action: "APPROVE" }, harness.database),
+      decideDailyAttendanceCorrection(hrActor, request.id, { action: "REJECT" }, harness.database),
       DailyAttendanceCorrectionSelfApprovalError,
     );
-    const result = await decideDailyAttendanceCorrection(
-      independentHrActor,
-      request.id,
-      { action: "APPROVE" },
-      harness.database,
-    );
+    const result = await decideDailyAttendanceCorrection(hrActor, request.id, { action: "APPROVE" }, harness.database);
 
     assert.equal(result.status, AttendanceCorrectionStatus.APPROVED);
     assert.equal(harness.getSession()?.mode, "WFH");
@@ -445,7 +440,10 @@ describe("date-based attendance correction requests", () => {
     assert.equal(harness.correctionRequests[0]?.dailyAttendanceId, "daily-created");
     assert.equal(harness.correctionRequests[0]?.sessionId, "session-created");
     assert.deepEqual(harness.raw, []);
-    assert.equal(harness.audits.at(-1)?.actorId, independentHrActor.id);
+    assert.equal(harness.correctionRequests[0]?.requesterId, hrActor.id);
+    assert.equal(harness.correctionRequests[0]?.reviewedById, hrActor.id);
+    assert.equal(harness.audits.at(-1)?.actorId, hrActor.id);
+    assert.equal(harness.audits.at(-1)?.employeeId, hrActor.id);
     await assert.rejects(
       decideDailyAttendanceCorrection(
         independentHrActor,

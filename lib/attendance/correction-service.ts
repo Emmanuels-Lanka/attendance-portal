@@ -157,7 +157,7 @@ export class DailyAttendanceCorrectionPendingRequestExistsError extends Error {
 
 export class DailyAttendanceCorrectionSelfApprovalError extends Error {
   constructor() {
-    super("You cannot approve an attendance correction for your own account.");
+    super("You cannot review your own attendance correction at this stage.");
     this.name = "DailyAttendanceCorrectionSelfApprovalError";
   }
 }
@@ -1559,7 +1559,15 @@ export async function decideDailyAttendanceCorrection(
       throw new DailyAttendanceCorrectionReviewerScopeError();
     }
 
-    if (correction.employeeId === actor.id || correction.requesterId === actor.id) {
+    const isHrSelfApproval = actor.role === "HR_ADMINISTRATOR"
+      && correction.employeeId === actor.id
+      && correction.requesterId === actor.id
+      && correction.currentApprovalStage === AttendanceCorrectionApprovalStage.HR
+      && decision.action === "APPROVE";
+    if (
+      (correction.employeeId === actor.id || correction.requesterId === actor.id)
+      && !isHrSelfApproval
+    ) {
       throw new DailyAttendanceCorrectionSelfApprovalError();
     }
     if (

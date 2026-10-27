@@ -6,7 +6,13 @@ import {
   type AttendanceCorrectionDecisionState,
 } from "@/app/(workspace)/approvals/attendance-corrections/actions";
 
-export function AttendanceCorrectionReviewForm({ correctionRequestId }: { correctionRequestId: string }) {
+export function AttendanceCorrectionReviewForm({
+  correctionRequestId,
+  selfApprovalOnly = false,
+}: {
+  correctionRequestId: string;
+  selfApprovalOnly?: boolean;
+}) {
   const action = decideAttendanceCorrectionAction.bind(null, correctionRequestId);
   const [state, formAction, pending] = useActionState<AttendanceCorrectionDecisionState, FormData>(action, null);
 
@@ -22,9 +28,11 @@ export function AttendanceCorrectionReviewForm({ correctionRequestId }: { correc
         <button name="action" value="APPROVE" type="submit" disabled={pending} className="h-9 rounded-md bg-[var(--action)] px-3 text-xs font-semibold text-white hover:bg-[var(--action-hover)] disabled:opacity-60">
           {pending ? "Saving..." : "Approve"}
         </button>
-        <button name="action" value="REJECT" type="submit" disabled={pending} className="h-9 rounded-md border border-[var(--line)] px-3 text-xs font-semibold hover:bg-zinc-50 disabled:opacity-60">
-          Reject
-        </button>
+        {!selfApprovalOnly && (
+          <button name="action" value="REJECT" type="submit" disabled={pending} className="h-9 rounded-md border border-[var(--line)] px-3 text-xs font-semibold hover:bg-zinc-50 disabled:opacity-60">
+            Reject
+          </button>
+        )}
       </div>
     </form>
   );
