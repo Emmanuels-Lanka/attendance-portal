@@ -71,6 +71,7 @@ const attendanceDateCorrectionSnapshotSchema = z.object({
     endAt: z.string().nullable(),
   }).nullable(),
 });
+type AttendanceDateCorrectionSnapshot = z.infer<typeof attendanceDateCorrectionSnapshotSchema>;
 
 export const dailyAttendanceCorrectionInputSchema = z.object({
   requestedValues: dailyCorrectionValuesSchema,
@@ -988,6 +989,68 @@ async function loadAttendanceDateState(
           };
         }
 
+        function assertAttendanceDateSnapshotMatchesState(
+          snapshot: AttendanceDateCorrectionSnapshot,
+          state: Awaited<ReturnType<typeof loadAttendanceDateState>>,
+          requested: z.infer<typeof attendanceDateCorrectionValuesSchema>,
+        ) {
+          const originalSession = snapshot.session;
+          const currentEndAt = state.session?.endAt?.toISOString() ?? null;
+          const sessionEndMatches = originalSession?.endAt === currentEndAt
+            || (
+              originalSession?.endAt === null
+              && state.session?.endAt !== null
+              && state.session?.endAt !== undefined
+              && requested.lastOut === undefined
+            );
+          const sessionMatches = originalSession === null
+            ? state.session === null
+            : state.session?.id === originalSession.id
+              && state.session.recordId === originalSession.recordId
+              && state.session.mode === originalSession.mode
+              && state.session.startAt.toISOString() === originalSession.startAt
+              && sessionEndMatches;
+          const laterOutMatchesDaily = Boolean(
+            originalSession
+            && state.session
+            && originalSession.endAt === null
+            && state.session.endAt !== null
+            && requested.lastOut === undefined
+            && (state.daily?.lastOut?.toISOString() ?? null) === (state.session.endAt?.toISOString() ?? null),
+          );
+          const dailyMatchesSnapshot = snapshot.dailyAttendance === null
+            ? state.daily === null
+            : state.daily?.id === snapshot.dailyAttendance.id
+              && (state.daily.firstIn?.toISOString() ?? null) === snapshot.dailyAttendance.firstIn
+              && (
+                (state.daily.lastOut?.toISOString() ?? null) === snapshot.dailyAttendance.lastOut
+                || laterOutMatchesDaily
+              );
+          const materializedDailyMatchesSession = Boolean(
+            snapshot.dailyAttendance === null
+            && state.daily
+            && originalSession
+            && state.session
+            && (state.daily.firstIn?.toISOString() ?? null) === state.session.startAt.toISOString()
+            && (state.daily.lastOut?.toISOString() ?? null) === (state.session.endAt?.toISOString() ?? null),
+          );
+          const recordMatchesSnapshot = (state.record?.id ?? null) === snapshot.attendanceRecordId
+            || (
+              snapshot.attendanceRecordId === null
+              && originalSession !== null
+              && state.record?.id === originalSession.recordId
+            );
+
+          if (
+            (!dailyMatchesSnapshot && !materializedDailyMatchesSession)
+            || !sessionMatches
+            || !recordMatchesSnapshot
+            || (!state.session && Boolean(state.record?.sessions.length))
+          ) {
+            throw new DailyAttendanceCorrectionConflictError();
+          }
+        }
+
         async function finalizeAttendanceDateCorrection(
           transaction: Prisma.TransactionClient,
           input: {
@@ -997,12 +1060,10 @@ async function loadAttendanceDateState(
             attendanceDate: Date;
             timeZone: string;
             requested: z.infer<typeof dailyCorrectionValuesSchema>;
+            requestedDateValues: z.infer<typeof attendanceDateCorrectionValuesSchema>;
             requestedMode: "OFFICE" | "WFH";
             dailyAttendanceId: string | null;
-            expectedFirstIn: Date | null;
-            expectedLastOut: Date | null;
             expectedAttendanceRecordId: string | null;
-            sessionId: string | null;
             originalSession: {
               id: string;
               recordId: string;
@@ -1010,6 +1071,7 @@ async function loadAttendanceDateState(
               startAt: Date;
               endAt: Date | null;
             } | null;
+            originalDaily: AttendanceDateCorrectionSnapshot["dailyAttendance"];
           },
         ) {
           const date = input.attendanceDate.toISOString().slice(0, 10);
@@ -1020,35 +1082,21 @@ async function loadAttendanceDateState(
             date,
             input.timeZone,
           );
-          if (
-            (input.dailyAttendanceId === null && state.daily !== null)
-            || (input.dailyAttendanceId !== null && (
-              state.daily?.id !== input.dailyAttendanceId
-              || state.daily.firstIn?.getTime() !== input.expectedFirstIn?.getTime()
-              || state.daily.lastOut?.getTime() !== input.expectedLastOut?.getTime()
-            ))
-          ) {
-            throw new DailyAttendanceCorrectionConflictError();
-          }
-          if (
-            (input.sessionId === null && state.session !== null)
-            || (input.sessionId !== null && (
-              state.session?.id !== input.sessionId
-              || !input.originalSession
-              || state.session.mode !== input.originalSession.mode
-              || state.session.startAt.getTime() !== input.originalSession.startAt.getTime()
-              || state.session.endAt?.getTime() !== input.originalSession.endAt?.getTime()
-              || state.session.recordId !== input.originalSession.recordId
-            ))
-          ) {
-            throw new DailyAttendanceCorrectionConflictError();
-          }
-          if (
-            (state.record?.id ?? null) !== input.expectedAttendanceRecordId
-            || (!state.session && Boolean(state.record?.sessions.length))
-          ) {
-            throw new DailyAttendanceCorrectionConflictError();
-          }
+          assertAttendanceDateSnapshotMatchesState({
+            attendanceDate: date,
+            timeZone: input.timeZone,
+            attendanceRecordId: input.expectedAttendanceRecordId,
+            dailyAttendance: input.originalDaily,
+            session: input.originalSession
+              ? {
+                  id: input.originalSession.id,
+                  recordId: input.originalSession.recordId,
+                  mode: input.originalSession.mode,
+                  startAt: input.originalSession.startAt.toISOString(),
+                  endAt: input.originalSession.endAt?.toISOString() ?? null,
+                }
+              : null,
+          }, state, input.requestedDateValues);
           if (input.requested.firstIn === null || input.requested.lastOut === null) {
             throw new DailyAttendanceCorrectionConflictError();
           }
@@ -1132,13 +1180,19 @@ async function loadAttendanceDateState(
             ...(input.requested.lastOut !== undefined
               ? { lastOut: input.requested.lastOut }
               : {}),
+            ...(input.requested.lastOut === undefined
+              && input.originalSession
+              && input.originalSession.endAt === null
+              && state.session?.endAt
+              ? { lastOut: state.session.endAt.toISOString() }
+              : {}),
           };
           const applied = await applyApprovedAttendanceCorrection(transaction, {
-            dailyAttendanceId: input.dailyAttendanceId,
+            dailyAttendanceId: state.daily?.id ?? null,
             employeeId: input.employeeRecordId,
             date,
-            expectedFirstIn: input.expectedFirstIn,
-            expectedLastOut: input.expectedLastOut,
+            expectedFirstIn: state.daily?.firstIn ?? null,
+            expectedLastOut: state.daily?.lastOut ?? null,
             correction: {
               ...(correctionValues.firstIn !== undefined
                 ? { firstIn: correctionValues.firstIn === null ? null : new Date(correctionValues.firstIn) }
@@ -1452,7 +1506,7 @@ export async function decideDailyAttendanceCorrection(
     ) {
       throw new DailyAttendanceCorrectionSelfApprovalError();
     }
-    if (isSessionModeCorrection) {
+    if (decision.action === "APPROVE" && isSessionModeCorrection) {
       if (
         !correction.session
         || correction.session.id !== correction.sessionId
@@ -1464,21 +1518,29 @@ export async function decideDailyAttendanceCorrection(
       ) {
         throw new DailyAttendanceCorrectionConflictError();
       }
-    } else if (!isDateCorrection && (!correction.dailyAttendance || !correction.dailyAttendanceId)) {
+    } else if (
+      decision.action === "APPROVE"
+      && !isDateCorrection
+      && !isSessionModeCorrection
+      && (!correction.dailyAttendance || !correction.dailyAttendanceId)
+    ) {
       throw new DailyAttendanceCorrectionTargetNotFoundError();
     }
-    if (isSessionModeCorrection && !correction.originalValues) {
+    if (decision.action === "APPROVE" && isSessionModeCorrection && !correction.originalValues) {
       throw new DailyAttendanceCorrectionConflictError();
     }
     if (
-      !isSessionModeCorrection
+      decision.action === "APPROVE"
+      && !isSessionModeCorrection
       && !isDateCorrection
       && correction.dailyAttendance?.employee.userId !== correction.employeeId
     ) {
       throw new DailyAttendanceCorrectionConflictError();
     }
     let requested: z.infer<typeof dailyCorrectionValuesSchema> = {};
-    if (isSessionModeCorrection) {
+    if (decision.action === "REJECT") {
+      requested = {};
+    } else if (isSessionModeCorrection) {
       const modeRequest = attendanceSessionModeCorrectionInputSchema
         .pick({ requestedMode: true })
         .safeParse(correction.requestedValues);
@@ -1517,26 +1579,7 @@ export async function decideDailyAttendanceCorrection(
         snapshot.data.attendanceDate,
         owner.timeZone,
       );
-      if (
-        (snapshot.data.dailyAttendance === null && state.daily !== null)
-        || (snapshot.data.dailyAttendance !== null && (
-          state.daily?.id !== snapshot.data.dailyAttendance.id
-          || (state.daily.firstIn?.toISOString() ?? null) !== snapshot.data.dailyAttendance.firstIn
-          || (state.daily.lastOut?.toISOString() ?? null) !== snapshot.data.dailyAttendance.lastOut
-        ))
-        || (snapshot.data.session === null && state.session !== null)
-        || (snapshot.data.session !== null && (
-          state.session?.id !== snapshot.data.session.id
-          || state.session.recordId !== snapshot.data.session.recordId
-          || state.session.mode !== snapshot.data.session.mode
-          || state.session.startAt.toISOString() !== snapshot.data.session.startAt
-          || (state.session.endAt?.toISOString() ?? null) !== snapshot.data.session.endAt
-        ))
-        || (state.record?.id ?? null) !== snapshot.data.attendanceRecordId
-        || (!state.session && Boolean(state.record?.sessions.length))
-      ) {
-        throw new DailyAttendanceCorrectionConflictError();
-      }
+      assertAttendanceDateSnapshotMatchesState(snapshot.data, state, dateValues.data);
       requested = {
         ...(dateValues.data.firstIn !== undefined ? { firstIn: dateValues.data.firstIn } : {}),
         ...(dateValues.data.lastOut !== undefined ? { lastOut: dateValues.data.lastOut } : {}),
@@ -1693,21 +1736,22 @@ export async function decideDailyAttendanceCorrection(
             attendanceDate: correction.attendanceDate,
             timeZone: owner.timeZone,
             requested,
+            requestedDateValues: attendanceDateCorrectionValuesSchema.parse(correction.requestedValues),
             requestedMode: correction.requestedMode as "OFFICE" | "WFH",
             dailyAttendanceId: correction.dailyAttendanceId,
-            expectedFirstIn: correction.dailyAttendance?.firstIn ?? null,
-            expectedLastOut: correction.dailyAttendance?.lastOut ?? null,
             expectedAttendanceRecordId: dateSnapshot.data.attendanceRecordId,
-            sessionId: correction.sessionId,
-            originalSession: correction.session
+            originalSession: dateSnapshot.data.session
               ? {
-                  id: correction.session.id,
-                  recordId: correction.session.recordId,
-                  mode: correction.session.mode,
-                  startAt: correction.session.startAt,
-                  endAt: correction.session.endAt,
+                  id: dateSnapshot.data.session.id,
+                  recordId: dateSnapshot.data.session.recordId,
+                  mode: dateSnapshot.data.session.mode,
+                  startAt: new Date(dateSnapshot.data.session.startAt),
+                  endAt: dateSnapshot.data.session.endAt
+                    ? new Date(dateSnapshot.data.session.endAt)
+                    : null,
                 }
               : null,
+            originalDaily: dateSnapshot.data.dailyAttendance,
           });
             await recalculateAttendanceMonthsFromDatesInTransaction(transaction, {
               employeeRecordId: employee.id,

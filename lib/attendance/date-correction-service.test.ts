@@ -58,6 +58,7 @@ function createHarness(options: {
     workMode: "OFFICE" | "WFH";
   }>;
   emptyRecordId?: string;
+  failDailyUpdate?: boolean;
 } = {}) {
   const ownerId = options.ownerId ?? employeeActor.id;
   const ownerRole = options.ownerRole ?? Role.EMPLOYEE;
@@ -162,7 +163,7 @@ function createHarness(options: {
         return { id: daily.id };
       },
       updateMany: async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
-        if (!daily || daily.id !== where.id) return { count: 0 };
+        if (options.failDailyUpdate || !daily || daily.id !== where.id) return { count: 0 };
         daily = { ...daily, ...data };
         return { count: 1 };
       },
@@ -302,7 +303,20 @@ function createHarness(options: {
   };
 
   const database = {
-    $transaction: async <T>(callback: (tx: typeof transaction) => Promise<T>) => callback(transaction),
+    $transaction: async <T>(callback: (tx: typeof transaction) => Promise<T>) => {
+      const before = structuredClone({ session, daily, records, requests, audits, notifications });
+      try {
+        return await callback(transaction);
+      } catch (error) {
+        session = before.session;
+        daily = before.daily;
+        records.splice(0, records.length, ...before.records);
+        requests.splice(0, requests.length, ...before.requests);
+        audits.splice(0, audits.length, ...before.audits);
+        notifications.splice(0, notifications.length, ...before.notifications);
+        throw error;
+      }
+    },
     attendanceCorrectionRequest: transaction.attendanceCorrectionRequest,
   } as unknown as Parameters<typeof submitAttendanceDateCorrection>[2];
   return {
@@ -315,10 +329,21 @@ function createHarness(options: {
     notifications,
     records,
     raw,
+    correctionRequests: requests,
     get session(): SessionState | null { return session; },
     get daily(): DailyState | null { return daily; },
     getSession: () => session,
     getDaily: () => daily,
+    materializeDaily: (firstIn: Date | null, lastOut: Date | null) => {
+      daily = {
+        id: "daily-materialized",
+        employeeId: "employee-record",
+        date: new Date(`${attendanceDate}T00:00:00.000Z`),
+        firstIn,
+        lastOut,
+        status: "MISSING_PUNCH",
+      };
+    },
   };
 }
 
@@ -379,8 +404,8 @@ describe("date-based attendance correction requests", () => {
     assert.equal(harness.getDaily()?.firstIn?.toISOString(), "2026-10-05T05:17:00.000Z");
     assert.equal(harness.getDaily()?.lastOut?.toISOString(), "2026-10-05T12:46:00.000Z");
     assert.ok(harness.getDaily()?.status);
-    assert.equal(request.dailyAttendanceId, "daily-created");
-    assert.equal(request.sessionId, "session-created");
+    assert.equal(harness.correctionRequests[0]?.dailyAttendanceId, "daily-created");
+    assert.equal(harness.correctionRequests[0]?.sessionId, "session-created");
     assert.deepEqual(harness.raw, []);
     assert.equal(harness.audits.at(-1)?.actorId, independentHrActor.id);
     await assert.rejects(
@@ -424,6 +449,295 @@ describe("date-based attendance correction requests", () => {
     assert.equal(harness.getDaily()?.firstIn?.toISOString(), "2026-10-05T03:21:00.000Z");
     assert.equal(harness.getDaily()?.lastOut?.toISOString(), originalEnd);
     assert.deepEqual(harness.raw, rawEvidenceBefore);
+  });
+
+  it("approves a first-IN correction for an existing open WFH session with no daily row or date-scoped record", async () => {
+    const originalStart = new Date("2026-10-05T03:57:27.000Z");
+    const correctedStart = new Date("2026-10-05T03:00:00.000Z");
+    const harness = createHarness({
+      session: {
+        id: "session-open-wfh",
+        recordId: "record-without-work-date",
+        mode: "WFH",
+        startAt: originalStart,
+        endAt: null,
+      },
+    });
+    const request = await submit(harness, employeeActor, {
+      firstIn: correctedStart.toISOString(),
+      mode: "WFH",
+    });
+
+    assert.equal(request.dailyAttendanceId, null);
+    assert.equal(request.sessionId, "session-open-wfh");
+    assert.deepEqual(request.originalValues, {
+      attendanceDate,
+      timeZone: "Asia/Colombo",
+      attendanceRecordId: null,
+      dailyAttendance: null,
+      session: {
+        id: "session-open-wfh",
+        recordId: "record-without-work-date",
+        mode: "WFH",
+        startAt: originalStart.toISOString(),
+        endAt: null,
+      },
+    });
+
+    await decideDailyAttendanceCorrection(supervisorActor, request.id, { action: "APPROVE" }, harness.database);
+    assert.equal(harness.correctionRequests[0]?.status, AttendanceCorrectionStatus.PENDING);
+    assert.equal(harness.correctionRequests[0]?.currentApprovalStage, AttendanceCorrectionApprovalStage.HR);
+    const result = await decideDailyAttendanceCorrection(
+      independentHrActor,
+      request.id,
+      { action: "APPROVE" },
+      harness.database,
+    );
+
+    assert.equal(result.status, AttendanceCorrectionStatus.APPROVED);
+    assert.equal(harness.getSession()?.id, "session-open-wfh");
+    assert.equal(harness.getSession()?.recordId, "record-without-work-date");
+    assert.equal(harness.getSession()?.mode, "WFH");
+    assert.equal(harness.getSession()?.startAt.toISOString(), correctedStart.toISOString());
+    assert.equal(harness.getSession()?.endAt, null);
+    assert.equal(harness.getDaily()?.firstIn?.toISOString(), correctedStart.toISOString());
+  });
+
+  it("allows a consistent daily row materialized from an unchanged open session between reviews", async () => {
+    const originalStart = new Date("2026-10-05T03:00:00.000Z");
+    const correctedStart = new Date("2026-10-05T03:20:00.000Z");
+    const harness = createHarness({
+      session: {
+        id: "session-materialized-daily",
+        recordId: "record-materialized-daily",
+        mode: "OFFICE",
+        startAt: originalStart,
+        endAt: null,
+      },
+    });
+    const request = await submit(harness, employeeActor, {
+      firstIn: correctedStart.toISOString(),
+    });
+    await decideDailyAttendanceCorrection(supervisorActor, request.id, { action: "APPROVE" }, harness.database);
+    harness.materializeDaily(originalStart, null);
+
+    const result = await decideDailyAttendanceCorrection(
+      independentHrActor,
+      request.id,
+      { action: "APPROVE" },
+      harness.database,
+    );
+
+    assert.equal(result.status, AttendanceCorrectionStatus.APPROVED);
+    assert.equal(harness.getDaily()?.id, "daily-materialized");
+    assert.equal(harness.getDaily()?.firstIn?.toISOString(), correctedStart.toISOString());
+    assert.equal(harness.getSession()?.startAt.toISOString(), correctedStart.toISOString());
+  });
+
+  it("preserves a legitimate OUT recorded after a first-IN-only request", async () => {
+    const originalStart = new Date("2026-10-05T03:00:00.000Z");
+    const requestedStart = new Date("2026-10-05T03:15:00.000Z");
+    const actualOut = new Date("2026-10-05T12:30:00.000Z");
+    const harness = createHarness({
+      session: {
+        id: "session-later-out",
+        recordId: "record-later-out",
+        mode: "WFH",
+        startAt: originalStart,
+        endAt: null,
+      },
+    });
+    const request = await submit(harness, employeeActor, {
+      firstIn: requestedStart.toISOString(),
+      mode: "WFH",
+    });
+    await decideDailyAttendanceCorrection(supervisorActor, request.id, { action: "APPROVE" }, harness.database);
+    harness.getSession()!.endAt = actualOut;
+    harness.materializeDaily(originalStart, actualOut);
+
+    const result = await decideDailyAttendanceCorrection(
+      independentHrActor,
+      request.id,
+      { action: "APPROVE" },
+      harness.database,
+    );
+
+    assert.equal(result.status, AttendanceCorrectionStatus.APPROVED);
+    assert.equal(harness.getSession()?.startAt.toISOString(), requestedStart.toISOString());
+    assert.equal(harness.getSession()?.endAt?.toISOString(), actualOut.toISOString());
+    assert.equal(harness.getDaily()?.firstIn?.toISOString(), requestedStart.toISOString());
+    assert.equal(harness.getDaily()?.lastOut?.toISOString(), actualOut.toISOString());
+  });
+
+  it("rejects approval when the requested IN changed after submission without writing a decision", async () => {
+    const originalStart = new Date("2026-10-05T03:00:00.000Z");
+    const harness = createHarness({
+      session: {
+        id: "session-stale-in",
+        recordId: "record-stale-in",
+        mode: "OFFICE",
+        startAt: originalStart,
+        endAt: null,
+      },
+    });
+    const request = await submit(harness, employeeActor, {
+      firstIn: "2026-10-05T03:20:00.000Z",
+    });
+    await decideDailyAttendanceCorrection(supervisorActor, request.id, { action: "APPROVE" }, harness.database);
+    const auditsBefore = structuredClone(harness.audits);
+    const notificationsBefore = structuredClone(harness.notifications);
+    harness.getSession()!.startAt = new Date("2026-10-05T03:05:00.000Z");
+
+    await assert.rejects(
+      decideDailyAttendanceCorrection(independentHrActor, request.id, { action: "APPROVE" }, harness.database),
+      DailyAttendanceCorrectionConflictError,
+    );
+
+    assert.equal(harness.correctionRequests[0]?.status, AttendanceCorrectionStatus.PENDING);
+    assert.equal(harness.correctionRequests[0]?.currentApprovalStage, AttendanceCorrectionApprovalStage.HR);
+    assert.equal(harness.getSession()?.startAt.toISOString(), "2026-10-05T03:05:00.000Z");
+    assert.equal(harness.getDaily(), null);
+    assert.deepEqual(harness.audits, auditsBefore);
+    assert.deepEqual(harness.notifications, notificationsBefore);
+  });
+
+  it("rejects a conflicting session identity and an unsafe record association", async () => {
+    const identityHarness = createHarness({
+      session: {
+        id: "session-original",
+        recordId: "record-original",
+        mode: "OFFICE",
+        startAt: new Date("2026-10-05T03:00:00.000Z"),
+        endAt: null,
+      },
+    });
+    const identityRequest = await submit(identityHarness, employeeActor, {
+      firstIn: "2026-10-05T03:20:00.000Z",
+    });
+    identityHarness.getSession()!.id = "session-replaced";
+    await assert.rejects(
+      decideDailyAttendanceCorrection(supervisorActor, identityRequest.id, { action: "APPROVE" }, identityHarness.database),
+      DailyAttendanceCorrectionConflictError,
+    );
+    assert.equal(identityRequest.status, AttendanceCorrectionStatus.PENDING);
+    assert.equal(identityHarness.audits.length, 1);
+
+    const recordHarness = createHarness({
+      session: {
+        id: "session-record-association",
+        recordId: "record-original",
+        mode: "OFFICE",
+        startAt: new Date("2026-10-05T03:00:00.000Z"),
+        endAt: null,
+      },
+    });
+    const recordRequest = await submit(recordHarness, employeeActor, {
+      firstIn: "2026-10-05T03:20:00.000Z",
+    });
+    recordHarness.records.push({ id: "unrelated-date-record", sessions: [] });
+    await assert.rejects(
+      decideDailyAttendanceCorrection(supervisorActor, recordRequest.id, { action: "APPROVE" }, recordHarness.database),
+      DailyAttendanceCorrectionConflictError,
+    );
+    assert.equal(recordRequest.status, AttendanceCorrectionStatus.PENDING);
+    assert.equal(recordHarness.audits.length, 1);
+  });
+
+  it("allows an independent HR reviewer to reject after attendance state changes without mutating attendance", async () => {
+    const originalStart = new Date("2026-10-05T03:00:00.000Z");
+    const changedStart = new Date("2026-10-05T03:10:00.000Z");
+    const harness = createHarness({
+      session: {
+        id: "session-reject-changed-state",
+        recordId: "record-reject-changed-state",
+        mode: "WFH",
+        startAt: originalStart,
+        endAt: null,
+      },
+    });
+    const request = await submit(harness, employeeActor, {
+      firstIn: "2026-10-05T03:20:00.000Z",
+      mode: "WFH",
+    });
+    await decideDailyAttendanceCorrection(supervisorActor, request.id, { action: "APPROVE" }, harness.database);
+    harness.getSession()!.startAt = changedStart;
+    harness.materializeDaily(changedStart, null);
+    const sessionBefore = structuredClone(harness.getSession());
+    const dailyBefore = structuredClone(harness.getDaily());
+
+    const result = await decideDailyAttendanceCorrection(
+      independentHrActor,
+      request.id,
+      { action: "REJECT", reason: "Reject after review" },
+      harness.database,
+    );
+
+    assert.equal(result.status, AttendanceCorrectionStatus.REJECTED);
+    assert.deepEqual(harness.getSession(), sessionBefore);
+    assert.deepEqual(harness.getDaily(), dailyBefore);
+    assert.equal(harness.audits.length, 3);
+    assert.equal(harness.audits.at(-1)?.actorId, independentHrActor.id);
+  });
+
+  it("prevents repeated date-correction decisions from duplicating sessions or audits", async () => {
+    const harness = createHarness();
+    const request = await submit(harness, employeeActor, {
+      firstIn: "2026-10-05T03:20:00.000Z",
+      lastOut: "2026-10-05T12:30:00.000Z",
+      mode: "WFH",
+    });
+    await decideDailyAttendanceCorrection(supervisorActor, request.id, { action: "APPROVE" }, harness.database);
+    await decideDailyAttendanceCorrection(independentHrActor, request.id, { action: "APPROVE" }, harness.database);
+    assert.equal(request.status, AttendanceCorrectionStatus.APPROVED);
+    assert.equal(harness.getSession()?.id, "session-created");
+    assert.equal(harness.records.filter(({ sessions }) => sessions.length > 0).length, 1);
+    assert.equal(harness.audits.length, 3);
+    await assert.rejects(
+      decideDailyAttendanceCorrection(independentHrActor, request.id, { action: "APPROVE" }, harness.database),
+      DailyAttendanceCorrectionStageError,
+    );
+    assert.equal(harness.audits.length, 3);
+    assert.equal(harness.records.filter(({ sessions }) => sessions.length > 0).length, 1);
+  });
+
+  it("rolls back a failed final approval without partial attendance, audit, or notification changes", async () => {
+    const originalStart = new Date("2026-10-05T03:00:00.000Z");
+    const harness = createHarness({
+      session: {
+        id: "session-rollback",
+        recordId: "record-rollback",
+        mode: "OFFICE",
+        startAt: originalStart,
+        endAt: null,
+      },
+      daily: {
+        id: "daily-rollback",
+        firstIn: originalStart,
+        lastOut: null,
+        status: "MISSING_PUNCH",
+      },
+      failDailyUpdate: true,
+    });
+    const request = await submit(harness, employeeActor, {
+      firstIn: "2026-10-05T03:20:00.000Z",
+    });
+    await decideDailyAttendanceCorrection(supervisorActor, request.id, { action: "APPROVE" }, harness.database);
+    const sessionBefore = structuredClone(harness.getSession());
+    const dailyBefore = structuredClone(harness.getDaily());
+    const auditsBefore = structuredClone(harness.audits);
+    const notificationsBefore = structuredClone(harness.notifications);
+
+    await assert.rejects(
+      decideDailyAttendanceCorrection(independentHrActor, request.id, { action: "APPROVE" }, harness.database),
+      DailyAttendanceCorrectionConflictError,
+    );
+
+    assert.equal(harness.correctionRequests[0]?.status, AttendanceCorrectionStatus.PENDING);
+    assert.equal(harness.correctionRequests[0]?.currentApprovalStage, AttendanceCorrectionApprovalStage.HR);
+    assert.deepEqual(harness.getSession(), sessionBefore);
+    assert.deepEqual(harness.getDaily(), dailyBefore);
+    assert.deepEqual(harness.audits, auditsBefore);
+    assert.deepEqual(harness.notifications, notificationsBefore);
   });
 
   for (const mode of ["OFFICE", "WFH"] as const) {
