@@ -166,12 +166,23 @@ describe("employee-local attendance history", () => {
     assert.equal(history.days[0].sessions[0].timing?.arrival, "UNDETERMINED");
   });
 
-  it("resolves the OUT shift from the OUT event's local date", () => {
+  it("does not classify a next-day OUT against that day's shift", () => {
     const history = groupSessionsByEmployeeLocalDay([
       session("cross-day", "WFH", "2026-06-20T03:10:00.000Z", "2026-06-21T03:30:00.000Z"),
     ], "Asia/Colombo", assignments);
     assert.equal(history.days[0].sessions[0].timing?.arrival, "ON_TIME");
-    assert.equal(history.days[0].sessions[0].timing?.departure, "NON_WORKING_DAY");
+    assert.equal(history.days[0].sessions[0].timing?.departure, "UNDETERMINED");
+  });
+
+  it("keeps a next-day OUT with its original attendance date and marks departure timing undetermined", () => {
+    const history = groupSessionsByEmployeeLocalDay([
+      session("missed-out", "OFFICE", "2026-10-27T03:06:46.000Z", "2026-10-28T02:52:33.000Z"),
+    ], "Asia/Colombo", assignments);
+
+    assert.equal(history.days.length, 1);
+    assert.equal(history.days[0].date, "2026-10-27");
+    assert.equal(history.days[0].sessions[0].timing?.departure, "UNDETERMINED");
+    assert.equal(history.days[0].sessions[0].durationMs, 23 * 60 * 60_000 + 45 * 60_000 + 47_000);
   });
 
   it("leaves Sri Lankan Saturday punches undetermined when no Saturday shift applies", () => {

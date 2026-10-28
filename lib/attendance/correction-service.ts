@@ -12,7 +12,6 @@ import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { canSubmitOwnAttendanceCorrection, hasPermission } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
 import { getEmployeeLocalDayWindow } from "@/lib/attendance/timezone";
-import { findConflictingRawPunchOnMovedEndpoint } from "@/lib/attendance/correction-raw-evidence";
 import {
   getActiveManagerDepartmentScope,
   lockActiveManagerDepartmentScope,
@@ -330,15 +329,6 @@ export async function submitAttendanceDateCorrection(
     }
     if (effectiveStart && effectiveEnd && effectiveStart >= effectiveEnd) {
       throw new DailyAttendanceCorrectionInvalidValuesError("The attendance start time must be before the end time.");
-    }
-    const rawPunchConflict = await findConflictingRawPunchOnMovedEndpoint(transaction, employee.id, requester.timeZone, [
-      { label: "IN", previous: originalStart, next: effectiveStart },
-      { label: "OUT", previous: originalEnd, next: effectiveEnd },
-    ]);
-    if (rawPunchConflict) {
-      throw new DailyAttendanceCorrectionInvalidValuesError(
-        `The corrected ${rawPunchConflict.label} conflicts with another raw punch on ${rawPunchConflict.date}. Resolve the conflicting punch evidence before requesting this correction.`,
-      );
     }
     if (
       session
@@ -1127,38 +1117,6 @@ async function loadAttendanceDateState(
                 }
               : null,
           }, state, input.requestedDateValues);
-          const currentFirstIn = state.session?.startAt
-            ?? state.daily?.firstIn
-            ?? state.punches.find((punch) => punch.punchType === "IN")?.timestamp
-            ?? null;
-          const currentLastOut = state.session?.endAt
-            ?? state.daily?.lastOut
-            ?? [...state.punches].reverse().find((punch) => punch.punchType === "OUT")?.timestamp
-            ?? null;
-          const rawPunchConflict = await findConflictingRawPunchOnMovedEndpoint(
-            transaction,
-            input.employeeRecordId,
-            input.timeZone,
-            [
-              {
-                label: "IN",
-                previous: currentFirstIn,
-                next: input.requestedDateValues.firstIn !== undefined
-                  ? input.requestedDateValues.firstIn ? new Date(input.requestedDateValues.firstIn) : null
-                  : currentFirstIn,
-              },
-              {
-                label: "OUT",
-                previous: currentLastOut,
-                next: input.requestedDateValues.lastOut !== undefined
-                  ? input.requestedDateValues.lastOut ? new Date(input.requestedDateValues.lastOut) : null
-                  : currentLastOut,
-              },
-            ],
-          );
-          if (rawPunchConflict) {
-            throw new DailyAttendanceCorrectionConflictError();
-          }
           if (input.requested.firstIn === null || input.requested.lastOut === null) {
             throw new DailyAttendanceCorrectionConflictError();
           }

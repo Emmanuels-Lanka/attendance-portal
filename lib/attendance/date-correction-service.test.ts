@@ -600,11 +600,13 @@ describe("date-based attendance correction requests", () => {
     assert.deepEqual(harness.raw, rawBefore);
   });
 
-  it("rejects a conflicting raw OUT on the requested employee-local date", async () => {
-    const originalStart = new Date("2026-10-26T03:31:00.000Z");
-    const originalEnd = new Date("2026-10-27T17:00:00.000Z");
+  it("approves a corrected OUT despite another raw OUT on the selected date and preserves both raw punches", async () => {
+    const originalStart = new Date("2026-10-27T03:06:46.000Z");
+    const originalEnd = new Date("2026-10-28T02:52:33.000Z");
+    const conflictingRawOut = new Date("2026-10-27T12:00:00.000Z");
+    const correctedEnd = new Date("2026-10-27T11:57:00.000Z");
     const harness = createHarness({
-      attendanceDate: "2026-10-26",
+      attendanceDate: "2026-10-27",
       session: {
         id: "session-conflicting-out",
         recordId: "record-conflicting-out",
@@ -614,24 +616,26 @@ describe("date-based attendance correction requests", () => {
       },
       rawPunches: [
         { timestamp: originalStart, punchType: "IN", workMode: "OFFICE" },
-        { timestamp: new Date("2026-10-26T12:00:00.000Z"), punchType: "OUT", workMode: "OFFICE" },
+        { timestamp: conflictingRawOut, punchType: "OUT", workMode: "OFFICE" },
         { timestamp: originalEnd, punchType: "OUT", workMode: "OFFICE" },
       ],
     });
+    const rawBefore = structuredClone(harness.raw);
 
-    await assert.rejects(
-      submit(harness, employeeActor, {
-        attendanceDate: "2026-10-26",
-        lastOut: "2026-10-26T17:00:00.000Z",
-      }),
-      /conflicts with another raw punch on 2026-10-26/,
-    );
-    assert.equal(harness.requests.length, 0);
-    assert.equal(harness.audits.length, 0);
-    assert.equal(harness.getSession()?.endAt?.toISOString(), originalEnd.toISOString());
+    const request = await submit(harness, employeeActor, {
+      attendanceDate: "2026-10-27",
+      lastOut: correctedEnd.toISOString(),
+    });
+    await decideDailyAttendanceCorrection(supervisorActor, request.id, { action: "APPROVE" }, harness.database);
+    await decideDailyAttendanceCorrection(independentHrActor, request.id, { action: "APPROVE" }, harness.database);
+
+    assert.equal(request.status, AttendanceCorrectionStatus.APPROVED);
+    assert.equal(harness.getSession()?.endAt?.toISOString(), correctedEnd.toISOString());
+    assert.equal(harness.getDaily()?.lastOut?.toISOString(), correctedEnd.toISOString());
+    assert.deepEqual(harness.raw, rawBefore);
   });
 
-  it("rechecks for a conflicting raw OUT that arrives before final approval", async () => {
+  it("preserves a raw OUT that arrives before final approval while applying the reviewed correction", async () => {
     const originalStart = new Date("2026-10-26T03:31:00.000Z");
     const originalEnd = new Date("2026-10-27T17:00:00.000Z");
     const harness = createHarness({
@@ -653,9 +657,6 @@ describe("date-based attendance correction requests", () => {
       lastOut: "2026-10-26T17:00:00.000Z",
     });
     await decideDailyAttendanceCorrection(supervisorActor, request.id, { action: "APPROVE" }, harness.database);
-    const sessionBeforeFinalReview = structuredClone(harness.getSession());
-    const auditsBeforeFinalReview = structuredClone(harness.audits);
-    const notificationsBeforeFinalReview = structuredClone(harness.notifications);
     harness.raw.push({
       id: "raw-late-conflict",
       timestamp: new Date("2026-10-26T12:00:00.000Z"),
@@ -663,15 +664,11 @@ describe("date-based attendance correction requests", () => {
       workMode: "OFFICE",
     });
 
-    await assert.rejects(
-      decideDailyAttendanceCorrection(independentHrActor, request.id, { action: "APPROVE" }, harness.database),
-      DailyAttendanceCorrectionConflictError,
-    );
-    assert.equal(harness.correctionRequests[0]?.status, AttendanceCorrectionStatus.PENDING);
-    assert.equal(harness.correctionRequests[0]?.currentApprovalStage, AttendanceCorrectionApprovalStage.HR);
-    assert.deepEqual(harness.getSession(), sessionBeforeFinalReview);
-    assert.deepEqual(harness.audits, auditsBeforeFinalReview);
-    assert.deepEqual(harness.notifications, notificationsBeforeFinalReview);
+    await decideDailyAttendanceCorrection(independentHrActor, request.id, { action: "APPROVE" }, harness.database);
+    assert.equal(harness.correctionRequests[0]?.status, AttendanceCorrectionStatus.APPROVED);
+    assert.equal(harness.getSession()?.endAt?.toISOString(), "2026-10-26T17:00:00.000Z");
+    assert.equal(harness.raw.length, 3);
+    assert.equal(harness.raw.at(-1)?.id, "raw-late-conflict");
   });
 
   it("adds a missing OUT to yesterday's open session without requiring a daily row", async () => {

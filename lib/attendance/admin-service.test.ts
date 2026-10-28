@@ -858,6 +858,16 @@ describe("admin attendance access and corrections", () => {
     assert.deepEqual(Object.keys(stub.calls.updateData ?? {}), ["endAt"]);
   });
 
+  it("does not classify a next-day OUT as an early departure", () => {
+    const corrected = {
+      mode: "OFFICE" as const,
+      startAt: new Date("2026-10-27T03:06:46.000Z"),
+      endAt: new Date("2026-10-28T02:52:33.000Z"),
+    };
+
+    assert.equal(classifyWorkSession(corrected, "Asia/Colombo", testShift).departure, "UNDETERMINED");
+  });
+
   it("corrects Office/WFH mode without rewriting timestamps", async () => {
     const stub = createDatabase([makeSession("mode", "OFFICE")]);
     const originalStart = stub.sessionById.get("mode")?.startAt;
@@ -1001,7 +1011,7 @@ describe("admin attendance access and corrections", () => {
     assert.deepEqual(stub.recalculatedDates, ["2026-06-16", "2026-06-17"]);
   });
 
-  it("rejects a conflicting raw OUT on the corrected employee-local date", async () => {
+  it("allows correcting OUT despite another raw OUT on the corrected employee-local date", async () => {
     const startAt = new Date("2026-06-16T02:30:00.000Z");
     const endAt = new Date("2026-06-17T02:30:00.000Z");
     const targetOut = new Date("2026-06-16T12:00:00.000Z");
@@ -1017,18 +1027,15 @@ describe("admin attendance access and corrections", () => {
       rawPunches,
     });
 
-    await assert.rejects(
-      correctAdminAttendance(admin, "cross-date-session", {
-        endAt: "2026-06-16T22:30",
-        reason: "Correct the OUT date.",
-      }, stub.database),
-      /different raw OUT punch already exists on the corrected employee-local date/,
-    );
+    const corrected = await correctAdminAttendance(admin, "cross-date-session", {
+      endAt: "2026-06-16T22:30",
+      reason: "Correct the OUT date.",
+    }, stub.database);
 
-    assert.equal(stub.session.endAt?.toISOString(), endAt.toISOString());
+    assert.equal(corrected.endAt?.toISOString(), "2026-06-16T17:00:00.000Z");
     assert.deepEqual(stub.rawPunches, stub.rawBefore);
-    assert.equal(stub.audits.length, 0);
-    assert.equal(stub.recalculatedDates.length, 0);
+    assert.equal(stub.audits.length, 1);
+    assert.deepEqual(stub.recalculatedDates, ["2026-06-16", "2026-06-17"]);
   });
 
   it("recalculates original and updated endpoint dates when a session's OUT date changes", async () => {

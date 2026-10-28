@@ -147,9 +147,18 @@ export function classifyWorkSession(
 ): WorkSessionTiming {
   const checkIn = session.mode === "WFH" ? "WFH_IN" : "IN";
   const checkOut = session.mode === "WFH" ? "WFH_OUT" : "OUT";
+  const spansLocalDates = Boolean(
+    session.endAt
+    && Number.isFinite(session.startAt.getTime())
+    && Number.isFinite(session.endAt.getTime())
+    && formatInTimeZone(session.startAt, timeZone, "yyyy-MM-dd")
+      !== formatInTimeZone(session.endAt, timeZone, "yyyy-MM-dd"),
+  );
 
   return {
     arrival: classifyAttendancePunch(checkIn, session.startAt, timeZone, shift),
-    departure: session.endAt ? classifyAttendancePunch(checkOut, session.endAt, timeZone, shift) : null,
+    departure: spansLocalDates
+      ? "UNDETERMINED"
+      : session.endAt ? classifyAttendancePunch(checkOut, session.endAt, timeZone, shift) : null,
   };
 }

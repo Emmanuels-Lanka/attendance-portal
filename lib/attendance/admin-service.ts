@@ -10,7 +10,6 @@ import {
   monthlyGraceAllowancesUsedBeforeEachDate,
 } from "@/lib/attendance/history";
 import { lockAttendanceEmployee } from "@/lib/attendance/service";
-import { findConflictingRawPunchOnMovedEndpoint } from "@/lib/attendance/correction-raw-evidence";
 import {
   calculateAndPersistDailyAttendanceInTransaction,
   recalculateAttendanceMonthsFromDatesInTransaction,
@@ -358,18 +357,6 @@ export async function correctAdminAttendance(
       ...endpointDates(current),
       ...endpointDates(updatedEndpoints),
     ])].sort();
-    const rawPunchConflict = targetEmployeeRecordId
-      ? await findConflictingRawPunchOnMovedEndpoint(transaction, targetEmployeeRecordId, timeZone, [
-          { label: "IN", previous: current.startAt, next: startAt },
-          { label: "OUT", previous: current.endAt, next: endAt },
-        ])
-      : null;
-    if (rawPunchConflict) {
-      throw new AdminAttendanceCorrectionError(
-        `A different raw ${rawPunchConflict.label} punch already exists on the corrected employee-local date ${rawPunchConflict.date}. Review the punch evidence before changing the endpoint.`,
-      );
-    }
-
     const changed = await transaction.workSession.updateMany({
       where: {
         id: sessionId,

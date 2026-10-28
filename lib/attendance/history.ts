@@ -51,9 +51,17 @@ export function classifySessionForShiftAssignments(
     }
     return classifyAttendancePunch(punch, at, timeZone, resolution.shift);
   };
+  const spansLocalDates = Boolean(
+    session.endAt
+    && isValidInstant(session.endAt)
+    && formatInTimeZone(session.startAt, timeZone, "yyyy-MM-dd")
+      !== formatInTimeZone(session.endAt, timeZone, "yyyy-MM-dd"),
+  );
   return {
     arrival: classifyPunch(session.mode === "WFH" ? "WFH_IN" : "IN", session.startAt),
-    departure: session.endAt && isValidInstant(session.endAt)
+    departure: spansLocalDates
+      ? "UNDETERMINED"
+      : session.endAt && isValidInstant(session.endAt)
       ? classifyPunch(session.mode === "WFH" ? "WFH_OUT" : "OUT", session.endAt)
       : null,
   };

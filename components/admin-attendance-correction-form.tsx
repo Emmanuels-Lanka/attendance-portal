@@ -28,7 +28,7 @@ export function AdminAttendanceCorrectionForm({ sessionId, localDate, timeZone, 
           Session&apos;s employee-local IN date: {localDate} ({timeZone}). Effective IN: {startAt || "Unavailable"}; effective OUT: {endAt || "not recorded"}.
         </p>
         <p className="rounded-md bg-amber-50 px-2.5 py-2 text-[10px] leading-4 text-amber-900">
-          Moving an IN or OUT to another employee-local date is blocked when raw punches exist on its original date. Keep each endpoint on its original date, or ask HR to resolve the raw punch evidence; original punches are preserved.
+          Corrected endpoints may use another employee-local date. Original raw punches are preserved for review, and attendance calculations use the corrected effective times.
         </p>
         <label className="text-[11px] font-semibold text-[var(--muted)]">Employee-local IN time
           <input name="startAt" type="datetime-local" step="1" required defaultValue={startAt} className="mt-1 h-9 w-full rounded-md border border-[var(--line)] bg-white px-2 text-xs text-[var(--ink)]" />
