@@ -23,17 +23,17 @@ const sriLankaSaturday = shift("08:30", "13:30", ["SATURDAY"]);
 const bangladeshShift = shift("08:00", "18:00", ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "SATURDAY", "SUNDAY"]);
 
 describe("configured shift attendance rules", () => {
-  it("applies the director 08:00 arrival windows and monthly grace allowance boundary", () => {
+  it("treats 08:30 as on time and any later arrival as late for the 08:00 shift", () => {
     const cases = [
       ["07:30:00", 0, "EARLY_ARRIVAL", 0, false],
       ["08:00:00", 0, "ON_TIME", 0, false],
       ["08:30:00", 0, "ON_TIME", 0, false],
-      ["08:30:00.001", 0, "ON_TIME", 0, true],
-      ["08:35:00", 1, "ON_TIME", 0, true],
-      ["08:40:00", 2, "LATE", 10, false],
-      ["08:40:00.001", 0, "UNDETERMINED", null, false],
-      ["09:30:00", 0, "UNDETERMINED", null, false],
-      ["09:30:00.001", 0, "LATE", 1, false],
+      ["08:30:59.999", 0, "ON_TIME", 0, false],
+      ["08:31:00", 0, "LATE", 1, false],
+      ["08:31:00", 2, "LATE", 1, false],
+      ["08:38:00", 0, "LATE", 8, false],
+      ["09:00:00", 0, "LATE", 30, false],
+      ["09:30:00.001", 0, "LATE", 61, false],
     ] as const;
 
     for (const [time, used, classification, lateMinutes, consumesGraceAllowance] of cases) {
@@ -60,7 +60,7 @@ describe("configured shift attendance rules", () => {
 
     assert.deepEqual(
       assessDirector08Arrival(arrival, "America/New_York", sundayShift, 0),
-      { classification: "LATE", lateMinutes: 1, consumesGraceAllowance: false },
+      { classification: "LATE", lateMinutes: 61, consumesGraceAllowance: false },
     );
   });
 

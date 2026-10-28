@@ -83,6 +83,7 @@ export function assessDirector08Arrival(
   shift: AttendanceShiftSchedule | null,
   monthlyGraceAllowancesUsed: number | null,
 ) {
+  void monthlyGraceAllowancesUsed;
   if (!shift || !Number.isFinite(actualAt.getTime())) {
     return { classification: "UNDETERMINED" as const, lateMinutes: null, consumesGraceAllowance: false };
   }
@@ -103,34 +104,17 @@ export function assessDirector08Arrival(
     + Number(wholeSecond) * 1_000
     + Number(millisecond);
   const eightThirty = 8 * 60 * 60_000 + 30 * 60_000;
-  const eightForty = eightThirty + 10 * 60_000;
-  const nineThirty = 9 * 60 * 60_000 + 30 * 60_000;
+  const eightThirtyEnd = eightThirty + 60_000 - 1;
 
   if (timeSinceMidnight < 8 * 60 * 60_000) {
     return { classification: "EARLY_ARRIVAL" as const, lateMinutes: 0, consumesGraceAllowance: false };
   }
-  if (timeSinceMidnight <= eightThirty) {
+  if (timeSinceMidnight <= eightThirtyEnd) {
     return { classification: "ON_TIME" as const, lateMinutes: 0, consumesGraceAllowance: false };
-  }
-  if (timeSinceMidnight <= eightForty) {
-    if (monthlyGraceAllowancesUsed === null) {
-      return { classification: "UNDETERMINED" as const, lateMinutes: null, consumesGraceAllowance: false };
-    }
-    if (monthlyGraceAllowancesUsed < 2) {
-      return { classification: "ON_TIME" as const, lateMinutes: 0, consumesGraceAllowance: true };
-    }
-    return {
-      classification: "LATE" as const,
-      lateMinutes: Math.ceil((timeSinceMidnight - eightThirty) / 60_000),
-      consumesGraceAllowance: false,
-    };
-  }
-  if (timeSinceMidnight <= nineThirty) {
-    return { classification: "UNDETERMINED" as const, lateMinutes: null, consumesGraceAllowance: false };
   }
   return {
     classification: "LATE" as const,
-    lateMinutes: Math.ceil((timeSinceMidnight - nineThirty) / 60_000),
+    lateMinutes: Math.ceil((timeSinceMidnight - eightThirty) / 60_000),
     consumesGraceAllowance: false,
   };
 }

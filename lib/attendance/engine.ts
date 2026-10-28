@@ -312,29 +312,14 @@ export function calculateDailyAttendance(input: {
     : null;
   const localArrivalTime = firstIn ? formatInTimeZone(firstIn, timeZone, "HH:mm:ss.SSS") : null;
   let lateMinutes = arrivalAssessment?.lateMinutes ?? null;
-  if (firstIn && startTime?.slice(0, 5) === "08:00" && localArrivalTime) {
-    const graceBoundary = localArrivalTime <= "08:30:00.000" ? null
-      : localArrivalTime <= "09:30:00.000" ? fromZonedTime(`${date}T08:30:00`, timeZone)
-        : fromZonedTime(`${date}T09:30:00`, timeZone);
-    if (graceBoundary) {
-      const arrivalWindow = { startAt: graceBoundary, endAt: firstIn };
-      const fullLateMinutes = Math.ceil((firstIn.getTime() - graceBoundary.getTime()) / 60_000);
-      const excusedMs = approvedIntervals.reduce((sum, leave) => sum + overlapMilliseconds(leave, arrivalWindow), 0);
-      const remainingMs = Math.max(0, firstIn.getTime() - graceBoundary.getTime() - excusedMs);
-      if (localArrivalTime > "08:40:00.000" && localArrivalTime <= "09:30:00.000") {
-        lateMinutes = excusedMs === 0 ? null
-          : remainingMs === 0 ? 0
-          : remainingMs > 0 ? Math.ceil(remainingMs / 60_000) : null;
-      } else if (localArrivalTime > "09:30:00.000") {
-        lateMinutes = Math.ceil(remainingMs / 60_000);
-      } else if (lateMinutes !== null) {
-        lateMinutes = Math.max(0, lateMinutes - Math.ceil(excusedMs / 60_000));
-      } else if (excusedMs > 0 && remainingMs === 0) {
-        lateMinutes = 0;
-      }
-      if (fullLateMinutes > 0 && excusedMs > 0) {
-        statusReasons.add("Approved leave excuses only its overlap with late scheduled time.");
-      }
+  if (firstIn && startTime?.slice(0, 5) === "08:00" && localArrivalTime && localArrivalTime > "08:30:59.999") {
+    const graceBoundary = fromZonedTime(`${date}T08:30:00`, timeZone);
+    const arrivalWindow = { startAt: graceBoundary, endAt: firstIn };
+    const excusedMs = approvedIntervals.reduce((sum, leave) => sum + overlapMilliseconds(leave, arrivalWindow), 0);
+    const remainingMs = Math.max(0, firstIn.getTime() - graceBoundary.getTime() - excusedMs);
+    lateMinutes = Math.ceil(remainingMs / 60_000);
+    if (excusedMs > 0) {
+      statusReasons.add("Approved leave excuses only its overlap with late scheduled time.");
     }
   }
   const earlyDuration = lastOut && scheduledEnd ? scheduledEnd.getTime() - lastOut.getTime() : null;
@@ -360,12 +345,9 @@ export function calculateDailyAttendance(input: {
   if (shift.gracePeriodMinutes === null) statusReasons.add("Grace period is not configured; arrival status is unresolved.");
   if (!shift.endTime) statusReasons.add("Shift end time is not configured; departure status is unresolved.");
   if (shift.minimumWorkingHours === null) statusReasons.add("Minimum working hours are not configured; a normal day cannot be distinguished from a Half Day.");
-  statusReasons.add("Configured grace and shift end determine Late and Early Out; the late threshold does not delay the Late classification.");
+  statusReasons.add("08:00 shifts are on time through 08:30 and late afterward; other shifts use configured grace. The late threshold does not delay Late classification.");
   if (arrivalAssessment && arrivalAssessment.lateMinutes !== null && arrivalAssessment.lateMinutes > 0) {
     statusReasons.add("Late minutes round any positive fraction of a minute up; lateness classification uses the exact grace boundary.");
-  }
-  if (localArrivalTime !== null && localArrivalTime > "08:40:00.000" && localArrivalTime <= "09:30:00.000" && leaveMinutes === 0) {
-    statusReasons.add("Arrival in this window requires approved short leave; pending or absent leave does not excuse attendance.");
   }
   if (invalidLateArrival) {
     statusReasons.add("Arrival after 09:45 requires approved morning half-day leave.");

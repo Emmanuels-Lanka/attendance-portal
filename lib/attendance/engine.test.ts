@@ -42,30 +42,30 @@ function calculate(punches: readonly RawAttendancePunch[], overrides: Partial<At
 }
 
 describe("deterministic attendance engine foundation", () => {
-  it("uses the monthly grace allowance and late-minute windows for the 08:00 policy", () => {
+  it("uses the 08:30 cutoff for the 08:00 policy regardless of monthly allowances", () => {
     const directorShift = {
       ...shift,
       startTime: new Date("1970-01-01T08:00:00.000Z"),
       endTime: new Date("1970-01-01T17:30:00.000Z"),
       gracePeriodMinutes: 41,
     };
-    const allowanceAvailable = calculateDailyAttendance({
+    const atGraceBoundary = calculateDailyAttendance({
       employeeId: "employee-1",
       date: "2026-06-15",
       timeZone: "Asia/Colombo",
       shift: directorShift,
-      punches: [punch("in", "IN", "08:35"), punch("out", "OUT", "17:30")],
+      punches: [punch("in", "IN", "08:30"), punch("out", "OUT", "17:30")],
       monthlyGraceAllowancesUsed: 1,
     });
-    const allowancesExhausted = calculateDailyAttendance({
+    const oneMinuteLate = calculateDailyAttendance({
       employeeId: "employee-1",
       date: "2026-06-15",
       timeZone: "Asia/Colombo",
       shift: directorShift,
-      punches: [punch("in", "IN", "08:35"), punch("out", "OUT", "17:30")],
+      punches: [punch("in", "IN", "08:31"), punch("out", "OUT", "17:30")],
       monthlyGraceAllowancesUsed: 2,
     });
-    const unresolvedWindow = calculateDailyAttendance({
+    const previouslyUnresolvedWindow = calculateDailyAttendance({
       employeeId: "employee-1",
       date: "2026-06-15",
       timeZone: "Asia/Colombo",
@@ -73,21 +73,22 @@ describe("deterministic attendance engine foundation", () => {
       punches: [punch("in", "IN", "09:00"), punch("out", "OUT", "17:30")],
       monthlyGraceAllowancesUsed: 2,
     });
-    const afterLateBoundary = calculateDailyAttendance({
+    const afterLateInvalidBoundary = calculateDailyAttendance({
       employeeId: "employee-1",
       date: "2026-06-15",
       timeZone: "Asia/Colombo",
       shift: directorShift,
-      punches: [punch("in", "IN", "09:30:01"), punch("out", "OUT", "17:30")],
+      punches: [punch("in", "IN", "09:45:01"), punch("out", "OUT", "17:30")],
       monthlyGraceAllowancesUsed: 0,
     });
 
-    assert.equal(allowanceAvailable.lateMinutes, 0);
-    assert.equal(allowancesExhausted.lateMinutes, 5);
-    assert.equal(allowancesExhausted.status, "LATE");
-    assert.equal(unresolvedWindow.lateMinutes, null);
-    assert.equal(unresolvedWindow.status, "UNDETERMINED");
-    assert.equal(afterLateBoundary.lateMinutes, 1);
+    assert.equal(atGraceBoundary.lateMinutes, 0);
+    assert.equal(atGraceBoundary.status, "PRESENT");
+    assert.equal(oneMinuteLate.lateMinutes, 1);
+    assert.equal(oneMinuteLate.status, "LATE");
+    assert.equal(previouslyUnresolvedWindow.lateMinutes, 30);
+    assert.equal(previouslyUnresolvedWindow.status, "LATE");
+    assert.equal(afterLateInvalidBoundary.status, "INVALID");
   });
 
   it("calculates one complete IN/OUT period without applying unspecified rounding", () => {
@@ -152,7 +153,7 @@ describe("deterministic attendance engine foundation", () => {
     assert.equal(result.status, "PRESENT");
   });
 
-  it("resolves an otherwise unknown 08:31 through 08:40 arrival when approved leave covers the full delay", () => {
+  it("lets approved leave excuse an 08:31 through 08:40 arrival delay", () => {
     const result = calculateDailyAttendance({
       employeeId: "employee-1",
       date: "2026-06-15",
