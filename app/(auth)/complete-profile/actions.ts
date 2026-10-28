@@ -3,7 +3,11 @@
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { getCurrentUser } from "@/lib/auth/session";
-import { completeEmployeeProfileForUser, EmployeeProfileCompletionError } from "@/lib/employees/profile-service";
+import {
+  completeEmployeeProfileForUser,
+  EmployeeProfileCompletionError,
+  EmployeeProfileUsernameConflictError,
+} from "@/lib/employees/profile-service";
 
 export type EmployeeProfileActionState = { error: string } | null;
 
@@ -30,6 +34,7 @@ const profileFieldNames = [
   "fatherContactNumber",
   "gender",
   "genderCustom",
+  "username",
 ] as const;
 
 export async function completeEmployeeProfileAction(
@@ -45,6 +50,7 @@ export async function completeEmployeeProfileAction(
     await completeEmployeeProfileForUser(user.id, input);
   } catch (error) {
     if (error instanceof EmployeeProfileCompletionError) redirect("/dashboard");
+    if (error instanceof EmployeeProfileUsernameConflictError) return { error: error.message };
     if (error instanceof z.ZodError) return { error: error.issues[0]?.message ?? "Check the required profile details and try again." };
     return { error: "Your profile could not be saved. Try again shortly." };
   }

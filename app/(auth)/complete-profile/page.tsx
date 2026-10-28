@@ -25,7 +25,7 @@ export default async function CompleteEmployeeProfilePage() {
             <button type="submit" className="shrink-0 rounded-md border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">Sign out</button>
           </form>
         </div>
-        <EmployeeProfileCompletionForm contactEmail={user.email} />
+        <EmployeeProfileCompletionForm contactEmail={user.email} username={user.username ?? ""} />
       </section>
     </main>
   );

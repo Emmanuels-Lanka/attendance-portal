@@ -31,7 +31,7 @@ const employeeFields = {
 
 const usernamePattern = /^[a-z0-9._-]{3,30}$/;
 const usernameMessage = "Username must be 3-30 characters using letters, numbers, periods, underscores, or hyphens.";
-const usernameSchema = z.string().trim().toLowerCase().regex(usernamePattern, usernameMessage);
+export const employeeUsernameSchema = z.string().trim().toLowerCase().regex(usernamePattern, usernameMessage);
 const optionalUsernameSchema = z.preprocess(
   (value) => value === undefined ? undefined : value === null || typeof value === "string" && value.trim() === "" ? null : value,
   z.string().trim().toLowerCase().regex(usernamePattern, usernameMessage).nullable(),
@@ -142,7 +142,7 @@ function validateLocation(countryCode: string, timeZone: string, context: z.Refi
 
 export const createEmployeeSchema = z.object({
   ...employeeFields,
-  username: usernameSchema,
+  username: employeeUsernameSchema,
   employeeCode: z.string().trim().min(1, "Employee ID is required.").max(50),
   ...employeeIdentityFields,
   ...organizationAssignmentsSchema,

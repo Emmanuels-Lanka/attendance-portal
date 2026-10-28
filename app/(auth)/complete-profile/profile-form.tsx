@@ -5,6 +5,7 @@ import { useState } from "react";
 import { completeEmployeeProfileAction } from "./actions";
 import type { EmployeeProfileActionState } from "./actions";
 import { employeeGenderValues } from "@/lib/employees/gender";
+import { saveEmployeeProfileAction } from "@/app/(workspace)/settings/profile-actions";
 
 type ProfileField = {
   name: string;
@@ -61,18 +62,39 @@ function Field({ field, defaultValue }: { field: ProfileField; defaultValue?: st
   );
 }
 
-export function EmployeeProfileCompletionForm({ contactEmail }: { contactEmail: string }) {
-  const [state, formAction, pending] = useActionState<EmployeeProfileActionState, FormData>(completeEmployeeProfileAction, null);
-  const [gender, setGender] = useState("");
-  const [genderCustom, setGenderCustom] = useState("");
+export function EmployeeProfileCompletionForm({
+  contactEmail,
+  username,
+  mode = "complete",
+  initialValues,
+}: {
+  contactEmail: string;
+  username: string;
+  mode?: "complete" | "edit";
+  initialValues?: Record<string, string>;
+}) {
+  const action = mode === "edit" ? saveEmployeeProfileAction : completeEmployeeProfileAction;
+  const [state, formAction, pending] = useActionState<EmployeeProfileActionState, FormData>(action, null);
+  const [gender, setGender] = useState(initialValues?.gender ?? "");
+  const [genderCustom, setGenderCustom] = useState(initialValues?.genderCustom ?? "");
 
   return (
     <form action={formAction} aria-busy={pending} className="space-y-7">
+      <section className="space-y-2" aria-labelledby="account-username-title">
+        <div>
+          <h2 id="account-username-title" className="text-base font-semibold">Login username</h2>
+          <p className="mt-1 text-xs text-[var(--muted)]">Your current username is shown below. You can change it; usernames must be 3–30 letters, numbers, periods, underscores, or hyphens.</p>
+        </div>
+        <div className="max-w-md">
+          <label htmlFor="username" className="mb-1.5 block text-sm font-semibold">Username</label>
+          <input id="username" name="username" required minLength={3} maxLength={30} pattern="[A-Za-z0-9._-]{3,30}" autoComplete="username" autoCapitalize="none" defaultValue={username} className="min-h-10 w-full rounded-md border border-[var(--line)] bg-white px-3 py-2 text-sm text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--blue)]" />
+        </div>
+      </section>
       <section className="space-y-4" aria-labelledby="contact-details-title">
         <h2 id="contact-details-title" className="text-base font-semibold">Contact and personal details</h2>
         <div className="grid gap-4 sm:grid-cols-2">
-          {requiredFields.slice(0, 7).map((field) => <Field key={field.name} field={field} />)}
-          {requiredFields.slice(7).map((field) => <Field key={field.name} field={field} defaultValue={field.name === "email" ? contactEmail : undefined} />)}
+          {requiredFields.slice(0, 7).map((field) => <Field key={field.name} field={field} defaultValue={initialValues?.[field.name]} />)}
+          {requiredFields.slice(7).map((field) => <Field key={field.name} field={field} defaultValue={initialValues?.[field.name] ?? (field.name === "email" ? contactEmail : undefined)} />)}
         </div>
         <p className="text-xs leading-5 text-[var(--muted)]">Contact email is stored on your employee profile; it does not change your sign-in email.</p>
       </section>
@@ -82,7 +104,7 @@ export function EmployeeProfileCompletionForm({ contactEmail }: { contactEmail: 
           <h2 id="spouse-details-title" className="text-base font-semibold">Spouse details</h2>
           <p className="mt-1 text-xs text-[var(--muted)]">Both fields are optional.</p>
         </div>
-        <div className="grid gap-4 sm:grid-cols-2">{spouseFields.map((field) => <Field key={field.name} field={field} />)}</div>
+        <div className="grid gap-4 sm:grid-cols-2">{spouseFields.map((field) => <Field key={field.name} field={field} defaultValue={initialValues?.[field.name]} />)}</div>
       </section>
 
       <section className="space-y-4 border-t border-[var(--line)] pt-5" aria-labelledby="gender-title">
@@ -91,7 +113,7 @@ export function EmployeeProfileCompletionForm({ contactEmail }: { contactEmail: 
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
-            <label htmlFor="gender" className="mb-1.5 block text-sm font-semibold">Gender</label>
+            <label htmlFor="gender" className="mb-1.5 block text-sm font-semibold">Select Gender</label>
             <select
               id="gender"
               name="gender"
@@ -134,17 +156,17 @@ export function EmployeeProfileCompletionForm({ contactEmail }: { contactEmail: 
           <h2 id="mother-details-title" className="text-base font-semibold">Mother details</h2>
           <p className="mt-1 text-xs text-[var(--muted)]">At least one parent’s name and contact numbers are required; IDs are optional.</p>
         </div>
-        <div className="grid gap-4 sm:grid-cols-2">{motherFields.map((field) => <Field key={field.name} field={field} />)}</div>
+        <div className="grid gap-4 sm:grid-cols-2">{motherFields.map((field) => <Field key={field.name} field={field} defaultValue={initialValues?.[field.name]} />)}</div>
       </section>
 
       <section className="space-y-4 border-t border-[var(--line)] pt-5" aria-labelledby="father-details-title">
         <h2 id="father-details-title" className="text-base font-semibold">Father details</h2>
-        <div className="grid gap-4 sm:grid-cols-2">{fatherFields.map((field) => <Field key={field.name} field={field} />)}</div>
+        <div className="grid gap-4 sm:grid-cols-2">{fatherFields.map((field) => <Field key={field.name} field={field} defaultValue={initialValues?.[field.name]} />)}</div>
       </section>
 
       {state?.error && <p role="alert" className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{state.error}</p>}
       <button type="submit" disabled={pending} className="h-10 rounded-md bg-[var(--action)] px-5 text-sm font-semibold text-white transition hover:bg-[var(--action-hover)] disabled:opacity-60">
-        {pending ? "Saving profile..." : "Complete profile"}
+        {pending ? "Saving profile..." : mode === "edit" ? "Save changes" : "Complete profile"}
       </button>
     </form>
   );

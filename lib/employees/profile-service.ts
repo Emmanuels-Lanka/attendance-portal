@@ -5,6 +5,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { employeeProfileRequiredFields } from "@/lib/employees/profile-requirements";
 import { employeeGenderValues } from "@/lib/employees/gender";
+import { employeeUsernameSchema } from "@/lib/employees/validation";
 
 function nullableText(maxLength: number) {
   return z.preprocess(
@@ -33,6 +34,7 @@ const requiredGenderSchema = z.preprocess(
 );
 
 export const employeeProfileCompletionSchema = z.object({
+  username: employeeUsernameSchema,
   permanentAddress: z.string().trim().min(1, "Permanent address is required.").max(2000),
   currentAddress: z.string().trim().min(1, "Current address is required.").max(2000),
   emergencyContactName: z.string().trim().min(1, "Emergency contact name is required.").max(120),
@@ -89,8 +91,15 @@ export const employeeProfileCompletionSchema = z.object({
 });
 
 type ProfileStatusDatabase = Pick<PrismaClient, "employee">;
-type EmployeeProfileDatabase = Pick<PrismaClient, "employee" | "employeeProfile" | "attendanceAuditLog" | "$transaction">;
+type EmployeeProfileDatabase = Pick<PrismaClient, "employee" | "employeeProfile" | "attendanceAuditLog" | "user" | "$transaction">;
 type ProfileTransaction = Prisma.TransactionClient;
+
+export class EmployeeProfileUsernameConflictError extends Error {
+  constructor() {
+    super("That username is already in use.");
+    this.name = "EmployeeProfileUsernameConflictError";
+  }
+}
 
 export class EmployeeProfileCompletionError extends Error {
   constructor() {
@@ -122,6 +131,7 @@ export async function completeEmployeeProfileForUser(
   completedAt = new Date(),
 ) {
   const profile = employeeProfileCompletionSchema.parse(input);
+  const { username, ...profileFields } = profile;
 
   return database.$transaction(async (transaction) => {
     const employee = await transaction.employee.findUnique({
@@ -134,10 +144,11 @@ export async function completeEmployeeProfileForUser(
 
     await transaction.employeeProfile.upsert({
       where: { employeeRecordId: employee.id },
-      create: { employeeRecordId: employee.id, ...profile },
-      update: profile,
+      create: { employeeRecordId: employee.id, ...profileFields },
+      update: profileFields,
       select: { employeeRecordId: true },
     });
+    await updateUsername(transaction, userId, username);
 
     const completion = await transaction.employee.updateMany({
       where: { id: employee.id, userId, profileOnboardingRequired: true, profileCompletedAt: null },
@@ -151,6 +162,53 @@ export async function completeEmployeeProfileForUser(
     });
 
     return { profileCompletedAt: completedAt };
+  });
+}
+
+function isUsernameUniqueConflict(error: unknown) {
+  if (!error || typeof error !== "object" || !("code" in error) || error.code !== "P2002") return false;
+  const target = "meta" in error && error.meta && typeof error.meta === "object" && "target" in error.meta
+    ? error.meta.target
+    : undefined;
+  return (Array.isArray(target) ? target.join(",") : String(target ?? "")).toLowerCase().includes("username");
+}
+
+async function updateUsername(transaction: ProfileTransaction, userId: string, username: string) {
+  try {
+    await transaction.user.update({ where: { id: userId }, data: { username }, select: { id: true } });
+  } catch (error) {
+    if (isUsernameUniqueConflict(error)) throw new EmployeeProfileUsernameConflictError();
+    throw error;
+  }
+}
+
+export async function updateEmployeeProfileForUser(
+  userId: string,
+  input: unknown,
+  database: EmployeeProfileDatabase = prisma,
+) {
+  const profile = employeeProfileCompletionSchema.parse(input);
+
+  return database.$transaction(async (transaction) => {
+    const employee = await transaction.employee.findUnique({
+      where: { userId },
+      select: { id: true },
+    });
+    if (!employee) throw new EmployeeProfileCompletionError();
+
+    const { username, ...profileFields } = profile;
+    await transaction.employeeProfile.upsert({
+      where: { employeeRecordId: employee.id },
+      create: { employeeRecordId: employee.id, ...profileFields },
+      update: profileFields,
+      select: { employeeRecordId: true },
+    });
+    await updateUsername(transaction, userId, username);
+    await transaction.attendanceAuditLog.create({
+      data: { employeeId: userId, actorId: userId, actionType: "EMPLOYEE_PROFILE_UPDATED" },
+      select: { id: true },
+    });
+    return { employeeRecordId: employee.id };
   });
 }
 

@@ -3,14 +3,17 @@ import { describe, it } from "node:test";
 import {
   completeEmployeeProfileForUser,
   EmployeeProfileCompletionError,
+  EmployeeProfileUsernameConflictError,
   employeeProfileCompletionSchema,
   getEmployeeProfileOnboardingStatus,
   requiresProfileCompletion,
+  updateEmployeeProfileForUser,
 } from "./profile-service";
 
 const completedAt = new Date("2026-10-03T10:00:00.000Z");
 
 const validProfile = {
+  username: "employee.login",
   permanentAddress: "12 Permanent Road, Colombo",
   currentAddress: "34 Current Avenue, Colombo",
   emergencyContactName: "Contact Person",
@@ -30,7 +33,7 @@ const validProfile = {
   gender: "MALE",
 };
 
-function createProfileDatabase(options: { userId?: string; onboardingRequired?: boolean; profileCompletedAt?: Date | null } = {}) {
+function createProfileDatabase(options: { userId?: string; onboardingRequired?: boolean; profileCompletedAt?: Date | null; usernameConflict?: boolean } = {}) {
   const employee = {
     id: "employee-record-1",
     userId: options.userId ?? "user-1",
@@ -43,6 +46,7 @@ function createProfileDatabase(options: { userId?: string; onboardingRequired?: 
   const auditEntries: Array<Record<string, unknown>> = [];
   let transactionCount = 0;
   let inTransaction = false;
+  let username: string | null = "admin-assigned";
 
   const database = {
     employee: {
@@ -69,6 +73,15 @@ function createProfileDatabase(options: { userId?: string; onboardingRequired?: 
         return { employeeRecordId: employee.id };
       },
     },
+    user: {
+      update: async ({ where, data }: { where: { id: string }; data: { username: string } }) => {
+        assert.equal(inTransaction, true);
+        assert.equal(where.id, employee.userId);
+        if (options.usernameConflict) throw { code: "P2002", meta: { target: "User_username_lower_key" } };
+        username = data.username;
+        return { id: employee.userId };
+      },
+    },
     attendanceAuditLog: {
       create: async ({ data }: { data: Record<string, unknown> }) => {
         assert.equal(inTransaction, true);
@@ -91,6 +104,7 @@ function createProfileDatabase(options: { userId?: string; onboardingRequired?: 
     database,
     employee,
     getProfile: () => profile,
+    getUsername: () => username,
     getLookup: () => lookup,
     getUpdateWhere: () => updateWhere,
     getAuditEntries: () => auditEntries,
@@ -134,6 +148,7 @@ describe("employee profile validation", () => {
     });
 
     assert.equal(parsed.email, "employee@example.com");
+    assert.equal(parsed.username, "employee.login");
     assert.equal(parsed.spouseName, null);
     assert.equal(parsed.spouseId, null);
     assert.equal(parsed.motherId, null);
@@ -321,6 +336,7 @@ describe("employee profile completion service", () => {
       profileCompletedAt: null,
     });
     assert.equal(stub.getProfile()?.employeeRecordId, "employee-record-1");
+    assert.equal(stub.getUsername(), "employee.login");
     assert.equal(stub.getProfile()?.email, "employee@example.com");
     assert.equal(stub.getProfile()?.motherId, "MOTHER-100");
     assert.equal(stub.getProfile()?.fatherId, "FATHER-100");
@@ -329,6 +345,26 @@ describe("employee profile completion service", () => {
     assert.equal("password" in (stub.getProfile() ?? {}), false);
     assert.deepEqual(stub.getAuditEntries(), [{ employeeId: "user-1", actorId: "user-1", actionType: "EMPLOYEE_PROFILE_COMPLETED" }]);
     assert.equal(await getEmployeeProfileOnboardingStatus("user-1", stub.database).then(({ required }) => required), false);
+  });
+
+  it("allows employees to update their profile and username after onboarding", async () => {
+    const stub = createProfileDatabase({ onboardingRequired: false, profileCompletedAt: completedAt });
+
+    await updateEmployeeProfileForUser("user-1", { ...validProfile, username: "new.handle" }, stub.database);
+
+    assert.equal(stub.getUsername(), "new.handle");
+    assert.equal(stub.getProfile()?.email, "employee@example.com");
+    assert.deepEqual(stub.getAuditEntries(), [{ employeeId: "user-1", actorId: "user-1", actionType: "EMPLOYEE_PROFILE_UPDATED" }]);
+  });
+
+  it("rejects a username already owned by another user", async () => {
+    const stub = createProfileDatabase({ usernameConflict: true });
+
+    await assert.rejects(
+      updateEmployeeProfileForUser("user-1", validProfile, stub.database),
+      EmployeeProfileUsernameConflictError,
+    );
+    assert.equal(stub.getAuditEntries().length, 0);
   });
 
   it("persists every supported gender choice and trimmed custom text", async () => {
