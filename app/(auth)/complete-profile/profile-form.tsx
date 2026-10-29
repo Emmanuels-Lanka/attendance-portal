@@ -77,7 +77,7 @@ export function EmployeeProfileCompletionForm({
   const [state, formAction, pending] = useActionState<EmployeeProfileActionState, FormData>(action, null);
   const [gender, setGender] = useState(initialValues?.gender ?? "");
   const [genderCustom, setGenderCustom] = useState(initialValues?.genderCustom ?? "");
-
+console.log("initialValues", initialValues, "gender", gender, "genderCustom", genderCustom);
   return (
     <form action={formAction} aria-busy={pending} className="space-y-7">
       <section className="space-y-2" aria-labelledby="account-username-title">
