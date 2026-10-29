@@ -89,7 +89,7 @@ export default async function EmployeeSettingsPage() {
         <h1 className="mt-1 text-2xl font-semibold sm:text-[28px]">Settings</h1>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2">
+      <div className="grid gap-4 xl:grid-cols-2">
         <section className="rounded-lg border border-[var(--line)] bg-white p-5 shadow-sm">
           <div className="flex items-start justify-between gap-3">
             <div>
@@ -101,9 +101,9 @@ export default async function EmployeeSettingsPage() {
             </Link>
           </div>
           <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
-            <div><dt className="text-[var(--muted)]">Name</dt><dd className="font-medium">{user.name}</dd></div>
-            <div><dt className="text-[var(--muted)]">Username</dt><dd className="font-medium">{user.username ?? "Not set"}</dd></div>
-            <div><dt className="text-[var(--muted)]">Email</dt><dd className="font-medium">{user.email}</dd></div>
+            <div className="min-w-0"><dt className="text-[var(--muted)]">Name</dt><dd className="break-words font-medium">{user.name}</dd></div>
+            <div className="min-w-0"><dt className="text-[var(--muted)]">Username</dt><dd className="break-words font-medium">{user.username ?? "Not set"}</dd></div>
+            <div className="min-w-0"><dt className="text-[var(--muted)]">Email</dt><dd className="break-words font-medium">{user.email}</dd></div>
             <div><dt className="text-[var(--muted)]">Country</dt><dd className="font-medium">{user.countryCode}</dd></div>
           </dl>
         </section>
@@ -112,8 +112,22 @@ export default async function EmployeeSettingsPage() {
           <h2 className="text-base font-semibold">Attendance schedule</h2>
           <p className="mt-1 text-xs text-[var(--muted)]">Your assigned shift schedule for this week. The schedule is the same for Office and WFH; early arrival is allowed and is not overtime.</p>
           <p className="mt-3 text-sm"><span className="text-[var(--muted)]">Timezone: </span><span className="font-medium">{user.timeZone}</span></p>
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full min-w-[440px] text-left text-sm">
+          <ol className="mt-4 divide-y divide-[var(--line)] rounded-md border border-[var(--line)] xl:hidden">
+            {schedule.map((day) => (
+              <li key={day.date} className="flex items-start justify-between gap-3 p-3 text-sm">
+                <div className="min-w-0">
+                  <p className="font-medium">{day.label}</p>
+                  <p className="mt-1 break-words text-xs text-[var(--muted)]">{day.shift}</p>
+                </div>
+                <dl className="grid shrink-0 grid-cols-2 gap-2 text-right text-xs tabular-nums">
+                  <div><dt className="text-[10px] text-[var(--muted)]">Start</dt><dd>{day.start}</dd></div>
+                  <div><dt className="text-[10px] text-[var(--muted)]">End</dt><dd>{day.end}</dd></div>
+                </dl>
+              </li>
+            ))}
+          </ol>
+          <div className="mt-4 hidden xl:block">
+            <table className="w-full text-left text-sm">
               <thead className="border-b border-[var(--line)] text-xs text-[var(--muted)]">
                 <tr>
                   <th scope="col" className="pb-2 pr-3 font-medium">Day</th>
@@ -126,7 +140,7 @@ export default async function EmployeeSettingsPage() {
                 {schedule.map((day) => (
                   <tr key={day.date}>
                     <th scope="row" className="py-2 pr-3 font-medium">{day.label}</th>
-                    <td className="py-2 pr-3 text-[var(--muted)]">{day.shift}</td>
+                    <td className="break-words py-2 pr-3 text-[var(--muted)]">{day.shift}</td>
                     <td className="py-2 pr-3 tabular-nums">{day.start}</td>
                     <td className="py-2 tabular-nums">{day.end}</td>
                   </tr>
