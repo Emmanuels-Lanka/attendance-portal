@@ -5,10 +5,13 @@ import { AuthenticationError, requireUser } from "@/lib/auth/session";
 import { canAccessPersonalAttendance } from "@/lib/auth/permissions";
 import { applyAttendanceAction, AttendanceStateError } from "@/lib/attendance/service";
 import { attendanceActionSchema } from "@/lib/attendance/validation";
+import { completeAttendanceAction } from "@/lib/attendance/action-completion";
+import { attendanceActionErrorDetails } from "@/lib/attendance/action-diagnostics";
 
 export type AttendanceActionResult = { ok: true; message: string } | { ok: false; error: string };
 
 export async function performAttendanceAction(input: unknown): Promise<AttendanceActionResult> {
+  let result: Awaited<ReturnType<typeof applyAttendanceAction>>;
   try {
     const user = await requireUser();
     if (!canAccessPersonalAttendance(user.role)) {
@@ -19,19 +22,18 @@ export async function performAttendanceAction(input: unknown): Promise<Attendanc
       return { ok: false, error: "A valid location is required before recording attendance." };
     }
 
-    const result = await applyAttendanceAction(user.id, parsed.data.action, parsed.data.location);
-    revalidatePath("/dashboard");
-    revalidatePath("/attendance");
-    return {
-      ok: true,
-      message: result.calculationWarning
-        ? `Attendance updated. ${result.calculationWarning}`
-        : "Attendance updated.",
-    };
+    result = await applyAttendanceAction(user.id, parsed.data.action, parsed.data.location);
   } catch (error) {
     if (error instanceof AuthenticationError) return { ok: false, error: error.message };
     if (error instanceof AttendanceStateError) return { ok: false, error: error.message };
-    console.error("Attendance update failed", error instanceof Error ? error.name : "Unknown error");
+    console.error("Attendance update failed", attendanceActionErrorDetails(error));
     return { ok: false, error: "Attendance could not be updated. Try again shortly." };
   }
+
+  return completeAttendanceAction(result.calculationWarning, () => {
+    revalidatePath("/dashboard");
+    revalidatePath("/attendance");
+  }, (error) => {
+    console.error("Attendance saved but page revalidation failed", attendanceActionErrorDetails(error));
+  });
 }

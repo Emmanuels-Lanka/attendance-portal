@@ -15,34 +15,29 @@ Both URLs must identify the same Neon project, branch, and database. Do not infe
 
 ## Local Development
 
-The existing local `.env` is gitignored and currently points `DATABASE_URL` at a local PostgreSQL endpoint. Leave that value unchanged to preserve the existing local database. `DIRECT_URL` is currently unset; Prisma schema validation/generation requires it because the schema declares `directUrl`.
+Use a dedicated local or test PostgreSQL database for local operations that can write data. Do not assume the existing private `.env` targets a local database; verify the target without exposing its connection value before running the application or database commands. Never use production or shared database credentials for tests or local write operations.
 
-For local database work, add `DIRECT_URL` to your private `.env` using the same local database endpoint as `DATABASE_URL` when the local server has no separate pooler, or use its direct endpoint if it does. This does not require changing `DATABASE_URL` or pointing local development at Neon. Confirm both local URLs refer to the same local database before using Prisma CLI commands.
+For local Prisma CLI operations, set `DIRECT_URL` in the private environment to the direct endpoint for the same dedicated local/test database used by `DATABASE_URL`. Do not mix endpoints that point to different databases.
 
 For a deliberate local Neon test, configure both Neon URLs together in a private, ignored environment and verify the target branch before running the app. Do not mix a local `DATABASE_URL` with a Neon `DIRECT_URL`, or vice versa. Keep `.env.example` as a placeholder template; never copy real Neon credentials into it.
 
 `.gitignore` excludes `.env` and `.env.*` while explicitly allowing `.env.example`. Verify with `git check-ignore -v .env .env.local` if needed.
 
-## Vercel Environment Variables
+## Hosting Environment Variables
 
-In Vercel Project Settings, open Environment Variables and add the following for Production:
+Configure these values in the hosting provider's production environment. For AWS Amplify, first verify the connected production branch and active build specification:
 
 - `DATABASE_URL`: Neon pooled connection URL.
 - `DIRECT_URL`: Neon direct/non-pooled URL.
 - `SESSION_SECRET`: a newly generated, unique secret of at least 32 characters.
 
-Add corresponding values separately for Preview and Development only when those environments are intended to connect to a Neon branch. Prefer separate Neon branches and separate secrets per environment. Do not configure the one-time `ADMIN_*` seed values for builds; seed the initial admin from a controlled private environment after the schema is ready. Redeploy after changing Vercel environment values so the deployment receives them.
+Add corresponding values separately for preview branches only when they should connect to separate Neon branches. Prefer separate database branches and secrets per environment. Do not configure the one-time `ADMIN_*` seed values for builds; seed the initial admin from a controlled private environment after the schema is ready. Redeploy after changing environment configuration so the deployment receives it.
 
-This project uses standard Next.js build settings. `npm run build` generates Prisma Client and builds Next.js; it does not apply migrations or seed data. No `vercel.json` is required.
+`npm run build` generates Prisma Client and builds Next.js; it does not apply migrations or seed data. AWS Amplify documents that build variables are not automatically available to Next.js SSR code. Verify runtime access to `DATABASE_URL` and `SESSION_SECRET` in the active Amplify build specification and deployment, without printing their values. Review the security implications before using a build step that writes secrets into `.env.production` or deployable artifacts.
 
 ## Fresh Neon Migration Procedure
 
-The checked-in migration order is:
-
-1. `20261001000000_initial_attendance_schema`: creates the core user, attendance record, and work session tables, enums, indexes, and foreign keys.
-2. `20261002000000_operational_audit_workflows`: creates correction-request, audit, notification, and settings tables, plus their indexes and relations. Its audit nullability and correction-request index behavior match the current Prisma model.
-
-This sequence can initialize a genuinely empty PostgreSQL database in order. Do not run it yet as part of setup. Before a production migration:
+The repository currently contains 29 ordered migration directories. Review the complete sequence under `prisma/migrations`; do not assume production is empty or that its migration history matches the repository. Before a production migration:
 
 1. Confirm both connection URLs target the same intended Neon project, branch, and database; confirm the target is empty.
 2. Create a disposable empty PostgreSQL database or Neon branch and rehearse the complete migration chain there. Inspect the result against `prisma/schema.prisma` and run relevant tests.
@@ -60,4 +55,4 @@ This sequence can initialize a genuinely empty PostgreSQL database in order. Do 
    npm run db:migrate:deploy
    ```
 
-Do not run `prisma migrate dev`, `prisma db push`, `prisma migrate reset`, `prisma migrate resolve`, or seed commands against production during setup. Do not put migrations in Vercel's automatic build/deploy hook. If migration status or schema inspection shows existing tables, pending/unrecorded history, or any mismatch, stop and reconcile the target; do not treat it as fresh or baseline it from a model diff alone.
+Do not run `prisma migrate dev`, `prisma db push`, `prisma migrate reset`, `prisma migrate resolve`, or seed commands against production during setup. Do not put migrations in an automatic build/deploy hook. If migration status or schema inspection shows existing tables, pending/unrecorded history, or any mismatch, stop and reconcile the target; do not treat it as fresh or baseline it from a model diff alone.

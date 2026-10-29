@@ -3,6 +3,8 @@ import Image from "next/image";
 import { getCompanyName } from "@/lib/attendance/settings";
 import { ForgotPasswordForm } from "./forgot-password-form";
 
+export const dynamic = "force-dynamic";
+
 export default async function ForgotPasswordPage() {
   const companyName = await getCompanyName();
   return (
