@@ -2,6 +2,8 @@
 
 Date: 2026-10-02
 
+Historical snapshot of the earlier Vercel/Neon preparation. It does not describe the current AWS Amplify deployment; use `DEPLOYMENT.md` for current hosting guidance.
+
 ## Summary
 
 Prepared the repository for Vercel and Neon without logging into either service or changing any database. Prisma is configured for a pooled runtime URL and a direct CLI/migration URL. The Prisma model now matches the checked-in operational migration for audit attribution and correction-request uniqueness. A local database still has both migrations pending despite already containing the migrated tables; do not run migrations against that database until its history is reconciled.

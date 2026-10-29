@@ -35,6 +35,7 @@ export async function lockAttendanceEmployee(tx: Prisma.TransactionClient, emplo
 type AttendanceWriteDatabase = Pick<typeof prisma, "$transaction">;
 
 const attendanceCaptureSource = "WEB";
+const attendanceTransactionOptions = { timeout: 15_000 };
 
 type AppliedAttendanceAction = {
   session: {
@@ -187,7 +188,7 @@ export async function applyAttendanceAction(
       session: updatedSession,
       calculationWarning: await recalculateAttendanceDays(tx, employeeRecord.id, employee.timeZone, updatedSession),
     } satisfies AppliedAttendanceAction;
-  });
+  }, attendanceTransactionOptions);
 }
 
 type EmployeeAttendanceContext = { id: string; timeZone: string; countryCode?: string };

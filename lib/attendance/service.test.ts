@@ -58,10 +58,15 @@ function createDatabase(
   let nextId = 1;
   let nextRawId = 1;
   let nextDailyId = 1;
+  let transactionTimeout: number | undefined;
   let lockTail: Promise<void> = Promise.resolve();
 
   const database = {
-    $transaction: async (operation: (transaction: never) => Promise<unknown>) => {
+    $transaction: async (
+      operation: (transaction: never) => Promise<unknown>,
+      options: { timeout?: number },
+    ) => {
+      transactionTimeout = options.timeout;
       let releaseLock = () => {};
       let hasLock = false;
       let linkedUserId = "employee-1";
@@ -192,7 +197,13 @@ function createDatabase(
     },
   };
 
-  return { database: database as never, sessions, rawPunches, dailyRows };
+  return {
+    database: database as never,
+    sessions,
+    rawPunches,
+    dailyRows,
+    getTransactionTimeout: () => transactionTimeout,
+  };
 }
 
 function activeSession(id: string): StoredSession {
@@ -205,6 +216,14 @@ function dailyTimestamp(row: Record<string, unknown> | undefined, key: string) {
 }
 
 describe("employee attendance transitions", () => {
+  it("uses a longer transaction timeout for attendance writes and recalculation", async () => {
+    const stub = createDatabase();
+
+    await applyAttendanceAction("employee-1", "IN", stub.database);
+
+    assert.equal(stub.getTransactionTimeout(), 15_000);
+  });
+
   it("persists the third qualifying local workday arrival as late", async () => {
     const priorSessions: StoredSession[] = [
       { id: "grace-one", employeeId: "employee-1", mode: "OFFICE", startAt: new Date("2026-06-15T03:05:00.000Z"), endAt: new Date("2026-06-15T11:00:00.000Z") },
