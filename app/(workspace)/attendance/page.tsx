@@ -63,7 +63,7 @@ export default async function AttendanceHistoryPage() {
                   Showing the 500 most recent punches. Older locations are not included in this view.
                 </p>
               )}
-              <div className="overflow-x-auto">
+              <div className="hidden overflow-x-auto lg:block">
                 <table className="w-full min-w-[640px] text-left text-sm">
                   <thead className="border-b border-[var(--line)] bg-zinc-50 text-xs text-[var(--muted)]">
                     <tr>
@@ -104,6 +104,43 @@ export default async function AttendanceHistoryPage() {
                   </tbody>
                 </table>
               </div>
+              <ul className="divide-y divide-[var(--line)] lg:hidden">
+                {ownLocationHistory.records.map((punch) => (
+                  <li key={punch.id} className="space-y-3 px-4 py-4 sm:px-5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className={`rounded-sm px-2 py-1 text-xs font-semibold ${punch.punchType === "IN" ? "bg-emerald-50 text-emerald-800" : "bg-amber-50 text-amber-800"}`}>
+                        {attendanceLocationPunchLabel(punch.punchType, punch.workMode)}
+                      </span>
+                      <time className="text-xs tabular-nums text-[var(--muted)]" dateTime={punch.timestamp.toISOString()}>
+                        {formatInTimeZone(punch.timestamp, user.timeZone, "yyyy-MM-dd HH:mm:ss")}
+                      </time>
+                    </div>
+                    <dl className="grid gap-3 text-xs sm:grid-cols-2">
+                      <div className="min-w-0">
+                        <dt className="font-semibold text-[var(--muted)]">Coordinates</dt>
+                        <dd className="mt-1">
+                          {punch.location ? (
+                            <>
+                              <p className="break-all font-mono">{punch.location.latitude}, {punch.location.longitude}</p>
+                              <AttendanceMapLink location={punch.location} />
+                            </>
+                          ) : (
+                            <span className="text-[var(--muted)]">Location unavailable</span>
+                          )}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="font-semibold text-[var(--muted)]">Accuracy</dt>
+                        <dd className="mt-1 tabular-nums">
+                          {punch.location?.accuracy !== null && punch.location
+                            ? `${punch.location.accuracy} m`
+                            : "—"}
+                        </dd>
+                      </div>
+                    </dl>
+                  </li>
+                ))}
+              </ul>
             </>
           )}
         </section>

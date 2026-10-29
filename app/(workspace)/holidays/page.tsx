@@ -80,7 +80,7 @@ export default async function HolidaysPage({ searchParams }: { searchParams: Pro
           <Link aria-label="Previous month" href={`/holidays?month=${shiftMonth(month, -1)}`} className="grid size-9 place-items-center rounded-md border border-[var(--line)] hover:bg-zinc-50"><ChevronLeft size={17} aria-hidden="true" /></Link>
           <form method="get" className="flex items-center gap-2">
             <label htmlFor="holiday-month" className="sr-only">Calendar month</label>
-            <input id="holiday-month" name="month" type="month" defaultValue={month} className="h-9 rounded-md border border-[var(--line)] bg-white px-2.5 text-sm" />
+            <input id="holiday-month" name="month" type="month" defaultValue={month} className="h-9 w-[132px] rounded-md border border-[var(--line)] bg-white px-2.5 text-sm sm:w-auto" />
             <button type="submit" className="h-9 rounded-md border border-[var(--line)] px-3 text-sm font-medium hover:bg-zinc-50">Go</button>
           </form>
           <Link aria-label="Next month" href={`/holidays?month=${shiftMonth(month, 1)}`} className="grid size-9 place-items-center rounded-md border border-[var(--line)] hover:bg-zinc-50"><ChevronRight size={17} aria-hidden="true" /></Link>
@@ -88,10 +88,15 @@ export default async function HolidaysPage({ searchParams }: { searchParams: Pro
         <p className="inline-flex items-center gap-2 text-sm font-semibold"><CalendarDays size={17} className="text-[var(--blue)]" aria-hidden="true" />{new Intl.DateTimeFormat("en", { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(`${month}-01T00:00:00.000Z`))}</p>
       </section>
 
-      <div className="overflow-x-auto rounded-lg border border-[var(--line)] bg-white">
-        <div className="min-w-[900px]">
-          <div className="grid grid-cols-7 border-b border-[var(--line)] bg-zinc-50 text-xs font-semibold text-[var(--muted)]">
-            {["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map((day) => <div key={day} className="px-3 py-2.5">{day}</div>)}
+      <div className="overflow-hidden rounded-lg border border-[var(--line)] bg-white">
+        <div>
+          <div className="grid grid-cols-7 border-b border-[var(--line)] bg-zinc-50 text-center text-[10px] font-semibold text-[var(--muted)] sm:text-left sm:text-xs">
+            {["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map((day) => (
+              <div key={day} aria-label={day} className="px-0.5 py-2 sm:px-3 sm:py-2.5">
+                <span aria-hidden="true" className="sm:hidden">{day.slice(0, 2)}</span>
+                <span className="hidden sm:inline">{day}</span>
+              </div>
+            ))}
           </div>
           <div className="grid grid-cols-7">
             {dates.map((date) => {
@@ -99,10 +104,10 @@ export default async function HolidaysPage({ searchParams }: { searchParams: Pro
               const isCurrentMonth = date.getUTCMonth() === monthNumber - 1;
               const dayHolidays = holidaysByDate.get(key) ?? [];
               return (
-                <div key={key} className={`min-h-28 border-b border-r border-[var(--line)] p-2.5 ${isCurrentMonth ? "bg-white" : "bg-zinc-50/70"}`}>
-                  <p className={`text-xs font-semibold tabular-nums ${isCurrentMonth ? "text-[var(--ink)]" : "text-zinc-400"}`}>{date.getUTCDate()}</p>
-                  <div className="mt-2 space-y-1">
-                    {dayHolidays.map((holiday) => <div key={holiday.id} className="rounded-sm border-l-2 border-[var(--action)] bg-[var(--mint)] px-2 py-1 text-xs leading-4 text-[var(--ink)]" title={`${holiday.name} · ${holidayTypeLabels[holiday.type]}`}><span className="block truncate font-semibold">{holiday.name}</span><span className="block truncate text-[10px] text-[var(--muted)]">{holidayTypeLabels[holiday.type]}{holiday.branch ? ` · ${holiday.branch}` : ""}</span></div>)}
+                <div key={key} className={`min-h-20 border-b border-r border-[var(--line)] p-1 sm:min-h-28 sm:p-2.5 ${isCurrentMonth ? "bg-white" : "bg-zinc-50/70"}`}>
+                  <p className={`text-[10px] font-semibold tabular-nums sm:text-xs ${isCurrentMonth ? "text-[var(--ink)]" : "text-zinc-400"}`}>{date.getUTCDate()}</p>
+                  <div className="mt-1 space-y-1 sm:mt-2">
+                    {dayHolidays.map((holiday) => <div key={holiday.id} className="rounded-sm border-l-2 border-[var(--action)] bg-[var(--mint)] px-1 py-0.5 text-[9px] leading-3 text-[var(--ink)] sm:px-2 sm:py-1 sm:text-xs sm:leading-4" title={`${holiday.name} · ${holidayTypeLabels[holiday.type]}`}><span className="block truncate font-semibold">{holiday.name}</span><span className="hidden truncate text-[10px] text-[var(--muted)] sm:block">{holidayTypeLabels[holiday.type]}{holiday.branch ? ` · ${holiday.branch}` : ""}</span></div>)}
                   </div>
                 </div>
               );
@@ -117,7 +122,43 @@ export default async function HolidaysPage({ searchParams }: { searchParams: Pro
           <div className="flex min-h-44 flex-col items-center justify-center rounded-lg border border-dashed border-[var(--line)] bg-white px-6 text-center"><CalendarDays size={24} className="text-[var(--muted)]" aria-hidden="true" /><h3 className="mt-3 text-sm font-semibold">No holidays this month</h3><p className="mt-1 text-sm text-[var(--muted)]">{canManage ? "Add a holiday to populate the calendar." : "There are no holidays on the calendar for this month."}</p></div>
         ) : (
           <div className="overflow-hidden rounded-lg border border-[var(--line)] bg-white">
-            <div className="overflow-x-auto"><table className="w-full text-left text-sm">
+            <ul className="divide-y divide-[var(--line)] lg:hidden">
+              {holidays.map((holiday) => (
+                <li key={holiday.id} className="space-y-3 px-4 py-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-xs tabular-nums text-[var(--muted)]">{localDate(holiday.date)}</p>
+                      <h3 className="mt-1 break-words text-sm font-semibold">{holiday.name}</h3>
+                    </div>
+                    {canManage && (
+                      <div className="flex shrink-0 gap-2">
+                        <Link href={`/holidays/${holiday.id}/edit`} className="rounded-md border border-[var(--line)] px-3 py-1.5 text-sm font-medium hover:bg-zinc-50">Edit</Link>
+                        <HolidayDeleteForm id={holiday.id} name={holiday.name} />
+                      </div>
+                    )}
+                  </div>
+                  <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+                    <div className="min-w-0">
+                      <dt className="font-semibold text-[var(--muted)]">Type / scope</dt>
+                      <dd className="mt-1 break-words">{holidayTypeLabels[holiday.type]}{holiday.branch ? ` · ${holiday.branch}` : ""}</dd>
+                    </div>
+                    <div className="min-w-0">
+                      <dt className="font-semibold text-[var(--muted)]">Employee groups</dt>
+                      <dd className="mt-1 break-words">{holiday.applicableEmployeeGroups.length ? holiday.applicableEmployeeGroups.join(", ") : "All employee groups"}</dd>
+                    </div>
+                    <div>
+                      <dt className="font-semibold text-[var(--muted)]">Pay</dt>
+                      <dd className="mt-1">{holiday.isPaid ? "Paid" : "Unpaid"}</dd>
+                    </div>
+                    <div>
+                      <dt className="font-semibold text-[var(--muted)]">Overtime</dt>
+                      <dd className="mt-1">{holiday.overtimeEligible ? "Eligible" : "Not eligible"}</dd>
+                    </div>
+                  </dl>
+                </li>
+              ))}
+            </ul>
+            <div className="hidden overflow-x-auto lg:block"><table className="w-full text-left text-sm">
               <thead className="border-b border-[var(--line)] bg-zinc-50 text-xs text-[var(--muted)]"><tr><th className="px-4 py-3 font-semibold">Date</th><th className="px-4 py-3 font-semibold">Holiday</th><th className="px-4 py-3 font-semibold">Type / scope</th><th className="px-4 py-3 font-semibold">Paid</th><th className="px-4 py-3 font-semibold">OT</th>{canManage && <th className="px-4 py-3 text-right font-semibold">Actions</th>}</tr></thead>
               <tbody className="divide-y divide-[var(--line)]">{holidays.map((holiday) => <tr key={holiday.id}>
                 <td className="whitespace-nowrap px-4 py-3 tabular-nums">{localDate(holiday.date)}</td>
