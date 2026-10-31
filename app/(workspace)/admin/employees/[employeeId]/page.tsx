@@ -28,9 +28,15 @@ function roleLabel(role: string | undefined) {
   return role === "EMPLOYEE" ? "Employee" : "No account";
 }
 
-export default async function EmployeeDetailPage({ params }: { params: Promise<{ employeeId: string }> }) {
+export default async function EmployeeDetailPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ employeeId: string }>;
+  searchParams: Promise<{ refresh?: string }>;
+}) {
   const admin = await requirePagePermission("employee:manage");
-  const { employeeId } = await params;
+  const [{ employeeId }, query] = await Promise.all([params, searchParams]);
   let employee;
   try {
     employee = await getEmployee(admin, employeeId);
@@ -40,6 +46,7 @@ export default async function EmployeeDetailPage({ params }: { params: Promise<{
 
   return (
     <div className="space-y-6">
+      {query.refresh === "failed" && <p role="status" className="max-w-3xl rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">The employee change was saved, but the page could not refresh. Reload to see the latest details.</p>}
       <div>
         <Link href="/admin/employees" className="inline-flex items-center gap-1 text-sm font-medium text-[var(--muted)] hover:text-[var(--ink)]"><ChevronLeft size={16} aria-hidden="true" /> Employees</Link>
         <div className="mt-5 flex flex-wrap items-end justify-between gap-3">

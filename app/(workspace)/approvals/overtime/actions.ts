@@ -12,6 +12,7 @@ import {
   OvertimeRequestAccessError,
   OvertimeRequestNotFoundError,
 } from "@/lib/overtime/service";
+import { appendRefreshWarning, logServerActionError, revalidateAfterCommit } from "@/lib/diagnostics/server-action";
 
 export type OvertimeDecisionActionState = { error: string } | { success: string } | null;
 
@@ -24,7 +25,7 @@ function actionError(error: unknown) {
     || error instanceof OvertimeRequestAccessError
     || error instanceof OvertimeRequestNotFoundError
   ) return error.message;
-  console.error("Overtime request decision failed", error instanceof Error ? error.name : "Unknown error");
+  logServerActionError("overtime.request_decision", error, "/approvals/overtime");
   return "The overtime decision could not be saved. Try again shortly.";
 }
 
@@ -45,13 +46,15 @@ export async function decideOvertimeRequestAction(
       action: formData.get("action"),
       reason: formData.get("reason"),
     });
-    revalidatePath("/approvals/overtime");
-    revalidatePath("/dashboard");
-    revalidatePath("/overtime");
+    const refreshed = revalidateAfterCommit(() => {
+      revalidatePath("/approvals/overtime");
+      revalidatePath("/dashboard");
+      revalidatePath("/overtime");
+    }, (error) => logServerActionError("overtime.request_decision_revalidation", error, "/approvals/overtime"));
     return {
-      success: result.currentApprovalStage === "MANAGER"
+      success: appendRefreshWarning(result.currentApprovalStage === "MANAGER"
         ? "Overtime request forwarded to the assigned Manager."
-        : result.status === "APPROVED" ? "Overtime request approved." : "Overtime request rejected.",
+        : result.status === "APPROVED" ? "Overtime request approved." : "Overtime request rejected.", refreshed),
     };
   } catch (error) {
     return { error: actionError(error) };

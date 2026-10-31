@@ -6,7 +6,7 @@ import { canAccessPersonalAttendance } from "@/lib/auth/permissions";
 import { applyAttendanceAction, AttendanceStateError } from "@/lib/attendance/service";
 import { attendanceActionSchema } from "@/lib/attendance/validation";
 import { completeAttendanceAction } from "@/lib/attendance/action-completion";
-import { attendanceActionErrorDetails } from "@/lib/attendance/action-diagnostics";
+import { logAttendanceActionError } from "@/lib/attendance/action-diagnostics";
 
 export type AttendanceActionResult = { ok: true; message: string } | { ok: false; error: string };
 
@@ -26,14 +26,12 @@ export async function performAttendanceAction(input: unknown): Promise<Attendanc
   } catch (error) {
     if (error instanceof AuthenticationError) return { ok: false, error: error.message };
     if (error instanceof AttendanceStateError) return { ok: false, error: error.message };
-    console.error("Attendance update failed", attendanceActionErrorDetails(error));
+    logAttendanceActionError("attendance.submit", error);
     return { ok: false, error: "Attendance could not be updated. Try again shortly." };
   }
 
   return completeAttendanceAction(result.calculationWarning, () => {
     revalidatePath("/dashboard");
     revalidatePath("/attendance");
-  }, (error) => {
-    console.error("Attendance saved but page revalidation failed", attendanceActionErrorDetails(error));
-  });
+  }, (error) => logAttendanceActionError("attendance.submit_revalidation", error));
 }

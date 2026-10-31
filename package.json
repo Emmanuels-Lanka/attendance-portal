@@ -7,7 +7,7 @@
     "build": "prisma generate && next build",
     "start": "next start",
     "lint": "eslint .",
-    "test": "node --conditions=react-server --import tsx --test lib/attendance/*.test.ts lib/auth/*.test.ts lib/employees/*.test.ts lib/documents/*.test.ts lib/leave/*.test.ts lib/shifts/*.test.ts prisma/seed.test.mjs",
+    "test": "node --conditions=react-server --import tsx --test components/*.test.ts lib/attendance/*.test.ts lib/auth/*.test.ts lib/employees/*.test.ts lib/documents/*.test.ts lib/leave/*.test.ts lib/shifts/*.test.ts lib/wfh/*.test.ts lib/diagnostics/*.test.ts prisma/seed.test.mjs",
     "typecheck": "tsc --noEmit",
     "db:generate": "prisma generate",
     "db:validate": "prisma validate",

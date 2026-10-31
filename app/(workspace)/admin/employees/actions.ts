@@ -23,8 +23,19 @@ import {
   ShiftNotFoundError,
   ShiftWorkingDaysConfigurationError,
 } from "@/lib/shifts/service";
+import { employeeMutationRedirect } from "@/lib/employees/action-feedback";
+import { appendRefreshWarning, logServerActionError, revalidateAfterCommit } from "@/lib/diagnostics/server-action";
+import type { EmployeeStatusActionState } from "@/lib/employees/status-form-feedback";
 
 export type EmployeeActionState = { error: string } | null;
+export type { EmployeeStatusActionState } from "@/lib/employees/status-form-feedback";
+
+class EmployeeStatusTargetNotFoundError extends Error {
+  constructor() {
+    super("Employee account was not found.");
+    this.name = "EmployeeStatusTargetNotFoundError";
+  }
+}
 
 function employeeFormData(formData: FormData) {
   const profileFields = [
@@ -123,7 +134,7 @@ function actionError(error: unknown) {
   if (error instanceof ShiftWorkingDaysConfigurationError) return error.message;
   if (error instanceof EmployeeReportingAssignmentError) return error.message;
   if (error instanceof z.ZodError) return error.issues[0]?.message ?? "Check the employee details and try again.";
-  console.error("Employee management action failed", error instanceof Error ? error.name : "Unknown error");
+  logServerActionError("employee.management", error, "/admin/employees");
   return "The employee could not be saved. Try again shortly.";
 }
 
@@ -145,8 +156,9 @@ export async function createEmployeeAction(_state: EmployeeActionState, formData
     return { error: actionError(error) };
   }
 
-  revalidatePath("/admin/employees");
-  redirect(`/admin/employees/${employee.id}`);
+  redirect(employeeMutationRedirect(employee.id, () => {
+    revalidatePath("/admin/employees");
+  }, (error) => logServerActionError("employee.create_revalidation", error, "/admin/employees")));
 }
 
 export async function updateEmployeeAction(employeeId: string, _state: EmployeeActionState, formData: FormData): Promise<EmployeeActionState> {
@@ -171,31 +183,52 @@ export async function updateEmployeeAction(employeeId: string, _state: EmployeeA
     return { error: actionError(error) };
   }
 
-  revalidatePath("/admin/employees");
-  revalidatePath(`/admin/employees/${employeeId}`);
-  redirect(`/admin/employees/${employeeId}`);
+  redirect(employeeMutationRedirect(employeeId, () => {
+    revalidatePath("/admin/employees");
+    revalidatePath(`/admin/employees/${employeeId}`);
+  }, (error) => logServerActionError("employee.update_revalidation", error, "/admin/employees")));
 }
 
-export async function setEmployeeActiveAction(employeeId: string, isActive: boolean) {
+export async function setEmployeeActiveAction(
+  employeeId: string,
+  isActive: boolean,
+  _previousState: EmployeeStatusActionState,
+): Promise<EmployeeStatusActionState> {
+  void _previousState;
   const admin = await requirePermission("employee:manage");
-  await runEmployeeTransaction(prisma, async (tx) => {
-    const previous = await tx.user.findUnique({ where: { id: employeeId }, select: { isActive: true } });
-    if (!previous) throw new Error("Employee not found.");
-    if (previous.isActive === isActive) return;
-    await setEmployeeActive(admin, employeeId, isActive, tx);
-    await tx.attendanceAuditLog.create({
-      data: {
-        employeeId,
-        actorId: admin.id,
-        actionType: isActive ? "EMPLOYEE_ACTIVATED" : "EMPLOYEE_DEACTIVATED",
-        previousValues: { isActive: previous.isActive },
-        newValues: { isActive },
-        reason: isActive ? "Administrator reactivated the employee account." : "Administrator deactivated the account; attendance history is retained.",
-      },
-      select: { id: true, employeeId: true, actorId: true, actionType: true, previousValues: true, newValues: true, reason: true, createdAt: true },
+  try {
+    await runEmployeeTransaction(prisma, async (tx) => {
+      const previous = await tx.user.findUnique({ where: { id: employeeId }, select: { isActive: true } });
+      if (!previous) throw new EmployeeStatusTargetNotFoundError();
+      if (previous.isActive === isActive) return;
+      await setEmployeeActive(admin, employeeId, isActive, tx);
+      await tx.attendanceAuditLog.create({
+        data: {
+          employeeId,
+          actorId: admin.id,
+          actionType: isActive ? "EMPLOYEE_ACTIVATED" : "EMPLOYEE_DEACTIVATED",
+          previousValues: { isActive: previous.isActive },
+          newValues: { isActive },
+          reason: isActive ? "Administrator reactivated the employee account." : "Administrator deactivated the account; attendance history is retained.",
+        },
+        select: { id: true, employeeId: true, actorId: true, actionType: true, previousValues: true, newValues: true, reason: true, createdAt: true },
+      });
     });
-  });
-  revalidatePath("/admin/employees");
-  revalidatePath(`/admin/employees/${employeeId}`);
-  redirect(`/admin/employees/${employeeId}`);
+  } catch (error) {
+    if (error instanceof EmployeeStatusTargetNotFoundError) return { error: error.message };
+    logServerActionError("employee.status_update", error, "/admin/employees");
+    return { error: "Employee status could not be updated. Try again shortly." };
+  }
+
+  const refreshed = revalidateAfterCommit(() => {
+    revalidatePath("/admin/employees");
+    revalidatePath(`/admin/employees/${employeeId}`);
+  }, (error) => logServerActionError("employee.status_revalidation", error, "/admin/employees"));
+  return {
+    success: appendRefreshWarning(
+      isActive ? "Employee account activated." : "Employee account deactivated.",
+      refreshed,
+    ),
+    isActive,
+  };
 }

@@ -5,7 +5,7 @@ import { requirePageUser } from "@/lib/auth/session";
 import { listOwnLeaveRequests } from "@/lib/leave/request-service";
 import { redirect } from "next/navigation";
 
-type SearchParams = { success?: string; page?: string };
+type SearchParams = { success?: string; refresh?: string; page?: string };
 
 export default async function LeaveRequestsPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
   const actor = await requirePageUser();
@@ -25,7 +25,14 @@ export default async function LeaveRequestsPage({ searchParams }: { searchParams
           <Plus size={17} aria-hidden="true" /> Apply for Leave
         </Link>
       </div>
-      <LeaveRequestHistory requests={result.items} success={params.success} page={result.page} pageCount={result.pageCount} timeZone={actor.timeZone} />
+      <LeaveRequestHistory
+        requests={result.items}
+        success={params.success}
+        refreshStatus={params.refresh}
+        page={result.page}
+        pageCount={result.pageCount}
+        timeZone={actor.timeZone}
+      />
     </div>
   );
 }

@@ -15,6 +15,7 @@ import { listAttendanceLocations } from "@/lib/attendance/location-service";
 import { canReadScopedAttendance, hasPermission } from "@/lib/auth/permissions";
 import { getDefaultTimeZone } from "@/lib/attendance/settings";
 import { requirePageUser } from "@/lib/auth/session";
+import { measureServerOperation } from "@/lib/diagnostics/server-timing";
 
 type SearchParams = Record<string, string | string[] | undefined>;
 
@@ -57,16 +58,25 @@ export default async function DailyAttendancePage({
 }: {
   searchParams: Promise<SearchParams>;
 }) {
-  const actor = await requirePageUser();
-  const canReadAttendance = actor.role === "ADMIN"
-    || hasPermission(actor.role, "attendance:manage")
-    || canReadScopedAttendance(actor.role);
+  const actor = await requirePageUser("admin.attendance.daily");
+  const canReadAttendance = await measureServerOperation(
+    "admin.attendance.daily",
+    "attendance.permission_check",
+    () => actor.role === "ADMIN"
+      || hasPermission(actor.role, "attendance:manage")
+      || canReadScopedAttendance(actor.role),
+  );
   if (!canReadAttendance) redirect("/dashboard");
   const audienceLabel = actor.role === "HR_ADMINISTRATOR" ? "HR attendance"
     : actor.role === "DEPARTMENT_MANAGER" ? "Department attendance"
       : actor.role === "SUPERVISOR" ? "Assigned attendance" : "Administration";
   const params = await searchParams;
-  const defaultDate = dailyAttendanceDateInTimeZone(new Date(), await getDefaultTimeZone());
+  const defaultTimeZone = await measureServerOperation(
+    "admin.attendance.daily",
+    "attendance.default_timezone_lookup",
+    getDefaultTimeZone,
+  );
+  const defaultDate = dailyAttendanceDateInTimeZone(new Date(), defaultTimeZone);
   const filterResult = parseDailyAttendancePageFilters(params, defaultDate);
 
   if (!filterResult.success) {
@@ -90,7 +100,11 @@ export default async function DailyAttendancePage({
 
   let result: Awaited<ReturnType<typeof listCalculatedDailyAttendance>>;
   try {
-    result = await listCalculatedDailyAttendance(actor, filterResult.data);
+    result = await measureServerOperation(
+      "admin.attendance.daily",
+      "attendance.daily_records_load",
+      () => listCalculatedDailyAttendance(actor, filterResult.data),
+    );
   } catch (error) {
     console.error("Calculated daily attendance read failed", error instanceof Error ? error.name : "Unknown error");
     return (
@@ -112,11 +126,15 @@ export default async function DailyAttendancePage({
   let locationReadFailed = false;
   if (canReadLocations && filters.date) {
     try {
-      locationResult = await listAttendanceLocations(actor, {
-        date: filters.date,
-        employeeId: filters.employeeId,
-        departmentId: filters.departmentId,
-      });
+      locationResult = await measureServerOperation(
+        "admin.attendance.daily",
+        "attendance.locations_load",
+        () => listAttendanceLocations(actor, {
+          date: filters.date,
+          employeeId: filters.employeeId,
+          departmentId: filters.departmentId,
+        }),
+      );
     } catch (error) {
       locationReadFailed = true;
       console.error("Attendance location read failed", error instanceof Error ? error.name : "Unknown error");

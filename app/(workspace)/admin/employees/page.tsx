@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Plus, Search, Users } from "lucide-react";
 import { requirePagePermission } from "@/lib/auth/session";
 import { listEmployees } from "@/lib/employees/service";
+import { measureServerOperation } from "@/lib/diagnostics/server-timing";
 
 type SearchParams = { q?: string | string[]; page?: string | string[] };
 
@@ -16,11 +17,13 @@ function profileState(completedAt: Date | null, required: boolean) {
 }
 
 export default async function AdminEmployeesPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
-  const admin = await requirePagePermission("employee:manage");
+  const admin = await requirePagePermission("employee:manage", "admin.employees");
   const params = await searchParams;
   const query = single(params.q).slice(0, 100);
   const page = Number(single(params.page)) || 1;
-  const result = await listEmployees(admin, { query, page });
+  const result = await measureServerOperation("admin.employees", "employees.directory_load", () => (
+    listEmployees(admin, { query, page })
+  ));
   const pageHref = (pageNumber: number) => `/admin/employees?${new URLSearchParams({ ...(query ? { q: query } : {}), page: String(pageNumber) })}`;
 
   return (

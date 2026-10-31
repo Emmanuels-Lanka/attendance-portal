@@ -18,6 +18,8 @@ import {
   LeaveCancellationStageError,
   requestOwnLeaveCancellation,
 } from "@/lib/leave/cancellation-service";
+import { leaveRequestSubmissionRedirect } from "@/lib/leave/submission-feedback";
+import { appendRefreshWarning, logServerActionError, revalidateAfterCommit } from "@/lib/diagnostics/server-action";
 
 export type LeaveRequestActionState = { error: string } | { success: string } | null;
 
@@ -30,7 +32,7 @@ function actionError(error: unknown) {
     || error instanceof LeaveRequestOverlapError
     || error instanceof LeaveRequestScheduleError
   ) return error.message;
-  console.error("Leave request submission failed", error instanceof Error ? error.name : "Unknown error");
+  logServerActionError("leave.request_submit", error, "/leave");
   return "Your Leave request could not be submitted. Try again shortly.";
 }
 
@@ -54,8 +56,9 @@ export async function submitLeaveRequestAction(
     return { error: actionError(error) };
   }
 
-  revalidatePath("/leave");
-  redirect("/leave?success=request-submitted");
+  const refreshed = revalidateAfterCommit(() => revalidatePath("/leave"),
+    (error) => logServerActionError("leave.request_submit_revalidation", error, "/leave"));
+  redirect(leaveRequestSubmissionRedirect(refreshed));
 }
 
 export async function requestLeaveCancellationAction(
@@ -66,14 +69,16 @@ export async function requestLeaveCancellationAction(
   const actor = await requireUser();
   try {
     const result = await requestOwnLeaveCancellation(actor, leaveRequestId, { reason: formData.get("reason") });
-    revalidatePath("/leave");
-    revalidatePath("/approvals/leave");
-    revalidatePath("/dashboard");
-    revalidatePath("/leave/balance");
+    const refreshed = revalidateAfterCommit(() => {
+      revalidatePath("/leave");
+      revalidatePath("/approvals/leave");
+      revalidatePath("/dashboard");
+      revalidatePath("/leave/balance");
+    }, (error) => logServerActionError("leave.cancellation_submit_revalidation", error, "/leave"));
     return {
-      success: result.status === "CANCELLED"
+      success: appendRefreshWarning(result.status === "CANCELLED"
         ? "Your pending Leave request was cancelled."
-        : "Your cancellation was submitted. Approved leave remains active until it is approved.",
+        : "Your cancellation was submitted. Approved leave remains active until it is approved.", refreshed),
     };
   } catch (error) {
     if (error instanceof z.ZodError) return { error: error.issues[0]?.message ?? "Check the cancellation reason." };
@@ -82,7 +87,7 @@ export async function requestLeaveCancellationAction(
       || error instanceof LeaveCancellationNotFoundError
       || error instanceof LeaveCancellationStageError
     ) return { error: error.message };
-    console.error("Leave cancellation request failed", error instanceof Error ? error.name : "Unknown error");
+    logServerActionError("leave.cancellation_submit", error, "/leave");
     return { error: "The Leave cancellation could not be submitted. Try again shortly." };
   }
 }

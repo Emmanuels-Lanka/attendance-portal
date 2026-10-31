@@ -10,6 +10,7 @@ import {
   requiresProfileCompletion,
 } from "@/lib/employees/profile-service";
 import { hasPermission, type Permission } from "@/lib/auth/permissions";
+import { measureServerOperation } from "@/lib/diagnostics/server-timing";
 
 const cookieName = "attendance_session";
 const sessionDurationSeconds = 60 * 60 * 24 * 7;
@@ -74,29 +75,31 @@ export async function destroySession() {
   cookieStore.delete(cookieName);
 }
 
-export async function getCurrentUser() {
-  const cookieStore = await cookies();
-  const token = cookieStore.get(cookieName)?.value;
-  if (!token) return null;
+export async function getCurrentUser(route = "unknown") {
+  return measureServerOperation(route, "auth.session_lookup", async () => {
+    const cookieStore = await cookies();
+    const token = cookieStore.get(cookieName)?.value;
+    if (!token) return null;
 
-  let userId: string;
-  let sessionVersion: number;
-  try {
-    const { payload } = await jwtVerify(token, getSessionKey(), {
-      issuer: "attendance-system",
-      audience: "attendance-app",
-      algorithms: ["HS256"],
-    });
-    if (!payload.sub) return null;
-    userId = payload.sub;
-    const versionClaim = (payload as typeof payload & { sessionVersion?: unknown }).sessionVersion ?? 0;
-    if (typeof versionClaim !== "number" || !Number.isSafeInteger(versionClaim) || versionClaim < 0) return null;
-    sessionVersion = versionClaim;
-  } catch {
-    return null;
-  }
+    let userId: string;
+    let sessionVersion: number;
+    try {
+      const { payload } = await jwtVerify(token, getSessionKey(), {
+        issuer: "attendance-system",
+        audience: "attendance-app",
+        algorithms: ["HS256"],
+      });
+      if (!payload.sub) return null;
+      userId = payload.sub;
+      const versionClaim = (payload as typeof payload & { sessionVersion?: unknown }).sessionVersion ?? 0;
+      if (typeof versionClaim !== "number" || !Number.isSafeInteger(versionClaim) || versionClaim < 0) return null;
+      sessionVersion = versionClaim;
+    } catch {
+      return null;
+    }
 
-  return findActiveSessionUser(userId, undefined, sessionVersion);
+    return findActiveSessionUser(userId, undefined, sessionVersion, route);
+  });
 }
 
 export async function requireUser() {
@@ -120,18 +123,22 @@ export async function requirePermission(permission: Permission) {
   return user;
 }
 
-export async function requirePageUser() {
-  const user = await getCurrentUser();
+export async function requirePageUser(route = "unknown") {
+  const user = await getCurrentUser(route);
   if (!user) redirect("/login");
-  if (requiresProfileCompletion(user.role, (await getEmployeeProfileOnboardingStatus(user.id)).required)) {
+  const profileStatus = await measureServerOperation(route, "auth.profile_status_lookup", () => (
+    getEmployeeProfileOnboardingStatus(user.id)
+  ));
+  if (requiresProfileCompletion(user.role, profileStatus.required)) {
     redirect("/complete-profile");
   }
   return user;
 }
 
-export async function requirePagePermission(permission: Permission) {
-  const user = await requirePageUser();
-  if (!hasPermission(user.role, permission)) redirect("/dashboard");
+export async function requirePagePermission(permission: Permission, route = "unknown") {
+  const user = await requirePageUser(route);
+  const allowed = await measureServerOperation(route, "auth.permission_check", () => hasPermission(user.role, permission));
+  if (!allowed) redirect("/dashboard");
   return user;
 }
 

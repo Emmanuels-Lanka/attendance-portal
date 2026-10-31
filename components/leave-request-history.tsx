@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { CalendarDays } from "lucide-react";
+import { LeaveRequestFeedback } from "./leave-request-feedback";
 
 type LeaveRequestItem = {
   id: string;
@@ -25,19 +26,21 @@ function dateOnly(date: Date) {
 export function LeaveRequestHistory({
   requests,
   success,
+  refreshStatus,
   page,
   pageCount,
   timeZone,
 }: {
   requests: LeaveRequestItem[];
   success?: string;
+  refreshStatus?: string;
   page: number;
   pageCount: number;
   timeZone: string;
 }) {
   return (
     <div className="space-y-4">
-      {success === "request-submitted" && <p role="status" className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">Your Leave request was submitted and is pending review.</p>}
+      <LeaveRequestFeedback success={success} refreshStatus={refreshStatus} />
       <section className="overflow-hidden rounded-lg border border-[var(--line)] bg-white shadow-sm" aria-label="Leave request history">
         {requests.length === 0 ? (
           <div className="flex min-h-56 flex-col items-center justify-center px-6 text-center">

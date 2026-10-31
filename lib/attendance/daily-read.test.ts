@@ -31,7 +31,11 @@ const persistedRecord = {
   shift: { name: "Day Shift" },
 };
 
-function makeDatabase(total = 1, records = [persistedRecord]) {
+function makeDatabase(
+  total = 1,
+  records = [persistedRecord],
+  employees = [{ id: "employee-1", name: "Alex Employee", employeeId: "E-1" }],
+) {
   const calls: { count?: unknown; findMany?: unknown; employees?: unknown; departments?: unknown } = {};
   const database = {
     attendanceDaily: {
@@ -48,7 +52,7 @@ function makeDatabase(total = 1, records = [persistedRecord]) {
       findUnique: async () => ({ departmentId: "department-1" }),
       findMany: async (args: unknown) => {
         calls.employees = args;
-        return [{ id: "employee-1", name: "Alex Employee", employeeId: "E-1" }];
+        return employees;
       },
     },
     department: {
@@ -183,15 +187,31 @@ describe("calculated daily attendance read service", () => {
     assert.equal(result.pageCount, 2);
   });
 
-  it("allows HR to read employee attendance and scopes both choices and records away from privileged accounts", async () => {
-    const stub = makeDatabase();
-    await listCalculatedDailyAttendance({ role: Role.HR_ADMINISTRATOR }, {
+  it("allows HR to read regular employees and only their own linked privileged employee profile", async () => {
+    const hrActorId = "hr-user";
+    const hrRecord = {
+      ...persistedRecord,
+      id: "daily-hr",
+      employee: { ...persistedRecord.employee, id: "hr-employee", name: "HR Employee" },
+    };
+    const stub = makeDatabase(51, [persistedRecord, hrRecord], [
+      { id: "employee-1", name: "Alex Employee", employeeId: "E-1" },
+      { id: "hr-employee", name: "HR Employee", employeeId: "HR-1" },
+    ]);
+    const result = await listCalculatedDailyAttendance({ id: hrActorId, role: Role.HR_ADMINISTRATOR }, {
       date: "2026-10-05",
-      employeeId: "privileged-employee-record",
+      employeeId: "hr-employee",
       departmentId: "department-1",
+      status: "PRESENT",
+      page: 2,
     }, stub.database);
 
-    const employeeScope = { user: { is: { role: "EMPLOYEE" } } };
+    const employeeScope = {
+      OR: [
+        { user: { is: { role: "EMPLOYEE" } } },
+        { userId: hrActorId },
+      ],
+    };
     assert.deepEqual(stub.calls.employees, {
       where: employeeScope,
       select: { id: true, name: true, employeeId: true },
@@ -200,8 +220,58 @@ describe("calculated daily attendance read service", () => {
     assert.deepEqual(stub.calls.count, {
       where: {
         date: new Date("2026-10-05T00:00:00.000Z"),
-        employeeId: "privileged-employee-record",
+        employeeId: "hr-employee",
         employee: { AND: [employeeScope, { departmentId: "department-1" }] },
+        status: "PRESENT",
+      },
+    });
+    const findMany = stub.calls.findMany as {
+      where: unknown;
+      orderBy: unknown;
+      skip: number;
+      take: number;
+    };
+    assert.deepEqual(findMany.where, (stub.calls.count as { where: unknown }).where);
+    assert.deepEqual(findMany.orderBy, [{ date: "desc" }, { employee: { name: "asc" } }]);
+    assert.equal(findMany.skip, 50);
+    assert.equal(findMany.take, 50);
+    assert.deepEqual(result.employees.map(({ id }) => id), ["employee-1", "hr-employee"]);
+    assert.deepEqual(result.records.map(({ employee }) => employee.id), ["employee-1", "hr-employee"]);
+  });
+
+  it("does not include other HR or system administrator employee profiles in HR attendance scope", async () => {
+    const hrActorId = "hr-user";
+    const stub = makeDatabase();
+    await listCalculatedDailyAttendance({ id: hrActorId, role: Role.HR_ADMINISTRATOR }, {}, stub.database);
+
+    const employeeScope = (stub.calls.employees as { where: unknown }).where;
+    assert.deepEqual(employeeScope, {
+      OR: [
+        { user: { is: { role: "EMPLOYEE" } } },
+        { userId: hrActorId },
+      ],
+    });
+    const attendanceWhere = (stub.calls.findMany as { where: { employee?: { AND?: unknown[] } } }).where;
+    assert.deepEqual(attendanceWhere.employee?.AND?.[0], employeeScope);
+  });
+
+  it("does not synthesize an attendance row when the HR Administrator has no employee profile", async () => {
+    const stub = makeDatabase(0, []);
+    const result = await listCalculatedDailyAttendance({
+      id: "hr-without-profile",
+      role: Role.HR_ADMINISTRATOR,
+    }, {}, stub.database);
+
+    assert.equal(result.total, 0);
+    assert.deepEqual(result.records, []);
+    assert.deepEqual((stub.calls.count as { where: unknown }).where, {
+      employee: {
+        AND: [{
+          OR: [
+            { user: { is: { role: "EMPLOYEE" } } },
+            { userId: "hr-without-profile" },
+          ],
+        }],
       },
     });
   });
@@ -268,7 +338,14 @@ describe("calculated daily attendance read service", () => {
 
     const actors = [
       { actor: admin, expectedEmployee: undefined },
-      { actor: { role: Role.HR_ADMINISTRATOR }, expectedEmployee: { AND: [{ user: { is: { role: "EMPLOYEE" } } }] } },
+      {
+        actor: { role: Role.HR_ADMINISTRATOR },
+        expectedEmployee: {
+          AND: [{
+            OR: [{ user: { is: { role: "EMPLOYEE" } } }],
+          }],
+        },
+      },
       {
         actor: { id: "manager-1", role: Role.DEPARTMENT_MANAGER },
         expectedEmployee: { AND: [{ departmentId: "department-1", user: { is: { role: "EMPLOYEE" } } }] },

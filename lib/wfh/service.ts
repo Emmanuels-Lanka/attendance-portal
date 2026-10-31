@@ -3,7 +3,7 @@ import "server-only";
 import {
   WorkFromHomeApprovalStage,
   WorkFromHomeRequestStatus,
-  type Prisma,
+  Prisma,
   type PrismaClient,
   type Role,
 } from "@prisma/client";
@@ -71,6 +71,13 @@ export class WorkFromHomeRequestTimeError extends Error {
   constructor() {
     super("Enter valid start and end times in your configured timezone; the end time must be later than the start time.");
     this.name = "WorkFromHomeRequestTimeError";
+  }
+}
+
+export class WorkFromHomeRequestConflictError extends Error {
+  constructor() {
+    super("This WFH request overlaps an existing pending or approved request.");
+    this.name = "WorkFromHomeRequestConflictError";
   }
 }
 
@@ -154,6 +161,8 @@ export async function submitOwnWorkFromHomeRequest(
       },
     });
     if (!employee?.userId) throw new WorkFromHomeEmployeeNotFoundError();
+    await transaction.$queryRaw`SELECT "id" FROM "Employee" WHERE "id" = ${employee.id} FOR UPDATE`;
+
     const supervisor = employee.supervisor;
     if (!supervisor?.userId || supervisor.user?.role !== "SUPERVISOR" || !supervisor.user.isActive) {
       throw new WorkFromHomeApproverNotFoundError("Supervisor");
@@ -162,6 +171,17 @@ export async function submitOwnWorkFromHomeRequest(
     if (!manager?.userId || manager.user?.role !== "DEPARTMENT_MANAGER" || !manager.user.isActive) {
       throw new WorkFromHomeApproverNotFoundError("Manager");
     }
+
+    const conflictingRequest = await transaction.workFromHomeRequest.findFirst({
+      where: {
+        employeeId: employee.id,
+        status: { in: [WorkFromHomeRequestStatus.PENDING, WorkFromHomeRequestStatus.APPROVED] },
+        startAt: { lt: endAt },
+        endAt: { gt: startAt },
+      },
+      select: { id: true },
+    });
+    if (conflictingRequest) throw new WorkFromHomeRequestConflictError();
 
     const request = await transaction.workFromHomeRequest.create({
       data: {
@@ -205,7 +225,7 @@ export async function submitOwnWorkFromHomeRequest(
       select: { id: true },
     });
     return request;
-  });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
 }
 
 export async function listOwnWorkFromHomeRequests(

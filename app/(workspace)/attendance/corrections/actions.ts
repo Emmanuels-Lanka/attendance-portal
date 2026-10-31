@@ -17,6 +17,8 @@ import {
   submitDailyAttendanceCorrection,
 } from "@/lib/attendance/correction-service";
 import { attendanceCorrectionInstant } from "@/lib/attendance/correction-input";
+import { measureServerOperation } from "@/lib/diagnostics/server-timing";
+import { appendRefreshWarning, logServerActionError, revalidateAfterCommit } from "@/lib/diagnostics/server-action";
 
 export type AttendanceCorrectionSubmissionState =
   | { error: string }
@@ -61,7 +63,7 @@ function actionError(error: unknown) {
     || error instanceof DailyAttendanceCorrectionTargetNotFoundError
     || error instanceof DailyAttendanceCorrectionInvalidValuesError
   ) return error.message;
-  console.error("Attendance correction submission failed", error instanceof Error ? error.name : "Unknown error");
+  logServerActionError("attendance.correction_submit", error, "/attendance/corrections");
   return "Your attendance correction could not be submitted. Try again shortly.";
 }
 
@@ -94,16 +96,22 @@ export async function submitAttendanceCorrectionAction(
         ...(parsed.firstIn ? { firstIn: attendanceCorrectionInstant(parsed.firstIn, actor.timeZone, parsed.attendanceDate) } : {}),
         ...(parsed.lastOut ? { lastOut: attendanceCorrectionInstant(parsed.lastOut, actor.timeZone, parsed.attendanceDate) } : {}),
       };
-      await submitAttendanceDateCorrection(actor, {
-        attendanceDate: parsed.attendanceDate,
-        requestedValues,
-        requestedMode: parsed.requestedMode,
-        reason: parsed.reason,
-      });
-      revalidatePath("/attendance/corrections");
-      revalidatePath("/approvals/attendance-corrections");
-      revalidatePath("/dashboard");
-      return { success: "Your attendance correction request was submitted for review." };
+      await measureServerOperation(
+        "/attendance/corrections",
+        "attendance.correction_submit_date",
+        () => submitAttendanceDateCorrection(actor, {
+          attendanceDate: parsed.attendanceDate,
+          requestedValues,
+          requestedMode: parsed.requestedMode,
+          reason: parsed.reason,
+        }),
+      );
+      const refreshed = revalidateAfterCommit(() => {
+        revalidatePath("/attendance/corrections");
+        revalidatePath("/approvals/attendance-corrections");
+        revalidatePath("/dashboard");
+      }, (error) => logServerActionError("attendance.correction_submit_date_revalidation", error, "/attendance/corrections"));
+      return { success: appendRefreshWarning("Your attendance correction request was submitted for review.", refreshed) };
     }
 
     const parsed = correctionFormSchema.parse({
@@ -122,13 +130,19 @@ export async function submitAttendanceCorrectionAction(
         ? { lastOut: null }
         : parsed.lastOut ? { lastOut: attendanceCorrectionInstant(parsed.lastOut, actor.timeZone) } : {}),
     };
-    await submitDailyAttendanceCorrection(actor, parsed.dailyAttendanceId, {
-      requestedValues,
-      reason: parsed.reason,
-    });
-    revalidatePath("/attendance/corrections");
-    revalidatePath("/dashboard");
-    return { success: "Your attendance correction request was submitted for review." };
+    await measureServerOperation(
+      "/attendance/corrections",
+      "attendance.correction_submit_daily",
+      () => submitDailyAttendanceCorrection(actor, parsed.dailyAttendanceId, {
+        requestedValues,
+        reason: parsed.reason,
+      }),
+    );
+    const refreshed = revalidateAfterCommit(() => {
+      revalidatePath("/attendance/corrections");
+      revalidatePath("/dashboard");
+    }, (error) => logServerActionError("attendance.correction_submit_daily_revalidation", error, "/attendance/corrections"));
+    return { success: appendRefreshWarning("Your attendance correction request was submitted for review.", refreshed) };
   } catch (error) {
     return { error: actionError(error) };
   }
@@ -149,14 +163,20 @@ export async function submitAttendanceSessionModeCorrectionAction(
       requestedMode: formData.get("requestedMode"),
       reason: formData.get("reason"),
     });
-    await submitAttendanceSessionModeCorrection(actor, parsed.sessionId, {
-      requestedMode: parsed.requestedMode,
-      reason: parsed.reason,
-    });
-    revalidatePath("/attendance/corrections");
-    revalidatePath("/dashboard");
-    revalidatePath("/attendance");
-    return { success: "Your work-mode correction request was submitted for review." };
+    await measureServerOperation(
+      "/attendance/corrections",
+      "attendance.correction_submit_session_mode",
+      () => submitAttendanceSessionModeCorrection(actor, parsed.sessionId, {
+        requestedMode: parsed.requestedMode,
+        reason: parsed.reason,
+      }),
+    );
+    const refreshed = revalidateAfterCommit(() => {
+      revalidatePath("/attendance/corrections");
+      revalidatePath("/dashboard");
+      revalidatePath("/attendance");
+    }, (error) => logServerActionError("attendance.correction_submit_session_mode_revalidation", error, "/attendance/corrections"));
+    return { success: appendRefreshWarning("Your work-mode correction request was submitted for review.", refreshed) };
   } catch (error) {
     return { error: actionError(error) };
   }
