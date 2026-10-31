@@ -2,12 +2,31 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   correctionDisplayTimeZone,
+  formatCorrectionEmployeeIdentifier,
   formatCorrectionCalendarDate,
   formatCorrectionJsonForDisplay,
   formatCorrectionTimestamp,
 } from "./correction-display";
 
 describe("attendance correction display formatting", () => {
+  it("uses the employee record ID when a correction has no daily-attendance row", () => {
+    assert.equal(formatCorrectionEmployeeIdentifier({
+      employeeRecordId: "QA-EMP-2",
+    }), "QA-EMP-2");
+    assert.equal(formatCorrectionEmployeeIdentifier({
+      attendanceEmployeeId: "QA-EMP-1",
+      employeeRecordId: "QA-EMP-2",
+      employeeCode: "legacy-code",
+    }), "QA-EMP-1");
+    assert.equal(formatCorrectionEmployeeIdentifier({
+      employeeCode: "legacy-code",
+    }), "legacy-code");
+    assert.equal(formatCorrectionEmployeeIdentifier({
+      employeeRecordId: " ",
+      employeeCode: null,
+    }), "No employee ID");
+  });
+
   it("formats instants in the configured Colombo and Dhaka timezones", () => {
     const instant = new Date("2026-10-23T12:30:00.000Z");
     assert.equal(formatCorrectionTimestamp(instant, "Asia/Colombo"), "2026-10-23 18:00:00 +05:30 (Asia/Colombo)");
