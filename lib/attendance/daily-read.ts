@@ -106,7 +106,11 @@ export async function listCalculatedDailyAttendance(
   let scopedEmployeeFilter: Prisma.EmployeeWhereInput = {};
   let scopedDepartmentFilter: Prisma.DepartmentWhereInput = {};
   if (actor.role === "HR_ADMINISTRATOR") {
-    scopedEmployeeFilter = { user: { is: { role: "EMPLOYEE" } } };
+    const employeeVisibilityConditions: Prisma.EmployeeWhereInput[] = [
+      { user: { is: { role: "EMPLOYEE" } } },
+      ...(actor.id ? [{ userId: actor.id }] : []),
+    ];
+    scopedEmployeeFilter = { OR: employeeVisibilityConditions };
   } else if (actor.role === "DEPARTMENT_MANAGER") {
     const manager = await database.employee.findUnique({
       where: { userId: actor.id ?? "" },

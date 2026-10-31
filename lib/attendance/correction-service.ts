@@ -916,7 +916,7 @@ const correctionReviewSelect = {
       name: true,
       employeeCode: true,
       timeZone: true,
-      employee: { select: { departmentId: true, supervisor: { select: { userId: true } } } },
+      employee: { select: { employeeId: true, departmentId: true, supervisor: { select: { userId: true } } } },
     },
   },
 } satisfies Prisma.AttendanceCorrectionRequestSelect;

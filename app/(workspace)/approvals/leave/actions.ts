@@ -20,6 +20,8 @@ import {
   LeaveCancellationScopeError,
   LeaveCancellationStageError,
 } from "@/lib/leave/cancellation-service";
+import { measureServerOperation } from "@/lib/diagnostics/server-timing";
+import { appendRefreshWarning, logServerActionError, revalidateAfterCommit } from "@/lib/diagnostics/server-action";
 
 export type LeaveDecisionState = { error: string } | { success: string } | null;
 
@@ -44,14 +46,16 @@ export async function decideLeaveRequestAction(
     const result = actor.role === "SUPERVISOR"
       ? await decideSupervisorLeaveRequest(actor, leaveRequestId, decisionInput)
       : await decideManagerLeaveRequest(actor, leaveRequestId, decisionInput);
-    revalidatePath("/approvals/leave");
-    revalidatePath("/dashboard");
-    revalidatePath("/leave");
-    revalidatePath("/leave/balance");
+    const refreshed = revalidateAfterCommit(() => {
+      revalidatePath("/approvals/leave");
+      revalidatePath("/dashboard");
+      revalidatePath("/leave");
+      revalidatePath("/leave/balance");
+    }, (error) => logServerActionError("leave.request_decision_revalidation", error, "/approvals/leave"));
     return {
-      success: result.currentApprovalStage === "MANAGER"
+      success: appendRefreshWarning(result.currentApprovalStage === "MANAGER"
         ? "Leave request forwarded to the assigned Manager."
-        : result.status === "APPROVED" ? "Leave request approved." : "Leave request rejected.",
+        : result.status === "APPROVED" ? "Leave request approved." : "Leave request rejected.", refreshed),
     };
   } catch (error) {
     if (error instanceof z.ZodError) return { error: error.issues[0]?.message ?? "Check the decision." };
@@ -61,7 +65,7 @@ export async function decideLeaveRequestAction(
       || error instanceof LeaveApprovalScopeError
       || error instanceof LeaveApprovalStageError
     ) return { error: error.message };
-    console.error("Leave request decision failed", error instanceof Error ? error.name : "Unknown error");
+    logServerActionError("leave.request_decision", error, "/approvals/leave");
     return { error: "The Leave decision could not be saved. Try again shortly." };
   }
 }
@@ -78,17 +82,23 @@ export async function decideLeaveCancellationAction(
   ) throw new LeaveCancellationAccessError();
   try {
     const input = { action: formData.get("action"), reason: formData.get("reason") };
-    const result = actor.role === "SUPERVISOR"
-      ? await decideSupervisorLeaveCancellation(actor, leaveRequestId, input)
-      : await decideManagerLeaveCancellation(actor, leaveRequestId, input);
-    revalidatePath("/approvals/leave");
-    revalidatePath("/dashboard");
-    revalidatePath("/leave");
-    revalidatePath("/leave/balance");
+    const result = await measureServerOperation(
+      "/approvals/leave",
+      "leave.cancellation_decision",
+      () => actor.role === "SUPERVISOR"
+        ? decideSupervisorLeaveCancellation(actor, leaveRequestId, input)
+        : decideManagerLeaveCancellation(actor, leaveRequestId, input),
+    );
+    const refreshed = revalidateAfterCommit(() => {
+      revalidatePath("/approvals/leave");
+      revalidatePath("/dashboard");
+      revalidatePath("/leave");
+      revalidatePath("/leave/balance");
+    }, (error) => logServerActionError("leave.cancellation_decision_revalidation", error, "/approvals/leave"));
     return {
-      success: result.cancellationApprovalStage === "MANAGER"
+      success: appendRefreshWarning(result.cancellationApprovalStage === "MANAGER"
         ? "Cancellation forwarded to the assigned Manager."
-        : result.status === "CANCELLED" ? "Leave cancellation approved." : "Leave cancellation rejected.",
+        : result.status === "CANCELLED" ? "Leave cancellation approved." : "Leave cancellation rejected.", refreshed),
     };
   } catch (error) {
     if (error instanceof z.ZodError) return { error: error.issues[0]?.message ?? "Check the decision." };
@@ -98,7 +108,7 @@ export async function decideLeaveCancellationAction(
       || error instanceof LeaveCancellationScopeError
       || error instanceof LeaveCancellationStageError
     ) return { error: error.message };
-    console.error("Leave cancellation decision failed", error instanceof Error ? error.name : "Unknown error");
+    logServerActionError("leave.cancellation_decision", error, "/approvals/leave");
     return { error: "The Leave cancellation decision could not be saved. Try again shortly." };
   }
 }

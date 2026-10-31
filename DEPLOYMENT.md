@@ -28,6 +28,12 @@ Do not put credentials in Git, screenshots, issue text, build output, or this gu
 
 No application base URL variable is currently read by the code. Redirects are relative paths, and production cookies are marked `Secure` based on `NODE_ENV=production`; HTTPS should remain enabled at the hosting edge.
 
+## Temporary server timing diagnostics
+
+Production server rendering emits structured `server_timing` and `prisma_query_timing` JSON logs by default. Set `SERVER_TIMING_ENABLED=false` in the SSR runtime to disable them; set it to `true` in non-production environments to enable them there. Logs include an opaque request ID, a route label, stage duration, and sanitized runtime/database region labels. Prisma query logs intentionally exclude SQL text and parameters.
+
+The Prisma query duration is the client-observed query round trip; it does not separate connection-pool acquisition from PostgreSQL execution. Use the same time window in Amplify/CloudWatch and Neon metrics to distinguish runtime cold starts, connection waits, and database execution. Remove this instrumentation after the diagnosis is complete.
+
 ## Prisma Production Migrations
 
 ### Before any migration

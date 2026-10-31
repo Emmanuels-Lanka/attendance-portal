@@ -16,6 +16,7 @@ import { requirePageUser } from "@/lib/auth/session";
 import { listManagerLeaveRequests, listSupervisorLeaveRequests } from "@/lib/leave/approval-service";
 import { listOvertimeRequestsForReview } from "@/lib/overtime/service";
 import { listWorkFromHomeRequestsForReview } from "@/lib/wfh/service";
+import { measureServerOperation } from "@/lib/diagnostics/server-timing";
 
 type PendingApprovalLink = { label: string; href: string; count: number };
 
@@ -80,18 +81,28 @@ function ManagerDashboard({
 }
 
 export default async function DashboardPage() {
-  const user = await requirePageUser();
+  const user = await requirePageUser("dashboard");
   const homePath = getDashboardHomePath(user.role);
   if (homePath !== "/dashboard") redirect(homePath);
   const currentMonth = formatInTimeZone(new Date(), user.timeZone, "yyyy-MM");
 
   if (user.role === "HR_ADMINISTRATOR") {
     const today = formatInTimeZone(new Date(), user.timeZone, "yyyy-MM-dd");
-    const [todaySummary, monthlyReport, personalAttendance] = await Promise.all([
-      getAdminAttendanceSummary(user, { date: today }),
-      getMonthlyAttendanceSummaryReport(user, currentMonth),
-      getEmployeeAttendanceDashboard(user),
-    ]);
+    const [todaySummary, monthlyReport, personalAttendance] = await measureServerOperation(
+      "dashboard",
+      "dashboard.page_data_load",
+      () => Promise.all([
+        measureServerOperation("dashboard", "dashboard.attendance_summary", () => (
+          getAdminAttendanceSummary(user, { date: today })
+        )),
+        measureServerOperation("dashboard", "dashboard.monthly_report", () => (
+          getMonthlyAttendanceSummaryReport(user, currentMonth)
+        )),
+        measureServerOperation("dashboard", "dashboard.personal_attendance", () => (
+          getEmployeeAttendanceDashboard(user)
+        )),
+      ]),
+    );
     const employeesWithWfh = todaySummary.employees.filter(({ day }) => day.sessions.some(({ session }) => session.mode === "WFH")).length;
     const departmentMetrics = new Map<string, {
       departmentName: string;
@@ -206,19 +217,35 @@ export default async function DashboardPage() {
 
   if (user.role === "DEPARTMENT_MANAGER" || user.role === "SUPERVISOR") {
     const today = formatInTimeZone(new Date(), user.timeZone, "yyyy-MM-dd");
-    const todaySummaryPromise = getAdminAttendanceSummary(user, { date: today });
-    const overtimePromise = listOvertimeRequestsForReview(user);
-    const workFromHomePromise = listWorkFromHomeRequestsForReview(user);
+    const todaySummaryPromise = measureServerOperation("dashboard", "dashboard.attendance_summary", () => (
+      getAdminAttendanceSummary(user, { date: today })
+    ));
+    const overtimePromise = measureServerOperation("dashboard", "dashboard.overtime_approvals", () => (
+      listOvertimeRequestsForReview(user)
+    ));
+    const workFromHomePromise = measureServerOperation("dashboard", "dashboard.wfh_approvals", () => (
+      listWorkFromHomeRequestsForReview(user)
+    ));
 
     if (user.role === "DEPARTMENT_MANAGER") {
-      const [todaySummary, absentRows, monthlyReport, leaveRequests, overtimeRequests, workFromHomeRequests] = await Promise.all([
-        todaySummaryPromise,
-        listCalculatedDailyAttendance(user, { date: today, status: "ABSENT" }),
-        getMonthlyAttendanceSummaryReport(user, currentMonth),
-        listManagerLeaveRequests(user),
-        overtimePromise,
-        workFromHomePromise,
-      ]);
+      const [todaySummary, absentRows, monthlyReport, leaveRequests, overtimeRequests, workFromHomeRequests] = await measureServerOperation(
+        "dashboard",
+        "dashboard.page_data_load",
+        () => Promise.all([
+          todaySummaryPromise,
+          measureServerOperation("dashboard", "dashboard.absent_attendance", () => (
+            listCalculatedDailyAttendance(user, { date: today, status: "ABSENT" })
+          )),
+          measureServerOperation("dashboard", "dashboard.monthly_report", () => (
+            getMonthlyAttendanceSummaryReport(user, currentMonth)
+          )),
+          measureServerOperation("dashboard", "dashboard.leave_approvals", () => (
+            listManagerLeaveRequests(user)
+          )),
+          overtimePromise,
+          workFromHomePromise,
+        ]),
+      );
       const employeesWithWfh = todaySummary.employees.filter(({ day }) => day.sessions.some(({ session }) => session.mode === "WFH")).length;
       const pendingApprovals = [
         { label: "Leave", href: "/approvals/leave", count: leaveRequests.length },
@@ -245,14 +272,24 @@ export default async function DashboardPage() {
       );
     }
 
-    const [todaySummary, missingPunchRows, leaveRequests, overtimeRequests, workFromHomeRequests, corrections] = await Promise.all([
-      todaySummaryPromise,
-      listCalculatedDailyAttendance(user, { date: today, status: "MISSING_PUNCH" }),
-      listSupervisorLeaveRequests(user),
-      overtimePromise,
-      workFromHomePromise,
-      listDailyAttendanceCorrections(user),
-    ]);
+    const [todaySummary, missingPunchRows, leaveRequests, overtimeRequests, workFromHomeRequests, corrections] = await measureServerOperation(
+      "dashboard",
+      "dashboard.page_data_load",
+      () => Promise.all([
+        todaySummaryPromise,
+        measureServerOperation("dashboard", "dashboard.missing_punch_attendance", () => (
+          listCalculatedDailyAttendance(user, { date: today, status: "MISSING_PUNCH" })
+        )),
+        measureServerOperation("dashboard", "dashboard.leave_approvals", () => (
+          listSupervisorLeaveRequests(user)
+        )),
+        overtimePromise,
+        workFromHomePromise,
+        measureServerOperation("dashboard", "dashboard.correction_approvals", () => (
+          listDailyAttendanceCorrections(user)
+        )),
+      ]),
+    );
     const pendingApprovals = [
       { label: "Leave", href: "/approvals/leave", count: leaveRequests.length },
       { label: "Overtime", href: "/approvals/overtime", count: overtimeRequests.length },
@@ -275,6 +312,18 @@ export default async function DashboardPage() {
     );
   }
 
+  const { attendance, monthlyReport } = await measureServerOperation(
+    "dashboard",
+    "dashboard.page_data_load",
+    async () => ({
+      attendance: await measureServerOperation("dashboard", "dashboard.personal_attendance", () => (
+        getEmployeeAttendanceDashboard(user)
+      )),
+      monthlyReport: await measureServerOperation("dashboard", "dashboard.monthly_report", () => (
+        getEmployeeMonthlyReport(user, currentMonth)
+      )),
+    }),
+  );
   const {
     date,
     activeSession,
@@ -284,8 +333,7 @@ export default async function DashboardPage() {
     day,
     completedSessionToday,
     invalidSessions,
-  } = await getEmployeeAttendanceDashboard(user);
-  const monthlyReport = await getEmployeeMonthlyReport(user, currentMonth);
+  } = attendance;
   const thisMonthMetrics = [
     { label: "Present", value: monthlyReport.summary.presentDays ?? "Not calculated" },
     { label: "Late arrivals", value: monthlyReport.summary.lateDays ?? "Not calculated" },

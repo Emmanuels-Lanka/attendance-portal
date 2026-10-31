@@ -9,6 +9,7 @@ import {
   LeaveEntitlementTypeNotFoundError,
   setLeaveEntitlement,
 } from "@/lib/leave/balance-service";
+import { appendRefreshWarning, logServerActionError, revalidateAfterCommit } from "@/lib/diagnostics/server-action";
 
 export type LeaveEntitlementActionState = { error: string } | { success: string } | null;
 
@@ -19,7 +20,7 @@ function actionError(error: unknown) {
     || error instanceof LeaveEntitlementEmployeeNotFoundError
     || error instanceof LeaveEntitlementTypeNotFoundError
   ) return error.message;
-  console.error("Leave entitlement action failed", error instanceof Error ? error.name : "Unknown error");
+  logServerActionError("leave.entitlement_save", error, "/admin/leave-balances");
   return "The Leave entitlement could not be saved. Try again shortly.";
 }
 
@@ -39,10 +40,12 @@ export async function saveLeaveEntitlementAction(
       carryForward: formData.get("carryForward"),
       reason: formData.get("reason"),
     });
-    revalidatePath("/admin/leave-balances");
-    revalidatePath("/leave/balance");
-    revalidatePath("/admin/audit");
-    return { success: "Leave entitlement saved." };
+    const refreshed = revalidateAfterCommit(() => {
+      revalidatePath("/admin/leave-balances");
+      revalidatePath("/leave/balance");
+      revalidatePath("/admin/audit");
+    }, (error) => logServerActionError("leave.entitlement_revalidation", error, "/admin/leave-balances"));
+    return { success: appendRefreshWarning("Leave entitlement saved.", refreshed) };
   } catch (error) {
     return { error: actionError(error) };
   }

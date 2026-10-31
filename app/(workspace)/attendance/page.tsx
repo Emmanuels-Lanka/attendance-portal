@@ -11,17 +11,30 @@ import { listApprovedWorkFromHomeForAttendance } from "@/lib/wfh/service";
 import { requirePageUser } from "@/lib/auth/session";
 import { redirect } from "next/navigation";
 import { canAccessPersonalAttendance } from "@/lib/auth/permissions";
+import { measureServerOperation } from "@/lib/diagnostics/server-timing";
 
 export default async function AttendanceHistoryPage() {
-  const user = await requirePageUser();
+  const user = await requirePageUser("attendance.history");
   if (!canAccessPersonalAttendance(user.role)) redirect("/admin/attendance");
-  const { days, invalidSessions } = await getEmployeeAttendanceHistory(user);
-  const approvedWorkFromHome = await listApprovedWorkFromHomeForAttendance(user);
+  const { days, invalidSessions } = await measureServerOperation(
+    "attendance.history",
+    "attendance.history_data_load",
+    () => getEmployeeAttendanceHistory(user),
+  );
+  const approvedWorkFromHome = await measureServerOperation(
+    "attendance.history",
+    "attendance.approved_wfh_load",
+    () => listApprovedWorkFromHomeForAttendance(user),
+  );
   let ownLocationHistory: Awaited<ReturnType<typeof listOwnAttendanceLocations>> | null = null;
   let ownLocationReadFailed = false;
   if (user.role === "EMPLOYEE") {
     try {
-      ownLocationHistory = await listOwnAttendanceLocations(user);
+      ownLocationHistory = await measureServerOperation(
+        "attendance.history",
+        "attendance.locations_load",
+        () => listOwnAttendanceLocations(user),
+      );
     } catch (error) {
       ownLocationReadFailed = true;
       console.error("Employee attendance location read failed", error instanceof Error ? error.name : "Unknown error");

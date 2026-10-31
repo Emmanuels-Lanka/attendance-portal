@@ -11,6 +11,7 @@ import {
   OvertimeRequestTimeError,
   submitOwnOvertimeRequest,
 } from "@/lib/overtime/service";
+import { appendRefreshWarning, logServerActionError, revalidateAfterCommit } from "@/lib/diagnostics/server-action";
 
 export type OvertimeRequestActionState = { error: string } | { success: string } | null;
 
@@ -22,7 +23,7 @@ function actionError(error: unknown) {
     || error instanceof OvertimeEmployeeNotFoundError
     || error instanceof OvertimeRequestTimeError
   ) return error.message;
-  console.error("Overtime request submission failed", error instanceof Error ? error.name : "Unknown error");
+  logServerActionError("overtime.request_submit", error, "/overtime");
   return "Your overtime request could not be submitted. Try again shortly.";
 }
 
@@ -43,9 +44,13 @@ export async function submitOvertimeRequestAction(
       project: formData.get("project"),
       expectedHours: formData.get("expectedHours"),
     });
-    revalidatePath("/overtime");
-    revalidatePath("/dashboard");
-    return { success: "Your overtime request was submitted for Supervisor review." };
+    const refreshed = revalidateAfterCommit(() => {
+      revalidatePath("/overtime");
+      revalidatePath("/dashboard");
+    }, (error) => logServerActionError("overtime.request_submit_revalidation", error, "/overtime"));
+    return {
+      success: appendRefreshWarning("Your overtime request was submitted for Supervisor review.", refreshed),
+    };
   } catch (error) {
     return { error: actionError(error) };
   }

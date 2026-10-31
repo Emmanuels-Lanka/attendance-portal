@@ -12,6 +12,7 @@ import {
   WorkFromHomeApprovalScopeError,
   WorkFromHomeApprovalStageError,
   WorkFromHomeApproverNotFoundError,
+  WorkFromHomeRequestConflictError,
   WorkFromHomeRequestAccessError,
   WorkFromHomeRequestTimeError,
 } from "./service";
@@ -78,6 +79,7 @@ function createDatabase(options: {
     attendance: [],
   };
   let nextId = 1;
+  let lockTail = Promise.resolve();
 
   const transaction = {
     employee: {
@@ -112,6 +114,17 @@ function createDatabase(options: {
         };
         requests.push(request);
         return { ...request };
+      },
+      findFirst: async ({ where }: { where: Record<string, unknown> }) => {
+        const status = where.status as { in: WorkFromHomeRequestStatus[] };
+        const startAt = (where.startAt as { lt: Date }).lt;
+        const endAt = (where.endAt as { gt: Date }).gt;
+        return requests.find((request) =>
+          request.employeeId === where.employeeId
+          && status.in.includes(request.status)
+          && request.startAt < startAt
+          && request.endAt > endAt,
+        ) ?? null;
       },
       findMany: async ({ where }: { where: Record<string, unknown> }) => {
         queries.list.push(where);
@@ -160,7 +173,29 @@ function createDatabase(options: {
     },
   };
   const database = {
-    $transaction: async <T>(callback: (tx: typeof transaction) => Promise<T>) => callback(transaction),
+    $transaction: async <T>(callback: (tx: typeof transaction) => Promise<T>) => {
+      let releaseLock: (() => void) | undefined;
+      const tx = {
+        ...transaction,
+        $queryRaw: async () => {
+          if (!releaseLock) {
+            const previous = lockTail;
+            let release: () => void = () => {};
+            lockTail = new Promise<void>((resolve) => {
+              release = resolve;
+            });
+            await previous;
+            releaseLock = release;
+          }
+          return [];
+        },
+      };
+      try {
+        return await callback(tx);
+      } finally {
+        releaseLock?.();
+      }
+    },
     employee: transaction.employee,
     workFromHomeRequest: transaction.workFromHomeRequest,
   } as never;
@@ -213,6 +248,64 @@ describe("employee work from home requests", () => {
     assert.equal(stub.notifications[0]?.userId, supervisorActor.id);
     assert.equal(stub.notifications[0]?.type, "WFH_REQUEST_PENDING");
     assert.equal(stub.audits[0]?.actionType, "WFH_REQUEST_SUBMITTED");
+  });
+
+  it("rejects identical retries and overlapping active requests but permits adjacent intervals", async () => {
+    const stub = createDatabase();
+    await submitOwnWorkFromHomeRequest(employeeActor, validInput, stub.database);
+    await assert.rejects(
+      submitOwnWorkFromHomeRequest(employeeActor, validInput, stub.database),
+      WorkFromHomeRequestConflictError,
+    );
+    await assert.rejects(
+      submitOwnWorkFromHomeRequest(employeeActor, {
+        ...validInput,
+        startTime: "17:00",
+        endTime: "18:00",
+        reason: "Different reason",
+      }, stub.database),
+      WorkFromHomeRequestConflictError,
+    );
+
+    const adjacent = await submitOwnWorkFromHomeRequest(employeeActor, {
+      ...validInput,
+      startTime: "17:30",
+      endTime: "18:30",
+    }, stub.database);
+    assert.equal(stub.requests.length, 2);
+    assert.equal(adjacent.startAt.toISOString(), "2026-10-08T12:00:00.000Z");
+  });
+
+  it("blocks overlaps while pending or approved and permits resubmission after a terminal decision", async () => {
+    const stub = createDatabase();
+    await submitOwnWorkFromHomeRequest(employeeActor, validInput, stub.database);
+    stub.requests[0]!.status = WorkFromHomeRequestStatus.APPROVED;
+    await assert.rejects(
+      submitOwnWorkFromHomeRequest(employeeActor, validInput, stub.database),
+      WorkFromHomeRequestConflictError,
+    );
+
+    stub.requests[0]!.status = WorkFromHomeRequestStatus.REJECTED;
+    await submitOwnWorkFromHomeRequest(employeeActor, validInput, stub.database);
+    assert.equal(stub.requests.length, 2);
+  });
+
+  it("serializes concurrent submissions for one employee before checking for overlaps", async () => {
+    const stub = createDatabase();
+    const results = await Promise.allSettled([
+      submitOwnWorkFromHomeRequest(employeeActor, validInput, stub.database),
+      submitOwnWorkFromHomeRequest(employeeActor, validInput, stub.database),
+    ]);
+
+    assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+    const rejected = results.find((result) => result.status === "rejected");
+    assert.equal(
+      rejected?.status === "rejected" && rejected.reason instanceof WorkFromHomeRequestConflictError,
+      true,
+    );
+    assert.equal(stub.requests.length, 1);
+    assert.equal(stub.audits.length, 1);
+    assert.equal(stub.notifications.length, 1);
   });
 
   it("rejects unauthenticated users, unauthorized roles, and invalid local date/time ranges", async () => {

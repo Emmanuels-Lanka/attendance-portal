@@ -14,6 +14,8 @@ import {
   DailyAttendanceCorrectionTargetNotFoundError,
   decideDailyAttendanceCorrection,
 } from "@/lib/attendance/correction-service";
+import { measureServerOperation } from "@/lib/diagnostics/server-timing";
+import { appendRefreshWarning, logServerActionError, revalidateAfterCommit } from "@/lib/diagnostics/server-action";
 
 export type AttendanceCorrectionDecisionState = { error: string } | { success: string } | null;
 
@@ -30,23 +32,29 @@ export async function decideAttendanceCorrectionAction(
     throw new AuthorizationError();
   }
   try {
-    const result = await decideDailyAttendanceCorrection(actor, correctionRequestId, {
-      action: formData.get("action"),
-      reason: formData.get("reason"),
-    });
-    revalidatePath("/approvals/attendance-corrections");
-    revalidatePath("/dashboard");
-    revalidatePath("/attendance");
-    revalidatePath("/attendance/corrections");
-    revalidatePath("/admin/attendance");
-    revalidatePath("/admin/attendance/daily");
-    revalidatePath("/admin/reports");
-    revalidatePath("/reports");
-    revalidatePath("/reports/monthly");
+    const result = await measureServerOperation(
+      "/approvals/attendance-corrections",
+      "attendance.correction_decision",
+      () => decideDailyAttendanceCorrection(actor, correctionRequestId, {
+        action: formData.get("action"),
+        reason: formData.get("reason"),
+      }),
+    );
+    const refreshed = revalidateAfterCommit(() => {
+      revalidatePath("/approvals/attendance-corrections");
+      revalidatePath("/dashboard");
+      revalidatePath("/attendance");
+      revalidatePath("/attendance/corrections");
+      revalidatePath("/admin/attendance");
+      revalidatePath("/admin/attendance/daily");
+      revalidatePath("/admin/reports");
+      revalidatePath("/reports");
+      revalidatePath("/reports/monthly");
+    }, (error) => logServerActionError("attendance.correction_decision_revalidation", error, "/approvals/attendance-corrections"));
     return {
-      success: result.status === "PENDING"
+      success: appendRefreshWarning(result.status === "PENDING"
         ? "Correction advanced to HR review."
-        : result.status === "APPROVED" ? "Correction approved and applied." : "Correction rejected.",
+        : result.status === "APPROVED" ? "Correction approved and applied." : "Correction rejected.", refreshed),
     };
   } catch (error) {
     if (error instanceof z.ZodError) return { error: error.issues[0]?.message ?? "Check the decision." };
@@ -59,7 +67,7 @@ export async function decideAttendanceCorrectionAction(
       || error instanceof DailyAttendanceCorrectionStageError
       || error instanceof DailyAttendanceCorrectionTargetNotFoundError
     ) return { error: error.message };
-    console.error("Attendance correction decision failed", error instanceof Error ? error.name : "Unknown error");
+    logServerActionError("attendance.correction_decision", error, "/approvals/attendance-corrections");
     return { error: "The correction decision could not be saved. Try again shortly." };
   }
 }

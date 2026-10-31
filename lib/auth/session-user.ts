@@ -3,6 +3,7 @@ import "server-only";
 import type { PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { accountIsActive } from "@/lib/auth/account-status";
+import { measureServerOperation } from "@/lib/diagnostics/server-timing";
 
 type SessionUserDatabase = Pick<PrismaClient, "user">;
 
@@ -10,8 +11,9 @@ export async function findActiveSessionUser(
   userId: string,
   database: SessionUserDatabase = prisma,
   expectedSessionVersion?: number,
+  route = "unknown",
 ) {
-  const user = await database.user.findUnique({
+  const user = await measureServerOperation(route, "auth.user_lookup", () => database.user.findUnique({
     where: { id: userId },
     select: {
       id: true,
@@ -25,7 +27,7 @@ export async function findActiveSessionUser(
       countryCode: true,
       timeZone: true,
     },
-  });
+  }));
   if (!accountIsActive(user) || (expectedSessionVersion !== undefined && user.sessionVersion !== expectedSessionVersion)) return null;
 
   return {

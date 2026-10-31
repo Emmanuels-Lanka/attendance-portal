@@ -12,6 +12,7 @@ import {
   WorkFromHomeRequestAccessError,
   WorkFromHomeRequestNotFoundError,
 } from "@/lib/wfh/service";
+import { appendRefreshWarning, logServerActionError, revalidateAfterCommit } from "@/lib/diagnostics/server-action";
 
 export type WorkFromHomeDecisionActionState = { error: string } | { success: string } | null;
 
@@ -24,7 +25,7 @@ function actionError(error: unknown) {
     || error instanceof WorkFromHomeRequestAccessError
     || error instanceof WorkFromHomeRequestNotFoundError
   ) return error.message;
-  console.error("WFH request decision failed", error instanceof Error ? error.name : "Unknown error");
+  logServerActionError("wfh.request_decision", error, "/approvals/wfh");
   return "The WFH decision could not be saved. Try again shortly.";
 }
 
@@ -45,14 +46,16 @@ export async function decideWorkFromHomeRequestAction(
       action: formData.get("action"),
       reason: formData.get("reason"),
     });
-    revalidatePath("/approvals/wfh");
-    revalidatePath("/dashboard");
-    revalidatePath("/wfh");
-    revalidatePath("/attendance");
+    const refreshed = revalidateAfterCommit(() => {
+      revalidatePath("/approvals/wfh");
+      revalidatePath("/dashboard");
+      revalidatePath("/wfh");
+      revalidatePath("/attendance");
+    }, (error) => logServerActionError("wfh.request_decision_revalidation", error, "/approvals/wfh"));
     return {
-      success: result.currentApprovalStage === "MANAGER"
+      success: appendRefreshWarning(result.currentApprovalStage === "MANAGER"
         ? "WFH request forwarded to the assigned Manager."
-        : result.status === "APPROVED" ? "WFH request approved." : "WFH request rejected.",
+        : result.status === "APPROVED" ? "WFH request approved." : "WFH request rejected.", refreshed),
     };
   } catch (error) {
     return { error: actionError(error) };

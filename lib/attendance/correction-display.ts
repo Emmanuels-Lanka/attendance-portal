@@ -3,6 +3,18 @@ import { isIanaTimeZone } from "@/lib/attendance/timezone";
 
 export const CORRECTION_DISPLAY_FALLBACK_TIME_ZONE = "UTC";
 
+export function formatCorrectionEmployeeIdentifier(input: {
+  attendanceEmployeeId?: string | null;
+  employeeRecordId?: string | null;
+  employeeCode?: string | null;
+}) {
+  return [
+    input.attendanceEmployeeId,
+    input.employeeRecordId,
+    input.employeeCode,
+  ].find((value) => typeof value === "string" && value.trim().length > 0) ?? "No employee ID";
+}
+
 export function correctionDisplayTimeZone(timeZone: string | null | undefined) {
   return timeZone && isIanaTimeZone(timeZone) ? timeZone : CORRECTION_DISPLAY_FALLBACK_TIME_ZONE;
 }

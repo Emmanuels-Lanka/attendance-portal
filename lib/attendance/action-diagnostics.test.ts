@@ -1,43 +1,68 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { attendanceActionErrorDetails } from "./action-diagnostics";
+import { logAttendanceActionError } from "./action-diagnostics";
 
-it("keeps safe Prisma diagnostics while redacting credentials and personal data", () => {
+it("logs only correlated and allowlisted diagnostics, never raw errors, SQL, tokens, or credentials", () => {
+  const originalError = console.error;
+  const logged: string[] = [];
+  console.error = (message?: unknown) => { logged.push(String(message)); };
+
   const error = Object.assign(
-    new Error(
-      "Failed for employee@example.com: postgresql://db-user:db-password@db.example.test/attendance?password=query-secret "
-      + "Bearer bearer-secret eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature-secret sessionSecret=session-secret",
-    ),
-    { code: "P1001", clientVersion: "6.19.3" },
+    new Error("SELECT * FROM users WHERE email='employee@example.com' AND password='db-password'"),
+    {
+      code: "P2004",
+      meta: {
+        modelName: "WorkFromHomeRequest",
+        constraint: "wfh_requests_active_interval_excl",
+        query: "SELECT 'query-secret'",
+        token: "bearer-secret",
+      },
+    },
   );
+  error.stack = `${error.name}: ${error.message}\n    at connect (postgres://db-user:db-password@database.internal/app)\n    at authorize Bearer signature-secret`;
 
-  const details = attendanceActionErrorDetails(error);
-  const serialized = JSON.stringify(details);
+  try {
+    logAttendanceActionError("attendance.submit", error, "/dashboard");
+  } finally {
+    console.error = originalError;
+  }
 
-  assert.equal(details.name, "Error");
-  assert.equal(details.code, "P1001");
-  assert.match(details.message, /\[REDACTED_DATABASE_URL\]/);
-  assert.match(details.message, /\[REDACTED_EMAIL\]/);
-  assert.match(details.message, /\[REDACTED_TOKEN\]/);
-  assert.match(details.message, /Bearer \[REDACTED\]/);
-  for (const secret of [
+  const serialized = logged[0] ?? "";
+  const record = JSON.parse(serialized) as Record<string, unknown>;
+  assert.equal(record.event, "server_action_error");
+  assert.equal(record.operation, "attendance.submit");
+  assert.equal(record.route, "/dashboard");
+  assert.equal(record.prismaCode, "P2004");
+  assert.equal(record.prismaModel, "WorkFromHomeRequest");
+  assert.equal(record.prismaConstraint, "wfh_requests_active_interval_excl");
+  assert.equal(typeof record.requestId, "string");
+  for (const sensitiveValue of [
+    "SELECT",
     "employee@example.com",
-    "db-user",
+    "password",
     "db-password",
+    "db-user",
+    "database.internal",
     "query-secret",
     "bearer-secret",
     "signature-secret",
-    "session-secret",
+    "connect",
   ]) {
-    assert.equal(serialized.includes(secret), false);
+    assert.equal(serialized.includes(sensitiveValue), false, `${sensitiveValue} must not be logged`);
   }
-  assert.ok(details.stack);
-  assert.equal(details.stack.includes("Failed for employee"), false);
 });
 
 it("does not serialize details from non-Error throws", () => {
-  assert.deepEqual(attendanceActionErrorDetails({ password: "private" }), {
-    name: "UnknownError",
-    message: "A non-Error value was thrown.",
-  });
+  const originalError = console.error;
+  const logged: string[] = [];
+  console.error = (message?: unknown) => { logged.push(String(message)); };
+  try {
+    logAttendanceActionError("attendance.submit", { password: "private" });
+  } finally {
+    console.error = originalError;
+  }
+
+  const record = JSON.parse(logged[0] ?? "{}") as Record<string, unknown>;
+  assert.equal(record.errorName, "UnknownError");
+  assert.equal(JSON.stringify(record).includes("private"), false);
 });

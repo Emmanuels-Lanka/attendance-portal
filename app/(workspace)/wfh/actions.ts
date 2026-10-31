@@ -8,9 +8,11 @@ import {
   submitOwnWorkFromHomeRequest,
   WorkFromHomeApproverNotFoundError,
   WorkFromHomeEmployeeNotFoundError,
+  WorkFromHomeRequestConflictError,
   WorkFromHomeRequestAccessError,
   WorkFromHomeRequestTimeError,
 } from "@/lib/wfh/service";
+import { appendRefreshWarning, logServerActionError, revalidateAfterCommit } from "@/lib/diagnostics/server-action";
 
 export type WorkFromHomeRequestActionState = { error: string } | { success: string } | null;
 
@@ -19,10 +21,11 @@ function actionError(error: unknown) {
   if (
     error instanceof WorkFromHomeApproverNotFoundError
     || error instanceof WorkFromHomeEmployeeNotFoundError
+    || error instanceof WorkFromHomeRequestConflictError
     || error instanceof WorkFromHomeRequestAccessError
     || error instanceof WorkFromHomeRequestTimeError
   ) return error.message;
-  console.error("WFH request submission failed", error instanceof Error ? error.name : "Unknown error");
+  logServerActionError("wfh.request_submit", error, "/wfh");
   return "Your WFH request could not be submitted. Try again shortly.";
 }
 
@@ -42,11 +45,15 @@ export async function submitWorkFromHomeRequestAction(
       reason: formData.get("reason"),
       workLocation: formData.get("workLocation"),
     });
-    revalidatePath("/wfh");
-    revalidatePath("/attendance");
-    revalidatePath("/dashboard");
-    revalidatePath("/approvals/wfh");
-    return { success: "Your WFH request was submitted for Supervisor review." };
+    const refreshed = revalidateAfterCommit(() => {
+      revalidatePath("/wfh");
+      revalidatePath("/attendance");
+      revalidatePath("/dashboard");
+      revalidatePath("/approvals/wfh");
+    }, (error) => logServerActionError("wfh.request_submit_revalidation", error, "/wfh"));
+    return {
+      success: appendRefreshWarning("Your WFH request was submitted for Supervisor review.", refreshed),
+    };
   } catch (error) {
     return { error: actionError(error) };
   }

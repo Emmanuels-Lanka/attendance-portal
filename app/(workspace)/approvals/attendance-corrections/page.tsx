@@ -4,6 +4,7 @@ import { AttendanceCorrectionReviewForm } from "@/components/attendance-correcti
 import { listDailyAttendanceCorrections } from "@/lib/attendance/correction-service";
 import {
   correctionDisplayTimeZone,
+  formatCorrectionEmployeeIdentifier,
   formatCorrectionCalendarDate,
   formatCorrectionJsonForDisplay,
   formatCorrectionTimestamp,
@@ -51,7 +52,11 @@ export default async function AttendanceCorrectionApprovalsPage() {
                     {correction.dailyAttendance?.employee.name ?? correction.session?.record.employee.name ?? correction.employee.name}
                   </h2>
                   <p className="mt-1 text-xs text-[var(--muted)]">
-                    {correction.dailyAttendance?.employee.employeeId ?? correction.employee.employeeCode ?? "No employee ID"}
+                    {formatCorrectionEmployeeIdentifier({
+                      attendanceEmployeeId: correction.dailyAttendance?.employee.employeeId,
+                      employeeRecordId: correction.employee.employee?.employeeId,
+                      employeeCode: correction.employee.employeeCode,
+                    })}
                     {" · "}
                     {correction.attendanceDate
                       ? correction.attendanceDate.toISOString().slice(0, 10)
